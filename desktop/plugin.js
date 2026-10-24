@@ -932,7 +932,7 @@ function ProcessCard({ process, onPick }) {
   })
 }
 
-function PickScreen({ processes, busy, error, onPick, onReload, project }) {
+function PickScreen({ processes, busy, error, onPick, onReload, onInit, project, hasSpecify }) {
   if (busy && !processes.length) {
     return jsxs('div', { className: 'flex h-full items-center justify-center gap-2', children: [
       jsx(GlyphSpinner, { size: 'sm' }),
@@ -941,13 +941,26 @@ function PickScreen({ processes, busy, error, onPick, onReload, project }) {
   }
 
   if (!processes.length) {
+    const title = !project
+      ? 'Open a project folder first'
+      : hasSpecify
+        ? 'This project has no workflows'
+        : 'Not a spec-kit project yet'
+    const description = !project
+      ? 'The pane works on the folder Hermes has open.'
+      : hasSpecify
+        ? `${project} has a .specify directory but no workflows in it. Install a bundle, or re-run "specify init".`
+        : `${project} has no .specify directory. Initialise it here, or open a folder that already has one.`
     return jsx(EmptyState, {
       icon: icons.Book,
-      title: 'No workflows installed here',
-      description: project
-        ? 'This project has no .specify/workflows. Run "specify init" in it, or install a bundle, then reload.'
-        : 'Open a project folder first.',
-      action: jsx(Button, { size: 'xs', variant: 'secondary', onClick: onReload, children: 'Reload' })
+      title,
+      description,
+      action: jsxs('div', { className: 'flex items-center gap-1.5', children: [
+        jsx(Button, { size: 'xs', variant: 'ghost', disabled: busy, onClick: onReload, children: 'Reload' }),
+        project && !hasSpecify
+          ? jsx(Button, { size: 'xs', variant: 'secondary', disabled: busy, onClick: onInit, children: busy ? 'Initialising…' : 'Initialise this folder' })
+          : null
+      ] })
     })
   }
 
@@ -1157,6 +1170,7 @@ function SpecKitPane() {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [processes, setProcesses] = useState([])
+  const [projectInfo, setProjectInfo] = useState({ hasSpecify: false, hasWorkflows: false })
   const [selected, setSelected] = useState(null)
   const [inputs, setInputs] = useState({})
   const [run, setRun] = useState(null)
@@ -1182,6 +1196,10 @@ function SpecKitPane() {
       const response = await rest(`/processes?${projectQuery(project)}`)
       const list = (response && response.processes) || []
       setProcesses(list)
+      setProjectInfo({
+        hasSpecify: Boolean(response && response.has_specify),
+        hasWorkflows: Boolean(response && response.has_workflows)
+      })
       setPhase('pick')
       if (response && response.errors && response.errors.length) {
         setError(`${response.errors.length} workflow file(s) could not be read`)
@@ -1209,6 +1227,22 @@ function SpecKitPane() {
     }
     loadProcesses(project)
   }, [cwd, loadProcesses])
+
+  const initProject = useCallback(async () => {
+    setBusy(true)
+    setError('')
+    try {
+      const response = await rest('/init', { method: 'POST', body: { cwd: cwdRef.current } })
+      if (response && response.ok === false) {
+        setError(errorText({ detail: `specify init failed (exit ${response.exit_code})` }) + ` ${(response.stderr || '').slice(-200)}`)
+      }
+      await loadProcesses(cwdRef.current)
+    } catch (err) {
+      setError(errorText(err))
+    } finally {
+      setBusy(false)
+    }
+  }, [loadProcesses])
 
   const pick = useCallback(process => {
     const values = {}
@@ -1334,7 +1368,9 @@ function SpecKitPane() {
     error,
     onPick: pick,
     onReload: () => loadProcesses(cwdRef.current),
-    project: cwdRef.current
+    onInit: initProject,
+    project: cwdRef.current,
+    hasSpecify: projectInfo.hasSpecify
   })
 }
 

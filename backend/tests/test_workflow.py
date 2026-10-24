@@ -196,3 +196,27 @@ def test_artifact_reads_a_file_and_refuses_escapes(client, project):
     )
     assert outside.status_code == 400
     assert "inside .specify" in outside.json()["detail"]
+
+
+def test_init_bootstraps_a_folder_that_has_no_specify(client, tmp_path, cli):
+    calls, state = cli
+    bare = tmp_path / "bare"
+    bare.mkdir()
+    state["payload"] = None
+    state["stdout"] = "project ready"
+
+    body = client.post(f"{PREFIX}/init", json={"cwd": str(bare)}).json()
+
+    assert body["already"] is False
+    assert body["ok"] is True
+    assert calls[0]["args"] == [
+        "init", "--here", "--force", "--non-interactive",
+        "--ignore-agent-tools", "--integration", "hermes",
+    ]
+
+
+def test_init_is_a_no_op_when_specify_exists(client, project, cli):
+    calls, _ = cli
+    body = client.post(f"{PREFIX}/init", json={"cwd": str(project)}).json()
+    assert body["already"] is True
+    assert calls == [], "an initialised project must not be re-initialised"

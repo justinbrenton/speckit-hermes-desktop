@@ -349,6 +349,8 @@ def list_processes(cwd: str = Query(..., description="Absolute project directory
     return {
         "cwd": str(root),
         "workflows_dir": str(workflows_dir),
+        "has_specify": (root / ".specify").is_dir(),
+        "has_workflows": workflows_dir.is_dir(),
         "skills_dirs": [str(path) for path in skill_dirs],
         "processes": processes,
         "errors": errors,
@@ -518,6 +520,40 @@ def workflow_status(
         raise HTTPException(status_code=400, detail=f"invalid run id: {run_id!r}")
     result = _run_specify(["workflow", "status", run_id, "--json"], root, 120)
     return _workflow_result(process, result)
+
+
+# ---------------------------------------------------------------------------
+# bootstrap
+# ---------------------------------------------------------------------------
+
+
+class InitRequest(BaseModel):
+    cwd: str
+    integration: str = "hermes"
+
+
+@router.post("/init")
+def init_project(payload: InitRequest) -> dict[str, Any]:
+    """Bootstrap a spec-kit project in the folder the pane is looking at.
+
+    Deliberate button, never automatic: this writes `.specify/`, scripts and the
+    agent integration into a folder the user chose. ``--force`` because a project
+    usually already has files in it.
+    """
+    root = _project_root(payload.cwd)
+    if (root / ".specify").is_dir():
+        return {"already": True, "ok": True, "exit_code": 0, "output": "", "stderr": ""}
+    args = [
+        "init",
+        "--here",
+        "--force",
+        "--non-interactive",
+        "--ignore-agent-tools",
+        "--integration",
+        payload.integration or "hermes",
+    ]
+    result = _run_specify(args, root, 600)
+    return {"already": False, **result}
 
 
 # ---------------------------------------------------------------------------
