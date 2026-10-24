@@ -220,3 +220,19 @@ def test_init_is_a_no_op_when_specify_exists(client, project, cli):
     body = client.post(f"{PREFIX}/init", json={"cwd": str(project)}).json()
     assert body["already"] is True
     assert calls == [], "an initialised project must not be re-initialised"
+
+
+def test_legacy_skills_are_copied_where_hermes_reads(tmp_path, monkeypatch):
+    home = tmp_path / "home"
+    source = home / ".hermes" / "skills" / "speckit-plan"
+    source.mkdir(parents=True)
+    (source / "SKILL.md").write_text("---\nname: speckit-plan\n---\n", encoding="utf-8")
+
+    profile_skills = tmp_path / "hh" / "skills"
+    profile_skills.mkdir(parents=True)
+    monkeypatch.setattr(Path, "home", lambda: home)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hh"))
+
+    assert plugin_api._sync_legacy_skills() == ["speckit-plan"]
+    assert (profile_skills / "speckit-plan" / "SKILL.md").is_file()
+    assert plugin_api._sync_legacy_skills() == [], "a second run must not recopy"

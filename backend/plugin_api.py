@@ -201,6 +201,39 @@ def write_file(payload: FileWrite) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
+def _sync_legacy_skills() -> list[str]:
+    """Copy skills the released CLI wrote to ``~/.hermes/skills`` where Hermes reads.
+
+    Upstream's HermesIntegration resolves ``~/.hermes/skills`` unconditionally, so
+    on Windows ``specify init --integration hermes`` can install where nothing
+    looks. The fork fixes the resolution; the released CLI on this machine does
+    not, so after init we move copies into the directory Hermes actually reads.
+    """
+    legacy = Path.home() / ".hermes" / "skills"
+    if not legacy.is_dir():
+        return []
+    dirs = _hermes_skills_dirs()
+    target = dirs[0] if dirs else legacy
+    try:
+        if target.resolve() == legacy.resolve():
+            return []
+    except OSError:
+        return []
+    copied: list[str] = []
+    for entry in legacy.iterdir():
+        if not entry.is_dir() or not entry.name.startswith("speckit-"):
+            continue
+        destination = target / entry.name
+        if destination.exists():
+            continue
+        try:
+            shutil.copytree(entry, destination)
+        except OSError:
+            continue
+        copied.append(entry.name)
+    return copied
+
+
 def _hermes_skills_dirs() -> list[Path]:
     """Every place this machine's Hermes may read skills from, most specific first.
 
@@ -553,6 +586,7 @@ def init_project(payload: InitRequest) -> dict[str, Any]:
         payload.integration or "hermes",
     ]
     result = _run_specify(args, root, 600)
+    result["skills_synced"] = _sync_legacy_skills() if result.get("ok") else []
     return {"already": False, **result}
 
 
