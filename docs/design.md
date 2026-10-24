@@ -136,6 +136,75 @@ plugin list at startup.
 
 ---
 
+## 4.1 Processes: what the pane renders
+
+Spec-kit is not one flow, and the pane must not pretend otherwise. It ships three
+independent entry points and makes adding a fourth a configuration exercise:
+
+| Process | Steps | Ships as | Artifacts |
+|---|---|---|---|
+| Spec-driven development | constitution, specify, plan, tasks, implement, converge (+ clarify, checklist, analyze as gates) | core | `.specify/specs/<feature>/` |
+| Bug fixing | assess, gate, fix, test | extension `bug` + workflow `bugfix` | `.specify/bugs/<slug>/` |
+| Idea assessment | intake, research, define, shape, decide, gate | extension `assess` + workflow `assess` | `.specify/assessments/<slug>/` |
+| Your own | whatever you define | extension commands + a workflow | wherever it writes |
+
+A workflow file is already the data model a GUI needs. Verified against
+`workflows/bugfix/workflow.yml`:
+
+```yaml
+inputs:
+  report:
+    type: string
+    required: true
+    prompt: "Bug report (pasted text or URL)"
+steps:
+  - id: assess
+    command: speckit.bug.assess
+    input:
+      args: "{{ inputs.report }} slug={{ inputs.slug }}"
+  - id: review-assessment
+    type: gate
+    message: "Review the assessment before any code change."
+    options: [approve, reject]
+    on_reject: abort
+```
+
+Inputs carry their own prompts, so they are a form. Command steps carry their own
+argument template, so they are a dispatch. Gates carry their own message, options
+and reject behaviour, so they are a review panel. None of that needs per-process
+code in the pane.
+
+`GET /processes` returns exactly this, discovered from
+`<project>/.specify/workflows/*/workflow.yml`. Each command step resolves to the
+skill the Hermes integration installs (`speckit.bug.assess` → `speckit-bug-assess`)
+and reports whether that skill is present, so a step can be disabled with a reason
+instead of failing when you click it. A malformed workflow is reported per file and
+does not take the pane down.
+
+What the pane does with it:
+
+1. Pick a process. The list is whatever is installed: SDD today, bug fixing and
+   assessment when their bundles are installed, plus anything you write.
+2. Fill the inputs the workflow declares.
+3. Run the steps in order. A command step dispatches its skill with the rendered
+   arguments; a gate stops and waits for approve or reject.
+4. Show the artifacts the process wrote.
+
+Rules that keep it expandable, in order of importance:
+
+- No process names in the pane. It renders installed workflows.
+- Gates are data. Options and `on_reject` come from the workflow, not from an `if`.
+- Artifacts are paths the process declares, not file names hard-coded in the UI.
+- Discovery goes through one route, so the CLI stays the source of truth for what
+  a workflow means.
+
+The CLI already exposes the same inventory for the terminal: `specify workflow
+list`, `specify extension list`, and `specify artifact` for commands, templates,
+scripts and hooks. The pane reads the workflow files directly today because it
+needs inputs and step bodies, which those listings do not include.
+
+---
+
 ## 5. Planned versus built
 
 The previous design described a different system. This is what survived contact.
@@ -245,16 +314,15 @@ Shipped:
 
 Next, in the order I would do them:
 
-1. Run the Python suite here. `pytest` is not installed in the Hermes venv, so the
-   backend tests, including the real mount test, have not run on this machine.
-2. Confirm the pane renders in a live app with the current build.
-3. Wizard completion → send to an agent session or bot group chat. The SDK surface is
-   verified (`host.composer.submit`, `host.navigate`); the wiring is not written.
-   Skill invocation, once it exists, is `hermes chat -Q -q "<query>" -s speckit-<skill>`.
-4. Implement button: dispatch a task to an agent from the task step, then read the
-   result back into the row.
-5. Plan canvas: a `plan.md` surface carrying the tech choices made in the wizard.
-6. Workflow runner: drive `workflows/hermes-desktop/workflow.yml` from the pane.
+1. Confirm the pane renders in a live app with the current build.
+2. Install the ten `speckit-*` skills into the home Hermes reads, so a dispatch has
+   a target. Until that is done every command step reports `skill_installed: false`.
+3. Rebuild the pane around `GET /processes`: process picker, input form built from
+   the workflow's `inputs`, step runner that dispatches command steps and stops at
+   gates.
+4. Artifact viewer for the run in progress, driven by the paths the process writes.
+5. Keep the three authoring editors as an alternative path for SDD, since writing a
+   spec by hand in a form beats a chat round trip for the first step.
 
 Deliberately out, and why:
 
@@ -319,10 +387,12 @@ SDK export. `Fragment` comes from React.
 | The deployed plugin matches the build | `cmp desktop/plugin.js ~/.hermes/desktop-plugins/spec-kit-hermes/plugin.js` | identical, 65,162 bytes |
 | The config edit adds one line, not a duplicate key | feed the live `config.yaml` through `config-enable.mjs` | 1 line added, `plugins.enabled` contains `spec-kit-hermes` once, file parses |
 | Backend half is installed | `ls ~/.hermes/plugins/spec-kit-hermes/dashboard/` | `plugin_api.py` (10,031 bytes), `manifest.json`, `index.js` |
+| Backend tests pass | `python -m pytest backend/tests -q` | 27 passed (route, mount, file I/O, process discovery) |
+| Process discovery is data-driven | `backend/tests/test_processes.py` | a bugfix workflow becomes inputs + command steps + a gate; skills resolved and flagged |
 | The doc pair cannot drift | `npm run docs` | HTML regenerated from this file, 13 sections |
 
-Not verified: the Python backend suite (no `pytest` in the venv) and the pane
-rendering in a live app. Both are next steps, not claims.
+Not verified: the pane rendering in a live app. That needs the desktop app open,
+which is the next step, not a claim.
 
 ---
 

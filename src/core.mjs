@@ -711,3 +711,84 @@ export function suggestStep({ spec, constitution, tasks }) {
   }
   return 'spec'
 }
+
+// ---------------------------------------------------------------------------
+// Dispatch
+// ---------------------------------------------------------------------------
+
+export const DISPATCH_ACTIONS = Object.freeze(['plan', 'implement'])
+
+function projectPath(project, rel) {
+  return `${String(project).replace(/[\\/]+$/, '')}/.specify/${rel}`
+}
+
+/**
+ * Build the message handed to an agent session. The pane never pastes file
+ * contents: the agent reads the files itself, so the on-disk copy stays the
+ * source of truth and the prompt stays short.
+ *
+ * Throws when the request cannot be honoured, so the caller can disable the
+ * button instead of sending a message that asks for the impossible.
+ */
+export function dispatchMessage(action, { project, feature, spec, constitution, tasks } = {}) {
+  if (!DISPATCH_ACTIONS.includes(action)) {
+    throw new Error(`unknown dispatch action: ${JSON.stringify(action)}`)
+  }
+  if (!project || !String(project).trim()) {
+    throw new Error('project root is required')
+  }
+
+  const files = {
+    spec: projectPath(project, FILE_PATHS.spec),
+    constitution: projectPath(project, FILE_PATHS.constitution),
+    tasks: projectPath(project, FILE_PATHS.tasks)
+  }
+  const name = String(feature || spec?.title || tasks?.title || '').trim() || 'this feature'
+
+  if (action === 'plan') {
+    const ratified = Boolean(
+      constitution && !constitution.empty && (constitution.answers?.principles || []).length >= 3
+    )
+    if (!ratified) {
+      throw new Error('constitution is not ratified')
+    }
+    const count = (spec?.requirements || []).length
+    if (!count) {
+      throw new Error('no requirements in the spec')
+    }
+    const planPath = projectPath(project, 'plan.md')
+    const prompt = [
+      `Work in ${project}.`,
+      '',
+      'Read these first:',
+      `- ${files.spec}`,
+      `- ${files.constitution}`,
+      '',
+      `Write ${planPath} for ${name}. Cover the technical approach, the data it touches,`,
+      `the contracts if any, and how each of the ${count} requirement${count === 1 ? '' : 's'} gets tested.`,
+      `Every choice has to survive the principles in the constitution.`,
+      '',
+      `Do not change ${files.spec}. If a requirement is ambiguous, ask instead of guessing.`
+    ].join('\n')
+    return { action, title: `Plan: ${name}`, prompt, files }
+  }
+
+  const open = (tasks?.tasks || []).filter(task => !task.done)
+  if (!open.length) {
+    throw new Error('no open tasks to implement')
+  }
+  const next = open[0]
+  const label = next.id ? `${next.id}: ${next.title}` : next.title
+  const story = next.story ? ` It belongs to ${next.story} in ${files.spec}.` : ''
+  const prompt = [
+    `Work in ${project}.`,
+    '',
+    `Implement this task from ${files.tasks}:`,
+    `- ${label}`,
+    '',
+    `Read ${files.spec} for the requirement and its acceptance criteria.${story}`,
+    'When it works and the tests for it pass, change its line in the task file to `- [x]`',
+    'and nothing else. Do not tick a task you did not finish, and do not touch other tasks.'
+  ].join('\n')
+  return { action, title: `Implement ${label}`, prompt, files }
+}

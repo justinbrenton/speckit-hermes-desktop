@@ -53,7 +53,7 @@
 </style>
 </head>
 <body>
-<nav class="toc"><p class="toc-title">Contents</p><ol><li><a href="#1-what-this-is">What this is</a></li><li><a href="#2-why-not-just-install-spec-kit-and-use-the-cli">Why not just install spec-kit and use the CLI</a></li><li><a href="#3-what-exists-today">What exists today</a></li><li><a href="#4-how-a-session-actually-runs">How a session actually runs</a></li><li><a href="#5-planned-versus-built">Planned versus built</a></li><li><a href="#6-repository-layout">Repository layout</a></li><li><a href="#7-what-ships-in-the-fork">What ships in the fork</a></li><li><a href="#8-scope">Scope</a></li><li><a href="#9-sdk-surface">SDK surface</a></li><li><a href="#10-verification">Verification</a></li><li><a href="#11-the-config-corruption-and-what-changed-because-of-it">The config corruption, and what changed because of it</a></li><li><a href="#12-upstream-maintenance">Upstream maintenance</a></li><li><a href="#13-other-harnesses">Other harnesses</a></li><li><a href="#14-risks">Risks</a></li><li><a href="#15-decisions-and-open-questions">Decisions and open questions</a></li></ol></nav>
+<nav class="toc"><p class="toc-title">Contents</p><ol><li><a href="#1-what-this-is">What this is</a></li><li><a href="#2-why-not-just-install-spec-kit-and-use-the-cli">Why not just install spec-kit and use the CLI</a></li><li><a href="#3-what-exists-today">What exists today</a></li><li><a href="#4-how-a-session-actually-runs">How a session actually runs</a></li><li><a href="#41-processes-what-the-pane-renders">1 Processes: what the pane renders</a></li><li><a href="#5-planned-versus-built">Planned versus built</a></li><li><a href="#6-repository-layout">Repository layout</a></li><li><a href="#7-what-ships-in-the-fork">What ships in the fork</a></li><li><a href="#8-scope">Scope</a></li><li><a href="#9-sdk-surface">SDK surface</a></li><li><a href="#10-verification">Verification</a></li><li><a href="#11-the-config-corruption-and-what-changed-because-of-it">The config corruption, and what changed because of it</a></li><li><a href="#12-upstream-maintenance">Upstream maintenance</a></li><li><a href="#13-other-harnesses">Other harnesses</a></li><li><a href="#14-risks">Risks</a></li><li><a href="#15-decisions-and-open-questions">Decisions and open questions</a></li></ol></nav>
 <h1 id="spec-kit-for-hermes-desktop">Spec-Kit for Hermes Desktop</h1>
 <p>Status: working implementation, pre-release. This document describes what exists, what it does, and what is deliberately not built yet. Every claim in the &quot;Verification&quot; section came from a command that ran on this machine.</p>
 <p>Last updated: 2026-10-24.</p>
@@ -129,6 +129,57 @@ edit at the same moment raises the conflict banner (Keep mine / Take theirs).</c
 <p><code>tasks.md</code> markers are parsed and rendered: a <code>[US#n]</code> tag becomes a story label and a <code>[P:tag]</code> heading becomes a parallel-group badge. Serialising writes them back.</p>
 <p>Kanban work happens inside the Python half, not from the renderer. <code>kanban/sync</code> opens the board through <code>hermes_cli.kanban_db</code> and calls <code>create_task</code>, reusing existing cards by idempotency key <code>speckit:&lt;project hash&gt;:&lt;FR-n&gt;</code>, so pressing the button twice does not duplicate anything. <code>kanban/links</code> reads <code>list_tasks</code> and reports each requirement's card status. The 16-method JSON-RPC surface described in the previous draft is not what this uses.</p>
 <p>Reload behaviour, learned the hard way: editing <code>plugin.js</code> for a plugin the app has already loaded is picked up. A brand new plugin directory is not. That needs a full quit of every <code>Hermes.exe</code> and a restart, because the loader caches the discovered plugin list at startup.</p>
+<hr>
+<h2 id="41-processes-what-the-pane-renders">4.1 Processes: what the pane renders</h2>
+<p>Spec-kit is not one flow, and the pane must not pretend otherwise. It ships three independent entry points and makes adding a fourth a configuration exercise:</p>
+<div class="table-wrap"><table>
+<thead><tr><th>Process</th><th>Steps</th><th>Ships as</th><th>Artifacts</th></tr></thead>
+<tbody>
+<tr><td>Spec-driven development</td><td>constitution, specify, plan, tasks, implement, converge (+ clarify, checklist, analyze as gates)</td><td>core</td><td><code>.specify/specs/&lt;feature&gt;/</code></td></tr>
+<tr><td>Bug fixing</td><td>assess, gate, fix, test</td><td>extension <code>bug</code> + workflow <code>bugfix</code></td><td><code>.specify/bugs/&lt;slug&gt;/</code></td></tr>
+<tr><td>Idea assessment</td><td>intake, research, define, shape, decide, gate</td><td>extension <code>assess</code> + workflow <code>assess</code></td><td><code>.specify/assessments/&lt;slug&gt;/</code></td></tr>
+<tr><td>Your own</td><td>whatever you define</td><td>extension commands + a workflow</td><td>wherever it writes</td></tr>
+</tbody></table></div>
+<p>A workflow file is already the data model a GUI needs. Verified against <code>workflows/bugfix/workflow.yml</code>:</p>
+<pre><code class="language-yaml">inputs:
+  report:
+    type: string
+    required: true
+    prompt: &quot;Bug report (pasted text or URL)&quot;
+steps:
+  - id: assess
+    command: speckit.bug.assess
+    input:
+      args: &quot;{{ inputs.report }} slug={{ inputs.slug }}&quot;
+  - id: review-assessment
+    type: gate
+    message: &quot;Review the assessment before any code change.&quot;
+    options: [approve, reject]
+    on_reject: abort</code></pre>
+<p>Inputs carry their own prompts, so they are a form. Command steps carry their own argument template, so they are a dispatch. Gates carry their own message, options and reject behaviour, so they are a review panel. None of that needs per-process code in the pane.</p>
+<p><code>GET /processes</code> returns exactly this, discovered from <code>&lt;project&gt;/.specify/workflows/*/workflow.yml</code>. Each command step resolves to the skill the Hermes integration installs (<code>speckit.bug.assess</code> → <code>speckit-bug-assess</code>) and reports whether that skill is present, so a step can be disabled with a reason instead of failing when you click it. A malformed workflow is reported per file and does not take the pane down.</p>
+<p>What the pane does with it:</p>
+<ol>
+<li>Pick a process. The list is whatever is installed: SDD today, bug fixing and</li>
+</ol>
+<p>assessment when their bundles are installed, plus anything you write.</p>
+<ol>
+<li>Fill the inputs the workflow declares.</li>
+<li>Run the steps in order. A command step dispatches its skill with the rendered</li>
+</ol>
+<p>arguments; a gate stops and waits for approve or reject.</p>
+<ol>
+<li>Show the artifacts the process wrote.</li>
+</ol>
+<p>Rules that keep it expandable, in order of importance:</p>
+<ul>
+<li>No process names in the pane. It renders installed workflows.</li>
+<li>Gates are data. Options and <code>on_reject</code> come from the workflow, not from an <code>if</code>.</li>
+<li>Artifacts are paths the process declares, not file names hard-coded in the UI.</li>
+<li>Discovery goes through one route, so the CLI stays the source of truth for what</li>
+</ul>
+<p>a workflow means.</p>
+<p>The CLI already exposes the same inventory for the terminal: <code>specify workflow list</code>, <code>specify extension list</code>, and <code>specify artifact</code> for commands, templates, scripts and hooks. The pane reads the workflow files directly today because it needs inputs and step bodies, which those listings do not include.</p>
 <hr>
 <h2 id="5-planned-versus-built">5. Planned versus built</h2>
 <p>The previous design described a different system. This is what survived contact.</p>
@@ -206,22 +257,19 @@ specify bundle add    --dev ./bundles/hermes-desktop</code></pre>
 </ul>
 <p>Next, in the order I would do them:</p>
 <ol>
-<li>Run the Python suite here. <code>pytest</code> is not installed in the Hermes venv, so the</li>
-</ol>
-<p>backend tests, including the real mount test, have not run on this machine.</p>
-<ol>
 <li>Confirm the pane renders in a live app with the current build.</li>
-<li>Wizard completion → send to an agent session or bot group chat. The SDK surface is</li>
+<li>Install the ten <code>speckit-*</code> skills into the home Hermes reads, so a dispatch has</li>
 </ol>
-<p>verified (<code>host.composer.submit</code>, <code>host.navigate</code>); the wiring is not written. Skill invocation, once it exists, is <code>hermes chat -Q -q &quot;&lt;query&gt;&quot; -s speckit-&lt;skill&gt;</code>.</p>
+<p>a target. Until that is done every command step reports <code>skill_installed: false</code>.</p>
 <ol>
-<li>Implement button: dispatch a task to an agent from the task step, then read the</li>
+<li>Rebuild the pane around <code>GET /processes</code>: process picker, input form built from</li>
 </ol>
-<p>result back into the row.</p>
+<p>the workflow's <code>inputs</code>, step runner that dispatches command steps and stops at gates.</p>
 <ol>
-<li>Plan canvas: a <code>plan.md</code> surface carrying the tech choices made in the wizard.</li>
-<li>Workflow runner: drive <code>workflows/hermes-desktop/workflow.yml</code> from the pane.</li>
+<li>Artifact viewer for the run in progress, driven by the paths the process writes.</li>
+<li>Keep the three authoring editors as an alternative path for SDD, since writing a</li>
 </ol>
+<p>spec by hand in a form beats a chat round trip for the first step.</p>
 <p>Deliberately out, and why:</p>
 <div class="table-wrap"><table>
 <thead><tr><th>Not doing</th><th>Reason</th></tr></thead>
@@ -271,9 +319,11 @@ specify bundle add    --dev ./bundles/hermes-desktop</code></pre>
 <tr><td>The deployed plugin matches the build</td><td><code>cmp desktop/plugin.js ~/.hermes/desktop-plugins/spec-kit-hermes/plugin.js</code></td><td>identical, 65,162 bytes</td></tr>
 <tr><td>The config edit adds one line, not a duplicate key</td><td>feed the live <code>config.yaml</code> through <code>config-enable.mjs</code></td><td>1 line added, <code>plugins.enabled</code> contains <code>spec-kit-hermes</code> once, file parses</td></tr>
 <tr><td>Backend half is installed</td><td><code>ls ~/.hermes/plugins/spec-kit-hermes/dashboard/</code></td><td><code>plugin_api.py</code> (10,031 bytes), <code>manifest.json</code>, <code>index.js</code></td></tr>
+<tr><td>Backend tests pass</td><td><code>python -m pytest backend/tests -q</code></td><td>27 passed (route, mount, file I/O, process discovery)</td></tr>
+<tr><td>Process discovery is data-driven</td><td><code>backend/tests/test_processes.py</code></td><td>a bugfix workflow becomes inputs + command steps + a gate; skills resolved and flagged</td></tr>
 <tr><td>The doc pair cannot drift</td><td><code>npm run docs</code></td><td>HTML regenerated from this file, 13 sections</td></tr>
 </tbody></table></div>
-<p>Not verified: the Python backend suite (no <code>pytest</code> in the venv) and the pane rendering in a live app. Both are next steps, not claims.</p>
+<p>Not verified: the pane rendering in a live app. That needs the desktop app open, which is the next step, not a claim.</p>
 <hr>
 <h2 id="11-the-config-corruption-and-what-changed-because-of-it">11. The config corruption, and what changed because of it</h2>
 <p>On 2026-10-24 Hermes refused to start with <code>DuplicateKeyError: found duplicate key &quot;enabled&quot;</code>. The cause was <code>scripts/config-enable.mjs</code>. It edits <code>plugins.enabled</code> by text surgery, and its block scan treated any unindented line as the end of the <code>plugins:</code> mapping. Real configs put a column-0 section banner between <code>plugins:</code> and its keys, so the scan stopped early, failed to find the existing list, and spliced a second <code>enabled:</code> in directly under <code>plugins:</code>.</p>

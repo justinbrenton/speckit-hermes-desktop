@@ -193,6 +193,140 @@ def write_file(payload: FileWrite) -> dict[str, Any]:
 
 
 # ---------------------------------------------------------------------------
+# processes
+# ---------------------------------------------------------------------------
+
+
+def _hermes_skills_dir() -> Path:
+    """Where Hermes reads skills: HERMES_HOME, else the Windows default, else ~/.hermes."""
+    home = os.environ.get("HERMES_HOME")
+    if home:
+        return Path(home).expanduser() / "skills"
+    local = os.environ.get("LOCALAPPDATA")
+    if os.name == "nt" and local:
+        candidate = Path(local) / "hermes"
+        if candidate.is_dir():
+            return candidate / "skills"
+    return Path.home() / ".hermes" / "skills"
+
+
+def _load_yaml(path: Path) -> Any:
+    text = path.read_text(encoding="utf-8")
+    try:
+        from ruamel.yaml import YAML
+
+        return YAML(typ="safe").load(text)
+    except ImportError:
+        import yaml
+
+        return yaml.safe_load(text)
+
+
+def _skill_for(command: str) -> str:
+    """spec-kit command name -> the Hermes skill the integration installs.
+
+    ``speckit.bug.assess`` becomes ``speckit-bug-assess`` (the integration names
+    skills from the command file stem with dots replaced by dashes).
+    """
+    name = command[len("speckit.") :] if command.startswith("speckit.") else command
+    return "speckit-" + name.replace(".", "-")
+
+
+@router.get("/processes")
+def list_processes(cwd: str = Query(..., description="Absolute project directory")) -> dict[str, Any]:
+    """Installed processes, shaped the way the pane renders them.
+
+    Nothing here is hard-coded. Every workflow under ``<cwd>/.specify/workflows``
+    becomes a process, its ``inputs`` become a form and its ``steps`` become the
+    runner: command steps dispatch a skill, gate steps pause for a human. Install
+    a bundle or an extension and a new process appears with no pane change.
+    """
+    root = _project_root(cwd)
+    workflows_dir = root / ".specify" / "workflows"
+    skills_dir = _hermes_skills_dir()
+    installed = {entry.name for entry in skills_dir.iterdir()} if skills_dir.is_dir() else set()
+
+    processes: list[dict[str, Any]] = []
+    errors: list[dict[str, str]] = []
+
+    for wf_file in sorted(workflows_dir.glob("*/workflow.yml")):
+        try:
+            data = _load_yaml(wf_file) or {}
+        except Exception as exc:  # a broken workflow must not take the pane down
+            errors.append({"file": str(wf_file), "error": str(exc)})
+            continue
+        if not isinstance(data, dict):
+            errors.append({"file": str(wf_file), "error": "not a mapping"})
+            continue
+
+        wf = data.get("workflow") or {}
+        inputs = []
+        for name, spec in (data.get("inputs") or {}).items():
+            spec = spec or {}
+            inputs.append(
+                {
+                    "name": name,
+                    "type": spec.get("type", "string"),
+                    "required": bool(spec.get("required", False)),
+                    "default": spec.get("default"),
+                    "prompt": spec.get("prompt", name),
+                }
+            )
+
+        steps = []
+        for raw in data.get("steps") or []:
+            raw = raw or {}
+            kind = raw.get("type", "command")
+            step: dict[str, Any] = {
+                "id": raw.get("id", ""),
+                "type": kind,
+                "depends_on": raw.get("needs") or raw.get("depends_on") or [],
+            }
+            if kind == "command":
+                command = raw.get("command", "")
+                skill = _skill_for(command)
+                step.update(
+                    {
+                        "command": command,
+                        "args": (raw.get("input") or {}).get("args", ""),
+                        "skill": skill,
+                        "skill_installed": skill in installed,
+                    }
+                )
+            else:
+                step.update(
+                    {
+                        "message": raw.get("message", ""),
+                        "options": raw.get("options", []),
+                        "on_reject": raw.get("on_reject"),
+                    }
+                )
+            steps.append(step)
+
+        command_steps = [step for step in steps if step["type"] == "command"]
+        processes.append(
+            {
+                "id": wf.get("id") or wf_file.parent.name,
+                "name": wf.get("name", ""),
+                "version": wf.get("version", ""),
+                "description": wf.get("description", ""),
+                "source": str(wf_file),
+                "inputs": inputs,
+                "steps": steps,
+                "ready": bool(command_steps) and all(s["skill_installed"] for s in command_steps),
+            }
+        )
+
+    return {
+        "cwd": str(root),
+        "workflows_dir": str(workflows_dir),
+        "skills_dir": str(skills_dir),
+        "processes": processes,
+        "errors": errors,
+    }
+
+
+# ---------------------------------------------------------------------------
 # kanban
 # ---------------------------------------------------------------------------
 

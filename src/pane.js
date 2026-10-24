@@ -530,7 +530,7 @@ function ConstitutionStep({ constitution, wizard, setWizard, onRatify }) {
 // step 3 — tasks
 // ---------------------------------------------------------------------------
 
-function TasksStep({ tasks, spec, links, busy, onEdit, onCreate, onGenerate, onSyncKanban, onPullKanban }) {
+function TasksStep({ tasks, spec, links, busy, onEdit, onCreate, onGenerate, onSyncKanban, onPullKanban, onDispatch }) {
   const linkByStory = useMemo(() => {
     const map = new Map()
     for (const link of links || []) {
@@ -559,7 +559,8 @@ function TasksStep({ tasks, spec, links, busy, onEdit, onCreate, onGenerate, onS
         jsxs('div', { className: 'flex items-center gap-1', children: [
           jsx(Button, { size: 'xs', variant: 'secondary', disabled: busy, onClick: onGenerate, children: 'From spec' }),
           jsx(Button, { size: 'xs', variant: 'secondary', disabled: busy, onClick: onSyncKanban, children: 'To Kanban' }),
-          jsx(Button, { size: 'xs', variant: 'ghost', disabled: busy, onClick: onPullKanban, children: 'From Kanban' })
+          jsx(Button, { size: 'xs', variant: 'ghost', disabled: busy, onClick: onPullKanban, children: 'From Kanban' }),
+          jsx(Button, { size: 'xs', variant: 'secondary', disabled: busy || !tasks.tasks.some(task => !task.done), onClick: onDispatch, children: 'Implement' })
         ] })
       ] }),
 
@@ -928,6 +929,38 @@ function SpecKitPane() {
     }
   }, [models, touch])
 
+  // Hand a task to the agent. The message carries paths, not file contents: the
+  // agent reads .specify/ itself, so the files stay the source of truth. A
+  // non-empty draft blocks the send rather than being overwritten.
+  const dispatchToAgent = useCallback(
+    async action => {
+      setNotice('')
+      try {
+        const message = dispatchMessage(action, {
+          project: cwdRef.current,
+          spec: models.spec,
+          constitution: models.constitution,
+          tasks: models.tasks
+        })
+        const draft = await host.composer.getDraft(null)
+        if (draft && String(draft).trim()) {
+          setNotice('The chat composer already has text. Clear it, then send again.')
+          return
+        }
+        const accepted = await host.composer.setDraft(null, message.prompt)
+        if (accepted === false) {
+          setNotice('Could not write to the chat composer.')
+          return
+        }
+        host.composer.submit()
+        setNotice(`${message.title} sent to the agent.`)
+      } catch (err) {
+        setNotice(err instanceof Error ? err.message : 'Dispatch failed.')
+      }
+    },
+    [models]
+  )
+
   const ratify = useCallback(
     answers => {
       const content = serializeConstitution(answers, { date: today() })
@@ -1072,7 +1105,8 @@ function SpecKitPane() {
                   onCreate: () => createFile(TASKS_REL),
                   onGenerate: generateFromSpec,
                   onSyncKanban: syncKanban,
-                  onPullKanban: pullKanban
+                  onPullKanban: pullKanban,
+                  onDispatch: () => dispatchToAgent('implement')
                 })
       }),
 

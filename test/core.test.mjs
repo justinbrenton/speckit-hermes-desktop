@@ -12,6 +12,7 @@ import {
   createDebouncer,
   decideSync,
   deriveTasksFromSpec,
+  dispatchMessage,
   parseConstitution,
   parseRestError,
   parseSpec,
@@ -369,4 +370,94 @@ test('paths match the backend allowlist', () => {
   assert.equal(FILE_PATHS.constitution, 'memory/constitution.md')
   assert.equal(CONSTITUTION_STEPS.length, 5)
   assert.equal(CONSTITUTION_STEPS.at(-1).id, 'ratify')
+})
+
+// --- dispatch --------------------------------------------------------------
+
+const PROJECT = 'C:/work/calendar'
+const DISPATCH_SPEC = parseSpec(`# Feature Specification: Calendar
+
+## Functional Requirements
+
+### FR-1: Create an event
+
+An event has a title, a start and an end.
+
+**Acceptance criteria**
+- [ ] saving an event stores every field
+- [ ] an end before the start is rejected
+
+## Clarifications
+
+> _No open clarifications._
+`)
+const DISPATCH_TASKS = parseTasks(`# Task List: Calendar
+
+## Tasks
+
+### Sequential
+
+- [ ] **T-1**: wire the event form
+- [x] **T-2**: add the storage schema [US#FR-1]
+- [ ] **T-3**: validate the date range [US#FR-1]
+`)
+
+test('dispatch refuses an unknown action', () => {
+  assert.throws(() => dispatchMessage('deploy', { project: PROJECT }), /unknown dispatch action/)
+})
+
+test('dispatch refuses a missing project root', () => {
+  assert.throws(() => dispatchMessage('plan', { spec: DISPATCH_SPEC }), /project root is required/)
+})
+
+test('plan dispatch needs a ratified constitution and a requirement', () => {
+  assert.throws(
+    () => dispatchMessage('plan', { project: PROJECT, spec: parseSpec(''), constitution: parseConstitution('') }),
+    /constitution is not ratified/,
+  )
+  const ratified = { empty: false, answers: { principles: ['one', 'two', 'three'] } }
+  assert.throws(
+    () => dispatchMessage('plan', { project: PROJECT, spec: parseSpec(''), constitution: ratified }),
+    /no requirements/,
+  )
+})
+
+test('plan dispatch names the files the agent has to read', () => {
+  const ratified = { empty: false, answers: { principles: ['one', 'two', 'three'] } }
+  const { action, title, prompt, files } = dispatchMessage('plan', {
+    project: PROJECT,
+    spec: DISPATCH_SPEC,
+    constitution: ratified,
+  })
+  assert.equal(action, 'plan')
+  assert.equal(title, 'Plan: Calendar')
+  assert.match(prompt, /C:\/work\/calendar/)
+  assert.match(prompt, /\.specify\/spec\.md/)
+  assert.match(prompt, /\.specify\/memory\/constitution\.md/)
+  assert.match(prompt, /plan\.md/)
+  assert.match(prompt, /1 requirement\b/)
+  assert.equal(files.spec, 'C:/work/calendar/.specify/spec.md')
+})
+
+test('implement dispatch picks the first open task and asks for it to be ticked', () => {
+  const { action, title, prompt } = dispatchMessage('implement', { project: PROJECT, spec: DISPATCH_SPEC, tasks: DISPATCH_TASKS })
+  assert.equal(action, 'implement')
+  assert.match(title, /T-1/)
+  assert.match(prompt, /wire the event form/)
+  assert.doesNotMatch(prompt, /validate the date range/, 'only one task per dispatch')
+  assert.match(prompt, /\[x\]/)
+})
+
+test('implement dispatch refuses when nothing is open', () => {
+  const done = parseTasks('# Task List: X\n\n## Tasks\n\n### Sequential\n\n- [x] **T-1**: shipped\n')
+  assert.throws(
+    () => dispatchMessage('implement', { project: PROJECT, tasks: done }),
+    /no open tasks/,
+  )
+})
+
+test('dispatch output is deterministic', () => {
+  const a = dispatchMessage('implement', { project: PROJECT, spec: DISPATCH_SPEC, tasks: DISPATCH_TASKS })
+  const b = dispatchMessage('implement', { project: PROJECT, spec: DISPATCH_SPEC, tasks: DISPATCH_TASKS })
+  assert.equal(a.prompt, b.prompt)
 })
