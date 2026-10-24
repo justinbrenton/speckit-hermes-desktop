@@ -132,7 +132,7 @@ def test_ready_false_until_the_skills_exist(client, tmp_path, monkeypatch):
 
     body = client.get(f"{PREFIX}/processes", params={"cwd": str(root)}).json()
     assert body["processes"][0]["ready"] is False
-    assert body["skills_dir"] == str(home / "skills")
+    assert str(home / "skills") in body["skills_dirs"]
 
     for name in ("speckit-bug-assess", "speckit-bug-fix"):
         (home / "skills" / name).mkdir()

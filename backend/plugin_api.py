@@ -27,6 +27,9 @@ from __future__ import annotations
 
 import hashlib
 import os
+import re
+import shutil
+import subprocess
 import tempfile
 from pathlib import Path
 from typing import Any, Optional
@@ -197,17 +200,40 @@ def write_file(payload: FileWrite) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 
-def _hermes_skills_dir() -> Path:
-    """Where Hermes reads skills: HERMES_HOME, else the Windows default, else ~/.hermes."""
+def _hermes_skills_dirs() -> list[Path]:
+    """Every place this machine's Hermes may read skills from, most specific first.
+
+    ``get_hermes_home()`` is a context override, then ``HERMES_HOME``, then the
+    platform default — so a named profile reads ``profiles/<name>/skills`` while
+    the default profile reads ``%LOCALAPPDATA%/hermes/skills`` on Windows. A skill
+    installed in either counts as installed.
+    """
+    candidates: list[Path] = []
     home = os.environ.get("HERMES_HOME")
     if home:
-        return Path(home).expanduser() / "skills"
+        candidates.append(Path(home).expanduser() / "skills")
     local = os.environ.get("LOCALAPPDATA")
-    if os.name == "nt" and local:
-        candidate = Path(local) / "hermes"
-        if candidate.is_dir():
-            return candidate / "skills"
-    return Path.home() / ".hermes" / "skills"
+    if local:
+        candidates.append(Path(local) / "hermes" / "skills")
+    candidates.append(Path.home() / ".hermes" / "skills")
+
+    unique: list[Path] = []
+    seen: set[str] = set()
+    for path in candidates:
+        key = str(path).lower()
+        if key not in seen:
+            seen.add(key)
+            unique.append(path)
+    return unique
+
+
+def _installed_skills() -> tuple[set[str], list[Path]]:
+    dirs = _hermes_skills_dirs()
+    found: set[str] = set()
+    for path in dirs:
+        if path.is_dir():
+            found.update(entry.name for entry in path.iterdir() if entry.is_dir())
+    return found, dirs
 
 
 def _load_yaml(path: Path) -> Any:
@@ -243,8 +269,7 @@ def list_processes(cwd: str = Query(..., description="Absolute project directory
     """
     root = _project_root(cwd)
     workflows_dir = root / ".specify" / "workflows"
-    skills_dir = _hermes_skills_dir()
-    installed = {entry.name for entry in skills_dir.iterdir()} if skills_dir.is_dir() else set()
+    installed, skill_dirs = _installed_skills()
 
     processes: list[dict[str, Any]] = []
     errors: list[dict[str, str]] = []
@@ -320,9 +345,143 @@ def list_processes(cwd: str = Query(..., description="Absolute project directory
     return {
         "cwd": str(root),
         "workflows_dir": str(workflows_dir),
-        "skills_dir": str(skills_dir),
+        "skills_dirs": [str(path) for path in skill_dirs],
         "processes": processes,
         "errors": errors,
+    }
+
+
+# ---------------------------------------------------------------------------
+# running a step
+# ---------------------------------------------------------------------------
+
+INPUT_RE = re.compile(r"\{\{\s*inputs\.([A-Za-z0-9_.-]+)\s*\}\}")
+
+
+def _render_args(template: str, values: dict[str, Any]) -> str:
+    """Fill ``{{ inputs.x }}`` from the workflow's inputs. Unknown keys render empty."""
+
+    def replace(match: re.Match[str]) -> str:
+        value = values.get(match.group(1).strip())
+        return "" if value is None else str(value)
+
+    return INPUT_RE.sub(replace, template or "")
+
+
+def _hermes_cli() -> str:
+    explicit = os.environ.get("HERMES_CLI")
+    if explicit and Path(explicit).exists():
+        return explicit
+    found = shutil.which("hermes")
+    if found:
+        return found
+    local = os.environ.get("LOCALAPPDATA")
+    if local:
+        candidate = Path(local) / "hermes" / "bin" / "hermes.exe"
+        if candidate.exists():
+            return str(candidate)
+    raise HTTPException(status_code=503, detail="hermes CLI not found; set HERMES_CLI")
+
+
+def _spawn_hermes(
+    prompt: str, skill: str, cwd: Path, model: Optional[str], timeout: int
+) -> dict[str, Any]:
+    """Dispatch one workflow step the way the Hermes integration documents it.
+
+    ``hermes chat -Q`` answers once and exits; the skill is selected with ``-s``
+    and the step's rendered arguments are the query. The query travels through a
+    temp file (``--query-file``) because it carries arbitrary user text and the
+    Windows shells re-quote it.
+    """
+    exe = _hermes_cli()
+    handle, query_path = tempfile.mkstemp(prefix="speckit-step-", suffix=".txt")
+    try:
+        with os.fdopen(handle, "w", encoding="utf-8") as fh:
+            fh.write(prompt)
+        argv = [exe, "chat", "-Q", "--query-file", query_path, "-s", skill, "--in", str(cwd)]
+        if model:
+            argv += ["-m", model]
+        completed = subprocess.run(
+            argv, cwd=str(cwd), capture_output=True, text=True, timeout=timeout
+        )
+        return {
+            "ok": completed.returncode == 0,
+            "exit_code": completed.returncode,
+            "stdout": completed.stdout,
+            "stderr": completed.stderr,
+            "argv": [*argv[:3], "<query-file>", *argv[4:]],
+        }
+    except subprocess.TimeoutExpired:
+        return {
+            "ok": False,
+            "exit_code": None,
+            "stdout": "",
+            "stderr": f"timed out after {timeout}s",
+            "argv": [],
+        }
+    finally:
+        os.unlink(query_path)
+
+
+class RunStepRequest(BaseModel):
+    cwd: str
+    process: str
+    step: str
+    inputs: dict[str, Any] = {}
+    model: Optional[str] = None
+    timeout: int = 600
+
+
+@router.post("/run")
+def run_step(payload: RunStepRequest) -> dict[str, Any]:
+    """Dispatch one command step of one process.
+
+    A gate step is refused here on purpose: gates are answered by a human, and
+    the pane posts nothing for them.
+    """
+    root = _project_root(payload.cwd)
+    wf_file = root / ".specify" / "workflows" / payload.process / "workflow.yml"
+    if not wf_file.is_file():
+        raise HTTPException(status_code=404, detail=f"no such process: {payload.process}")
+
+    data = _load_yaml(wf_file) or {}
+    raw_steps = data.get("steps") or []
+    raw = next((item for item in raw_steps if (item or {}).get("id") == payload.step), None)
+    if raw is None:
+        raise HTTPException(
+            status_code=404, detail=f"no such step in {payload.process}: {payload.step}"
+        )
+    if raw.get("type", "command") != "command":
+        raise HTTPException(
+            status_code=400,
+            detail=f"step {payload.step} is a {raw.get('type')} step, not a command",
+        )
+
+    declared = data.get("inputs") or {}
+    missing = [
+        name
+        for name, spec in declared.items()
+        if (spec or {}).get("required") and not str(payload.inputs.get(name) or "").strip()
+    ]
+    if missing:
+        raise HTTPException(status_code=400, detail={"missing_inputs": missing})
+
+    values = {name: (spec or {}).get("default") for name, spec in declared.items()}
+    values.update({key: value for key, value in payload.inputs.items() if value is not None})
+
+    command = raw.get("command", "")
+    skill = _skill_for(command)
+    prompt = _render_args((raw.get("input") or {}).get("args", ""), values)
+    result = _spawn_hermes(
+        prompt, skill, root, payload.model, max(1, min(payload.timeout, 3600))
+    )
+    return {
+        "process": payload.process,
+        "step": payload.step,
+        "command": command,
+        "skill": skill,
+        "prompt": prompt,
+        **result,
     }
 
 

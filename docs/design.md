@@ -198,6 +198,34 @@ Rules that keep it expandable, in order of importance:
 - Discovery goes through one route, so the CLI stays the source of truth for what
   a workflow means.
 
+### Dispatch
+
+The documented contract for this integration: workflow steps run `hermes chat -Q`,
+a slash-prefixed prompt selects a skill with `-s`, and the remaining text is the
+query. `POST /run` does exactly that and refuses gate steps, because a human
+answers those. The query travels through `--query-file` rather than `-q`: it
+carries the user's own words, and a Windows shell re-quotes a `-q` argument.
+
+Verified on this machine:
+
+```
+hermes chat -Q -q "Reply with exactly: SKILL-OK" -s speckit-specify
+-> SKILL-OK  (session_id: local-af99f0b5ec5f9626...)
+```
+
+### Where the skills go
+
+The docs say `~/.hermes/skills/`. On Windows the home is `%LOCALAPPDATA%\hermes`,
+and a profile session reads `<home>/profiles/<name>/skills`; `get_hermes_home()`
+resolves context override, then `HERMES_HOME`, then the platform default.
+
+Measured here, because this is where the integration silently failed: the ten
+skills were first installed to `C:\Users\<user>\.hermes\skills` and
+`hermes skills list` showed none of them. After copying them into
+`profiles/codie/skills` the listing showed ten and `-s speckit-specify` dispatched.
+So `/processes` checks every candidate directory and counts a skill as installed
+if any one of them has it.
+
 The CLI already exposes the same inventory for the terminal: `specify workflow
 list`, `specify extension list`, and `specify artifact` for commands, templates,
 scripts and hooks. The pane reads the workflow files directly today because it
