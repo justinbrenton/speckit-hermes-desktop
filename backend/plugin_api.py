@@ -430,6 +430,69 @@ def _await_new_run(root: Path, before: set[str], timeout: float = 25.0) -> Optio
     return None
 
 
+def _ensure_gate_verdicts(root: Path) -> list[str]:
+    """Give every gate a ``verdict_input`` so it can be answered from the pane.
+
+    spec-kit's stock workflow omits it, and a gate without it can only be
+    answered at an interactive prompt: ``specify workflow resume -i x=y`` is
+    ignored and the run pauses forever. Patched in place, once per project.
+    """
+    patched: list[str] = []
+    workflows = root / ".specify" / "workflows"
+    if not workflows.is_dir():
+        return patched
+    for file in sorted(workflows.glob("*/workflow.yml")):
+        try:
+            text = file.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        if "verdict_input:" in text:
+            continue
+        lines = text.splitlines()
+        out: list[str] = []
+        added: list[str] = []
+        index = 0
+        while index < len(lines):
+            line = lines[index]
+            out.append(line)
+            stripped = line.strip()
+            if stripped.startswith("- id:"):
+                step_id = stripped.split(":", 1)[1].strip().strip('"').strip("'")
+                block: list[str] = []
+                probe = index + 1
+                while probe < len(lines) and not lines[probe].strip().startswith("- id:"):
+                    block.append(lines[probe])
+                    probe += 1
+                is_gate = any(item.strip() == "type: gate" for item in block)
+                has_verdict = any(item.strip().startswith("verdict_input:") for item in block)
+                if is_gate and not has_verdict:
+                    key = "gate_" + step_id.replace("-", "_")
+                    for item in block:
+                        out.append(item)
+                        if item.strip().startswith("on_reject:"):
+                            out.append("    verdict_input: " + key)
+                    added.append(key)
+                    index = probe
+                    continue
+            index += 1
+        if not added:
+            continue
+        merged = "\n".join(out) + "\n"
+        if "\ninputs:" in merged or merged.startswith("inputs:"):
+            addition = "".join(
+                "  " + key + ":\n    type: string\n    required: false\n" for key in added
+            )
+            merged = merged.replace("\ninputs:\n", "\ninputs:\n" + addition, 1)
+        else:
+            addition = "inputs:\n" + "".join(
+                "  " + key + ":\n    type: string\n    required: false\n" for key in added
+            )
+            merged = merged.replace("\nsteps:", "\n" + addition + "\nsteps:", 1)
+        _write_text_atomic(file, merged)
+        patched.append(str(file.relative_to(root).as_posix()))
+    return patched
+
+
 def _start_job(args: list[str], cwd: Path, timeout: int | None = None) -> dict[str, Any]:
     """Spawn the CLI detached and return immediately.
 
@@ -662,13 +725,22 @@ def init_project(payload: InitRequest) -> dict[str, Any]:
     integration = re.sub(r"[^a-z0-9_-]", "", (payload.integration or "hermes").lower()) or "hermes"
     result = _run_specify(["init", "--here", "--integration", integration], root, 600)
     synced = _sync_legacy_skills()
+    patched = _ensure_gate_verdicts(root)
     return {
         "ok": result["ok"],
         "already": False,
         "cwd": str(root),
         "output": result.get("output", "") + result.get("stderr", ""),
         "skills_synced": synced,
+        "workflows_patched": patched,
     }
+
+
+@router.post("/repair-workflows")
+def repair_workflows(payload: InitRequest) -> dict[str, Any]:
+    """Add missing gate verdict inputs to an existing project's workflows."""
+    root = _project_root(payload.cwd)
+    return {"cwd": str(root), "patched": _ensure_gate_verdicts(root)}
 
 
 @router.get("/artifacts")
