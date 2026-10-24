@@ -16,6 +16,20 @@ function unquote(value) {
   return value.trim().replace(/^['"]|['"]$/g, '')
 }
 
+const ENABLED_KEY_RE = /^\s+enabled:\s*(#.*)?$/
+const ENABLED_INLINE_RE = /^\s+enabled:\s*\[.*\]\s*$/
+
+/** How many `enabled:` keys a candidate `plugins:` block carries. Two is invalid YAML. */
+function countEnabledKeys(lines, start, end) {
+  let count = 0
+  for (let i = start; i < end; i += 1) {
+    if (ENABLED_KEY_RE.test(lines[i]) || ENABLED_INLINE_RE.test(lines[i])) {
+      count += 1
+    }
+  }
+  return count
+}
+
 /**
  * @returns {{ text: string, changed: boolean, alreadyEnabled: boolean }}
  */
@@ -41,10 +55,20 @@ export function enablePlugin(text, name) {
   let blockEnd = lines.length
   for (let i = pluginsIndex + 1; i < lines.length; i += 1) {
     const line = lines[i]
-    if (line.trim() !== '' && !/^\s/.test(line)) {
+    // A column-0 comment does not end the mapping. Real configs carry a section
+    // banner between `plugins:` and its keys, and stopping at that banner hid the
+    // existing `enabled:` list, so the edit appended a second one.
+    if (line.trim() !== '' && !line.trim().startsWith('#') && !/^\s/.test(line)) {
       blockEnd = i
       break
     }
+  }
+
+  const preexisting = countEnabledKeys(lines, pluginsIndex + 1, blockEnd)
+  if (preexisting > 1) {
+    throw new Error(
+      `config.yaml already has ${preexisting} enabled keys under plugins: — fix the file by hand first`,
+    )
   }
 
   let enabledIndex = -1
@@ -111,10 +135,14 @@ export function isPluginEnabled(text, name) {
   }
   let blockEnd = lines.length
   for (let i = pluginsIndex + 1; i < lines.length; i += 1) {
-    if (lines[i].trim() !== '' && !/^\s/.test(lines[i])) {
+    // Same rule as the edit: a column-0 comment sits inside the mapping.
+    if (lines[i].trim() !== '' && !lines[i].trim().startsWith('#') && !/^\s/.test(lines[i])) {
       blockEnd = i
       break
     }
+  }
+  if (countEnabledKeys(lines, pluginsIndex + 1, blockEnd) > 1) {
+    return false
   }
   for (let i = pluginsIndex + 1; i < blockEnd; i += 1) {
     const inline = /^\s*enabled:\s*\[(.*)\]\s*$/.exec(lines[i])
