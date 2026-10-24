@@ -1,0 +1,11 @@
+.venv-test/
+.build-probe.mjs
+plugin-check.mjs
+node-test-out.txt
+pytest-out.txt
+mount-out.txt
+ce-out.txt
+__pycache__/
+.pytest_cache/
+node_modules/
+*.bak

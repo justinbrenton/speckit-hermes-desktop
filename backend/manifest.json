@@ -1,0 +1,13 @@
+{
+  "name": "spec-kit-hermes",
+  "label": "Spec Kit",
+  "description": "Backend for the Spec Kit pane: .specify/ file I/O, optimistic-concurrency writes, Kanban task sync",
+  "icon": "BookMarked",
+  "version": "2.0.0",
+  "tab": {
+    "path": "/spec-kit-hermes",
+    "hidden": true
+  },
+  "entry": "index.js",
+  "api": "plugin_api.py"
+}

@@ -1,0 +1,16 @@
+{
+  "name": "spec-kit-hermes",
+  "version": "2.0.0",
+  "private": true,
+  "type": "module",
+  "description": "Spec-Kit integration for Hermes Desktop: one master pane (Spec -> Constitution -> Tasks) with real .specify/ persistence and round-trip sync",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build": "node scripts/build.mjs",
+    "test": "node --test test/*.test.mjs",
+    "test:py": "python -m pytest backend/tests -q",
+    "install:plugin": "node scripts/install.mjs"
+  }
+}
