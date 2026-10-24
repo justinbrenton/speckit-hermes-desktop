@@ -32,6 +32,8 @@ import {
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { jsx, jsxs } from 'react/jsx-runtime'
 
+function __str(x) { if (x === null || x === undefined) return ''; if (typeof x === 'object') return String(x.current || x.path || x.value || x || '').trim(); return String(x || '').trim(); }
+
 // ---- inlined from src/core.mjs — build artifact, edit the source instead ----
 /**
  * Spec-Kit Hermes — pure core.
@@ -843,7 +845,7 @@ function rest(path, opts) {
 }
 
 function projectQuery(cwd) {
-  return `cwd=${encodeURIComponent(cwd || '')}`
+  return `cwd=${encodeURIComponent(__str(cwd || ''))}`
 }
 
 function shortPath(path) {
@@ -1285,7 +1287,7 @@ function SpecKitPane() {
     if (storedProject.current) {
       return
     }
-    const next = String(cwd || '')
+    const next = __str(cwd)
     if (!next || next === cwdRef.current) {
       return
     }
@@ -1295,7 +1297,7 @@ function SpecKitPane() {
   }, [cwd, loadProcesses])
 
   const useFolder = useCallback(next => {
-    const path = String(next || '').trim()
+    const path = __str(next)
     if (!path) {
       return
     }
@@ -1314,7 +1316,7 @@ function SpecKitPane() {
   }, [loadProcesses])
 
   const initProject = useCallback(async explicit => {
-    const target = String(explicit || cwdRef.current || '').trim()
+    const target = __str(explicit || cwdRef.current)
     if (!target) {
       return
     }

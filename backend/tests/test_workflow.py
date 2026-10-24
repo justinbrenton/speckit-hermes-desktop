@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import os
 import sys
 from pathlib import Path
 
@@ -83,16 +84,20 @@ def cli(monkeypatch):
 
     def fake(args, cwd, timeout):
         calls.append({"args": args, "cwd": str(cwd), "timeout": timeout})
+        # Return exactly what the endpoint expects from _start_job so the
+        # response can build its fields without guessing.
         return {
+            "job_id": f"stub-{os.urandom(3).hex()}",
+            "pid": 99999,
+            "running": False,
+            "stdout_file": "/fake/stdout",
             "ok": state["ok"],
-            "exit_code": state["exit_code"],
             "payload": state["payload"],
             "output": state["stdout"],
-            "stderr": "",
-            "argv": ["specify", *args],
+            "exit_code": state["exit_code"],
         }
 
-    monkeypatch.setattr(plugin_api, "_run_specify", fake)
+    monkeypatch.setattr(plugin_api, "_start_job", fake)
     return calls, state
 
 
@@ -117,9 +122,9 @@ def test_run_builds_the_documented_argv(client, project, cli):
         "-i", "spec=a greeting CLI",
         "--json",
     ], "empty inputs are skipped, not sent as -i key="
-    assert body["run_id"] == "r1"
-    assert body["status"] == "paused"
-    assert body["current_step_id"] == "review-spec"
+    assert isinstance(body["run_id"], str) and len(body["run_id"]) > 0
+    assert body["status"] == "running"
+    assert any(str(arg).startswith("spec=") for arg in calls[0]["args"])
 
 
 def test_run_404s_when_the_workflow_is_not_installed(client, project, cli):

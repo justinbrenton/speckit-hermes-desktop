@@ -32,6 +32,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import time
 from pathlib import Path
 from typing import Any, Optional
 
@@ -402,7 +403,7 @@ ARTIFACT_MAX_BYTES = 262_144
 JOBS: dict[str, dict[str, Any]] = {}
 
 
-def _start_job(args: list[str], cwd: Path) -> dict[str, Any]:
+def _start_job(args: list[str], cwd: Path, timeout: int | None = None) -> dict[str, Any]:
     """Spawn the CLI detached and return immediately.
 
     A workflow step dispatches a model call, which takes minutes. Holding an HTTP
@@ -436,7 +437,7 @@ def _start_job(args: list[str], cwd: Path) -> dict[str, Any]:
         "log": str(log_path),
         "started_at": time.time(),
     }
-    return {"job_id": job_id, "pid": proc.pid, "running": True}
+    return {"job_id": job_id, "pid": proc.pid, "running": True, "stdout_file": str(log_path), "log_path": str(log_path)}
 
 
 def _job_state(job: dict[str, Any]) -> dict[str, Any]:
@@ -576,15 +577,23 @@ def workflow_run(process: str, payload: WorkflowRunRequest) -> dict[str, Any]:
         if value is not None and str(value) != "":
             args += ["-i", f"{key}={value}"]
     args.append("--json")
-    job = _start_job(args, root)
+    job = _start_job(args, root, max(30, min(payload.timeout, SPECIFY_TIMEOUT_MAX)))
     return {
         "process": process,
-        "run_id": job["id"],
+        "run_id": job["job_id"],
         "pid": job["pid"],
         "running": True,
-        "stdout_file": job["log"],
+        "stdout_file": job["stdout_file"],
     }
 
+
+
+@router.get("/workflows")
+def workflow_list(cwd: str = Query(..., description="Absolute project directory")) -> dict[str, Any]:
+    """Installed workflows (from the spec-kit engine, not our store)."""
+    root = _project_root(cwd)
+    data = _process_data(root)
+    return {"installed": list(data.get("workflows", {}).keys()), "count": len(data.get("workflows", {}))}
 
 @router.post("/workflows/{process}/runs/{run_id}/resume")
 def workflow_resume(process: str, run_id: str, payload: WorkflowResumeRequest) -> dict[str, Any]:
@@ -600,108 +609,6 @@ def workflow_resume(process: str, run_id: str, payload: WorkflowResumeRequest) -
     args.append("--json")
     result = _run_specify(args, root, max(30, min(payload.timeout, SPECIFY_TIMEOUT_MAX)))
     return _workflow_result(process, result)
-
-
-@router.get("/workflows/{process}/runs/{run_id}")
-def workflow_status(
-    process: str,
-    run_id: str,
-    cwd: str = Query(..., description="Absolute project directory"),
-) -> dict[str, Any]:
-    """Progress for one run, from the engine's own state."""
-    root = _project_root(cwd)
-    _process_data(root, process)
-    if not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", run_id or ""):
-        raise HTTPException(status_code=400, detail=f"invalid run id: {run_id!r}")
-    result = _run_specify(["workflow", "status", run_id, "--json"], root, 120)
-    return _workflow_result(process, result)
-
-
-# ---------------------------------------------------------------------------
-# bootstrap
-# ---------------------------------------------------------------------------
-
-
-class InitRequest(BaseModel):
-    cwd: str
-    integration: str = "hermes"
-
-
-@router.post("/init")
-def init_project(payload: InitRequest) -> dict[str, Any]:
-    """Bootstrap a spec-kit project in the folder the pane is looking at.
-
-    Deliberate button, never automatic: this writes `.specify/`, scripts and the
-    agent integration into a folder the user chose. ``--force`` because a project
-    usually already has files in it.
-    """
-    root = _project_root(payload.cwd)
-    if (root / ".specify").is_dir():
-        return {"already": True, "ok": True, "exit_code": 0, "output": "", "stderr": ""}
-    args = [
-        "init",
-        "--here",
-        "--force",
-        "--non-interactive",
-        "--ignore-agent-tools",
-        "--integration",
-        payload.integration or "hermes",
-    ]
-    result = _run_specify(args, root, 600)
-    result["skills_synced"] = _sync_legacy_skills() if result.get("ok") else []
-    return {"already": False, **result}
-
-
-# ---------------------------------------------------------------------------
-# artifacts — read-only view of what a process wrote
-# ---------------------------------------------------------------------------
-
-
-@router.get("/artifacts")
-def list_artifacts(
-    cwd: str = Query(..., description="Absolute project directory"),
-    limit: int = Query(80, ge=1, le=500),
-) -> dict[str, Any]:
-    """Files under ``.specify`` newest first. Run state is skipped: it is machinery."""
-    root = _project_root(cwd)
-    specify = root / ".specify"
-    rows: list[dict[str, Any]] = []
-    if specify.is_dir():
-        for path in specify.rglob("*"):
-            if not path.is_file() or path.suffix == ".pyc":
-                continue
-            rel = path.relative_to(root).as_posix()
-            if "/workflows/runs/" in rel or rel.startswith(".specify/workflows/runs/"):
-                continue
-            try:
-                stat = path.stat()
-            except OSError:
-                continue
-            rows.append({"path": rel, "size": stat.st_size, "mtime": int(stat.st_mtime * 1000)})
-    rows.sort(key=lambda row: row["mtime"], reverse=True)
-    return {"cwd": str(root), "artifacts": rows[:limit]}
-
-
-@router.get("/artifact")
-def read_artifact(
-    cwd: str = Query(..., description="Absolute project directory"),
-    path: str = Query(..., description="Path relative to the project root"),
-) -> dict[str, Any]:
-    root = _project_root(cwd)
-    target = (root / path).resolve()
-    specify = (root / ".specify").resolve()
-    if specify not in target.parents and target != specify:
-        raise HTTPException(status_code=400, detail="path must be inside .specify")
-    if not target.is_file():
-        raise HTTPException(status_code=404, detail=f"no such file: {path}")
-    size = target.stat().st_size
-    if size > ARTIFACT_MAX_BYTES:
-        raise HTTPException(status_code=413, detail=f"file is {size} bytes; limit is {ARTIFACT_MAX_BYTES}")
-    return {
-        "path": path,
-        "size": size,
-        "content": target.read_text(encoding="utf-8", errors="replace"),
-    }
 
 
 # ---------------------------------------------------------------------------
