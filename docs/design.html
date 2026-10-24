@@ -60,18 +60,19 @@
 <hr>
 <h2 id="1-what-this-is">1. What this is</h2>
 <p>Spec-Kit is a specification-driven development toolkit: write a spec, derive a plan, break the plan into tasks, implement. Upstream (<code>github/spec-kit</code>) does that with markdown templates and CLI commands. Everything lands in a <code>.specify/</code> directory, and you carry it between your editor, your terminal, and your agent by hand.</p>
-<p>This project puts the same workflow inside Hermes Desktop as one interactive pane. You write the spec in a form, answer a constitution wizard, and the tasks become Kanban cards. The files on disk stay the source of truth, so anything else that reads <code>.specify/</code> still works.</p>
-<p>The scope is narrow on purpose: three files, one pane, one project at a time.</p>
+<p>This project puts the same workflow inside Hermes Desktop as one guided pane. You describe the feature in a sentence, the workflow's own steps run one at a time, and every review gate stops and asks you before the next step. The files on disk stay the source of truth, so anything else that reads <code>.specify/</code> or <code>specs/</code> still works.</p>
+<p>The scope is narrow on purpose: one pane, one project at a time, and no workflow logic in the pane itself.</p>
 <hr>
 <h2 id="2-why-not-just-install-spec-kit-and-use-the-cli">2. Why not just install spec-kit and use the CLI</h2>
 <p>Because the loop breaks at the handoff. Stock spec-kit gives you files, and then you are on your own: read <code>spec.md</code>, work out what changed, retype it into a prompt, run a command, come back, read <code>tasks.md</code>, find which checkbox is yours. The documents are correct and the workflow is still manual.</p>
 <div class="table-wrap"><table>
 <thead><tr><th>Stock spec-kit</th><th>This</th></tr></thead>
 <tbody>
-<tr><td><code>[NEEDS CLARIFICATION]</code> as a convention you police yourself</td><td>A counter in the spec step; the step reports ready only when three or fewer are open and the constitution is ratified</td></tr>
-<tr><td>Constitution written once from a template, then forgotten</td><td>A five-step wizard that writes it and rehydrates from the file next time</td></tr>
-<tr><td>Tasks as a checklist in a markdown file</td><td>Kanban cards carrying the requirement id, with status readable back into <code>spec.md</code></td></tr>
-<tr><td>Editing files under the agent's feet</td><td>Watches the three files and raises a conflict banner instead of clobbering</td></tr>
+<tr><td>You remember which command comes next</td><td>The workflow's steps are the UI; the next action is the only button on screen</td></tr>
+<tr><td>Gates are an interactive terminal prompt</td><td>A gate card with the declared options; approving resumes the run</td></tr>
+<tr><td>You read the terminal to know what happened</td><td>A step tracker, plus the run's own state read off disk</td></tr>
+<tr><td>Artifacts are files you go and find</td><td>The artifacts the run wrote are listed in the pane, read-only</td></tr>
+<tr><td>A gate cannot be answered headless</td><td><code>verdict_input</code> is added to generated gates, so resume works without a TTY</td></tr>
 </tbody></table></div>
 <p>What it does not do: replace spec-kit. Templates, preset, extension hooks and the workflow all still come from the fork. The pane is the surface on top.</p>
 <hr>
@@ -83,21 +84,20 @@
 <tr><td>Desktop</td><td><code>~/.hermes/desktop-plugins/spec-kit-hermes/plugin.js</code></td><td>single ESM file, <code>@hermes/plugin-sdk</code> + React</td><td>One pane, stepper, editors, debounced saves, polling watcher, conflict banner</td></tr>
 <tr><td>Backend</td><td><code>~/.hermes/plugins/spec-kit-hermes/dashboard/plugin_api.py</code></td><td>FastAPI router</td><td>Allowlisted file I/O with optimistic concurrency, Kanban sync</td></tr>
 </tbody></table></div>
-<p>The pane reaches the backend through <code>ctx.rest</code>, which Hermes scopes to <code>/api/plugins/spec-kit-hermes</code>. Five routes:</p>
+<p>The pane reaches the backend through <code>ctx.rest</code>, which Hermes scopes to <code>/api/plugins/spec-kit-hermes</code>. The routes the pane uses:</p>
 <div class="table-wrap"><table>
 <thead><tr><th>Route</th><th>Purpose</th></tr></thead>
 <tbody>
-<tr><td><code>GET /status</code></td><td>liveness, plus the path allowlist the backend will honour</td></tr>
-<tr><td><code>GET /files</code></td><td>read all three files with their mtimes</td></tr>
-<tr><td><code>PUT /file</code></td><td>write one file, rejected on a stale mtime</td></tr>
-<tr><td><code>POST /kanban/sync</code></td><td>materialise tasks as Kanban cards, idempotent</td></tr>
-<tr><td><code>GET /kanban/links</code></td><td>per-requirement card status, for the acceptance-criteria flow</td></tr>
+<tr><td><code>GET /processes</code></td><td>installed workflows with their inputs, steps and gate data</td></tr>
+<tr><td><code>POST /workflows/{process}/run</code></td><td>spawn a run, return a job id at once</td></tr>
+<tr><td><code>GET /workflows/{process}/runs/latest</code></td><td>newest run's status, step, gate</td></tr>
+<tr><td><code>POST /workflows/{process}/runs/{id}/resume</code></td><td>answer a gate and continue</td></tr>
+<tr><td><code>GET /artifacts</code></td><td>every artifact the run has written</td></tr>
+<tr><td><code>GET /artifact</code></td><td>read one artifact, confined to <code>.specify/</code> and <code>specs/</code></td></tr>
+<tr><td><code>POST /init</code></td><td><code>specify init --here --integration hermes</code>, then patch gates</td></tr>
+<tr><td><code>POST /repair-workflows</code></td><td>add missing <code>verdict_input</code> to existing projects</td></tr>
 </tbody></table></div>
-<p>Three files, all under the project's <code>.specify/</code>, and nothing else is reachable:</p>
-<pre><code>.specify/spec.md                      requirements, acceptance criteria, clarifications
-.specify/memory/constitution.md       principles, architecture choices, governance
-.specify/tasks.md                     tasks with checkboxes, [P:tag] and [US#n] markers</code></pre>
-<p><code>ALLOWED_PATHS</code> is a tuple of exactly those three names. Traversal, absolute paths and unknown files are refused with 400. A write carrying a stale mtime is refused with 409, which is what produces the conflict banner instead of a lost edit.</p>
+<p>Reads and writes of whole files (<code>/files</code>, <code>/file</code>) and the Kanban routes (<code>/kanban/sync</code>, <code>/kanban/links</code>) still exist from the editor era; the wizard does not call them.</p>
 <p>Three plugin kinds exist, and mixing them up caused most of the confusion in earlier drafts:</p>
 <div class="table-wrap"><table>
 <thead><tr><th>Kind</th><th>Manifest</th><th>Loaded by</th><th>Config</th></tr></thead>
@@ -112,20 +112,30 @@
 <pre><code>open the pane on a project
    │  GET /processes  ──▶ installed workflows, their inputs, their steps
    ▼
-&quot;What are we doing?&quot;   SDD · bug fixing · idea assessment · anything installed
-   │
-   ▼
-inputs                 a form built from the workflow's own `inputs:` block
+describe               one textarea: what are you building?
    │  POST /workflows/&lt;process&gt;/run   ──▶ specify workflow run … --json
    ▼
-run                    the engine executes steps; the pane shows progress
-   │                   command step → dispatched, output captured
+steps                  the engine executes; the pane polls /runs/latest
+   │                   command step → runs the agent, writes the artifact
    │                   gate step    → status: paused, the pane asks you
-   │  POST …/runs/&lt;id&gt;/resume -i gate_x=approve
+   │  POST …/runs/&lt;id&gt;/resume  -i gate_review_spec=approve
    ▼
-artifacts              GET /artifacts, read-only, newest first</code></pre>
+artifacts              read-only, from &lt;project&gt;/specs/ and .specify/memory/</code></pre>
+<p>One screen, one decision at a time. The step tracker at the top shows where the run is; the card below it is the only thing you can act on: Start, wait, approve or reject. There is no separate &quot;pick a process&quot; screen in v1 — the pane drives the <code>speckit</code> workflow and lists whatever else is installed once process choice matters.</p>
+<p>Requests return immediately. A step dispatches a model call that can run for minutes, and the desktop's RPC bridge gives up at 30 seconds, so <code>run</code> and <code>resume</code> spawn the CLI and return a job id; the pane polls <code>GET /workflows/&lt;process&gt;/runs/latest</code> every two seconds while the engine works.</p>
 <p>The pane authoring three files by hand is gone. <code>spec.md</code>, <code>memory/constitution.md</code> and <code>tasks.md</code> are written by <code>/speckit-specify</code>, <code>/speckit-constitution</code> and <code>/speckit-tasks</code> inside the workflow, so there is one way to produce them and one place they come from. The pane still reads files, but only as artifacts.</p>
 <p>What the pane does not do, on purpose: run steps itself, decide what a process means, or invent a gate. It reads the workflow, posts to three routes, and renders what comes back.</p>
+<h3 id="where-artifacts-actually-land">Where artifacts actually land</h3>
+<p><code>specify init</code> scaffolds <code>.specify/</code>, but the skills write feature folders to <code>&lt;project&gt;/specs/&lt;NNN&gt;-&lt;name&gt;/</code> — not <code>.specify/specs/</code>. The artifact listing scans both locations plus <code>.specify/memory/constitution.md</code>, and the reader refuses any path outside them.</p>
+<h3 id="gates-need-verdictinput">Gates need <code>verdict_input</code></h3>
+<p>A gate can only be answered from outside a terminal when its workflow declares which input carries the verdict:</p>
+<pre><code class="language-yaml">  - id: review-spec
+    type: gate
+    message: &quot;Review the generated spec before planning.&quot;
+    options: [approve, reject]
+    verdict_input: gate_review_spec   # resume -i gate_review_spec=approve
+    on_reject: abort</code></pre>
+<p>The engine checks <code>&quot;verdict_input&quot; in config</code> (see <code>workflows/step/gate/</code>), so a stock gate without it ignores every <code>-i</code> you pass and pauses forever. <code>init</code> now patches every installed workflow after scaffolding, and <code>POST /repair-workflows</code> does the same for projects created earlier.</p>
 <h2 id="41-processes-what-the-pane-renders">4.1 Processes: what the pane renders</h2>
 <p>Spec-kit is not one flow, and the pane must not pretend otherwise. It ships three independent entry points and makes adding a fourth a configuration exercise:</p>
 <div class="table-wrap"><table>
@@ -209,13 +219,14 @@ resume -i gate_review_spec=approve
 <div class="table-wrap"><table>
 <thead><tr><th>Planned</th><th>Built</th><th>Why it changed</th></tr></thead>
 <tbody>
-<tr><td>Three panes: SpecBuilder, TaskBoard, ConstitutionWizard</td><td>One pane with a three-step stepper</td><td>Three right-sidebar tabs read as three unrelated apps, and the steps are sequential anyway</td></tr>
-<tr><td><code>SpecParser.ts</code> / <code>TasksParser.ts</code> on remark + mdast</td><td>Line-oriented parsers in <code>src/core.mjs</code></td><td>The sections are small and regular; an AST bought indirection, not safety</td></tr>
-<tr><td><code>chokidar</code> file watching</td><td>3 s polling with mtime comparison</td><td>The renderer has no Node filesystem; the backend has no push channel yet</td></tr>
-<tr><td><code>SpecifyCLIBridge</code> spawning <code>specify</code></td><td>Not built</td><td>Templates come from the fork's preset; no Python toolchain in the app</td></tr>
-<tr><td><code>HermesDispatch</code> invoking <code>speckit-*</code> skills</td><td>Not built</td><td>The pane writes files; agent dispatch is the next feature</td></tr>
-<tr><td>Kanban via <code>host.request('kanban.*')</code></td><td>Backend calls <code>hermes_cli.kanban_db</code></td><td>The backend already runs in the gateway process and owns the DB handle</td></tr>
-<tr><td>Implement button, convergence column</td><td>Not built</td><td>Both need skill dispatch, which is the next feature</td></tr>
+<tr><td>Three panes: SpecBuilder, TaskBoard, ConstitutionWizard</td><td>One guided pane with a step tracker</td><td>Three sidebar tabs read as three unrelated apps, and the steps are sequential</td></tr>
+<tr><td>The pane authors <code>spec.md</code>, <code>constitution.md</code>, <code>tasks.md</code></td><td>The workflow's skills author them; the pane only reads</td><td>One producer means one format, and it matches what the CLI does</td></tr>
+<tr><td><code>SpecParser.ts</code> / <code>TasksParser.ts</code> on remark + mdast</td><td>Not needed</td><td>The pane no longer edits those files</td></tr>
+<tr><td><code>chokidar</code> file watching</td><td>2 s polling of run state while a step is in flight; none when parked</td><td>No filesystem in the renderer, no push channel in the backend</td></tr>
+<tr><td><code>SpecifyCLIBridge</code> for init only</td><td>Built as <code>POST /init</code> + <code>POST /repair-workflows</code></td><td>The CLI is the only thing that knows the template layout</td></tr>
+<tr><td><code>HermesDispatch</code> invoking <code>speckit-*</code> skills</td><td>Not built in the pane</td><td>The engine dispatches the skills itself; the pane never calls an agent</td></tr>
+<tr><td>Kanban as the task surface</td><td>Not built</td><td>The workflow owns task state; a second board would need a sync rule</td></tr>
+<tr><td>Implement button, convergence column</td><td>The workflow's last steps</td><td>They are steps, not pane features</td></tr>
 </tbody></table></div>
 <hr>
 <h2 id="6-repository-layout">6. Repository layout</h2>
@@ -270,27 +281,30 @@ specify bundle add    --dev ./bundles/hermes-desktop</code></pre>
 <h2 id="8-scope">8. Scope</h2>
 <p>Shipped:</p>
 <ul>
-<li>Single pane with a three-step stepper, resuming at the furthest step with content.</li>
-<li>Real reads and writes to the three <code>.specify/</code> files, with optimistic concurrency.</li>
-<li>Constitution wizard that writes and rehydrates.</li>
-<li>Task derivation from the spec, Kanban card creation, status pull-back.</li>
-<li><code>[P:tag]</code> and <code>[US#n]</code> parsing, rendering and round-trip.</li>
+<li>One guided pane: folder, description, step tracker, gate cards, artifact reader.</li>
+<li>Every workflow action goes through <code>specify workflow run|resume</code>; the pane holds</li>
+</ul>
+<p>no workflow logic.</p>
+<ul>
+<li>Non-blocking dispatch: run and resume return a job id, the pane polls run state.</li>
+<li>Gate answers carried by a declared <code>verdict_input</code>, patched into installed</li>
+</ul>
+<p>workflows by <code>/init</code> and <code>/repair-workflows</code>.</p>
+<ul>
+<li>Artifact listing across <code>&lt;project&gt;/specs/</code> and <code>.specify/</code>, read-only viewer.</li>
 <li>Installer that backs up before it writes.</li>
-<li>50 node tests.</li>
+<li>57 node tests, 39 backend tests.</li>
 </ul>
 <p>Next, in the order I would do them:</p>
 <ol>
-<li>Rebuild the pane as the three-screen runner: process picker, inputs form from</li>
+<li>Confirm the wizard in the live app: describe, start, approve, watch <code>plan</code> land.</li>
+<li>Process choice in the pane: <code>/processes</code> already returns every installed</li>
 </ol>
-<p>the workflow, run view with gate panel and artifact list. The three authoring editors go; the workflow writes those files through the skills.</p>
+<p>workflow, including bug fixing and assessment; the pane currently takes the first.</p>
 <ol>
-<li>Re-run a workflow from the pane in a live app, approve a gate, and watch the</li>
+<li>Ship the gate-patched workflow in the fork's bundle so a fresh clone of the CLI</li>
 </ol>
-<p>next step land. Everything below the pane is already proven.</p>
-<ol>
-<li>Ship the GUI-friendly workflow in the fork's bundle: the stock <code>speckit</code></li>
-</ol>
-<p>workflow's gates declare no <code>verdict_input</code>, so a GUI cannot approve them.</p>
+<p>starts with answerable gates.</p>
 <ol>
 <li>Bundle variants (backend, fullstack, ml, api-only) and the assessment and</li>
 </ol>
@@ -327,10 +341,10 @@ specify bundle add    --dev ./bundles/hermes-desktop</code></pre>
 <tbody>
 <tr><td><code>PANES_AREA</code>, <code>STATUSBAR_AREAS</code></td><td>the pane and the status chip that focuses it</td></tr>
 <tr><td><code>Button</code>, <code>Input</code>, <code>Textarea</code>, <code>Select</code>, <code>Badge</code>, <code>ScrollArea</code>, <code>EmptyState</code>, <code>Codicon</code></td><td>the UI, with no custom component layer</td></tr>
-<tr><td><code>ctx.rest</code></td><td>the five backend routes</td></tr>
+<tr><td><code>ctx.rest</code></td><td>the workflow, artifact and init routes</td></tr>
 <tr><td><code>ctx.storage</code></td><td>pane-local state (last project path)</td></tr>
-<tr><td><code>host.composer</code></td><td>inserted text and submit, for the dispatch feature</td></tr>
-<tr><td><code>host.navigate</code></td><td>switching to a session after dispatch</td></tr>
+<tr><td><code>host.composer</code></td><td>unused today; reserved for sending a finished spec to a session</td></tr>
+<tr><td><code>host.navigate</code></td><td>unused today</td></tr>
 </tbody></table></div>
 <p>Available and unused: <code>host.request</code> (sessions, config, skills, cron, kanban), <code>host.skills</code>, <code>host.settings</code>, <code>host.onEvent</code>, <code>ctx.socket</code>, routes, sidebar nav, palette commands, keybinds, themes, settings pages.</p>
 <p>Not available, despite appearing in earlier drafts: <code>host.rest</code> (the API explorer reports <code>no host.rest</code>), any gateway JSON-RPC file read or write, and <code>Fragment</code> as an SDK export. <code>Fragment</code> comes from React.</p>
@@ -339,17 +353,18 @@ specify bundle add    --dev ./bundles/hermes-desktop</code></pre>
 <div class="table-wrap"><table>
 <thead><tr><th>Claim</th><th>Command</th><th>Observed</th></tr></thead>
 <tbody>
-<tr><td>Node tests pass</td><td><code>npm test</code></td><td>50 tests, 50 pass, 0 fail</td></tr>
+<tr><td>Node tests pass</td><td><code>npm test</code></td><td>57 tests, 57 pass, 0 fail</td></tr>
 <tr><td>The built plugin loads like the runtime loads it</td><td><code>node --test test/plugin-smoke.test.mjs</code></td><td>default export present, <code>id: spec-kit-hermes</code>, one pane and one status item registered</td></tr>
-<tr><td>The deployed plugin matches the build</td><td><code>cmp desktop/plugin.js ~/.hermes/desktop-plugins/spec-kit-hermes/plugin.js</code></td><td>identical, 65,162 bytes</td></tr>
+<tr><td>The deployed plugin matches the build</td><td><code>cmp desktop/plugin.js ~/.hermes/desktop-plugins/spec-kit-hermes/plugin.js</code></td><td>identical, 43,953 bytes</td></tr>
 <tr><td>The config edit adds one line, not a duplicate key</td><td>feed the live <code>config.yaml</code> through <code>config-enable.mjs</code></td><td>1 line added, <code>plugins.enabled</code> contains <code>spec-kit-hermes</code> once, file parses</td></tr>
 <tr><td>Backend half is installed</td><td><code>ls ~/.hermes/plugins/spec-kit-hermes/dashboard/</code></td><td><code>plugin_api.py</code> (10,031 bytes), <code>manifest.json</code>, <code>index.js</code></td></tr>
-<tr><td>Backend tests pass</td><td><code>python -m pytest backend/tests -q</code></td><td>36 passed (routes, mount, file I/O, discovery, workflow bridge, artifacts)</td></tr>
+<tr><td>Backend tests pass</td><td><code>python -m pytest backend/tests -q</code></td><td>39 passed (routes, mount, file I/O, discovery, workflow bridge, artifacts, gates)</td></tr>
 <tr><td>Process discovery is data-driven</td><td><code>backend/tests/test_processes.py</code></td><td>a bugfix workflow becomes inputs + command steps + a gate; skills resolved and flagged</td></tr>
-<tr><td>A gate pauses and resumes</td><td><code>specify workflow run</code> / <code>resume -i gate_review_spec=approve</code></td><td>run paused at review-spec; resume advanced to review-plan</td></tr>
-<tr><td>The doc pair cannot drift</td><td><code>npm run docs</code></td><td>HTML regenerated from this file, 13 sections</td></tr>
+<tr><td>A gate pauses and resumes</td><td><code>POST /run</code> then <code>POST /runs/&lt;id&gt;/resume</code> with <code>gate_review_spec=approve</code></td><td>paused at review-spec; <code>choice= approve</code>; engine ran <code>plan</code> and paused at review-plan</td></tr>
+<tr><td>Artifacts are listed and readable</td><td><code>GET /artifacts</code>, <code>GET /artifact</code></td><td>7 artifacts in the demo project, <code>spec.md</code> read back at 1,829 chars</td></tr>
+<tr><td>The doc pair cannot drift</td><td><code>npm run docs</code></td><td>HTML regenerated from this file</td></tr>
 </tbody></table></div>
-<p>Not verified: the pane rendering in a live app. That needs the desktop app open, which is the next step, not a claim.</p>
+<p>Not verified here: the wizard rendering in a live app. The routes and the run state behind it are, but the drawing is not.</p>
 <hr>
 <h2 id="11-the-config-corruption-and-what-changed-because-of-it">11. The config corruption, and what changed because of it</h2>
 <p>On 2026-10-24 Hermes refused to start with <code>DuplicateKeyError: found duplicate key &quot;enabled&quot;</code>. The cause was <code>scripts/config-enable.mjs</code>. It edits <code>plugins.enabled</code> by text surgery, and its block scan treated any unindented line as the end of the <code>plugins:</code> mapping. Real configs put a column-0 section banner between <code>plugins:</code> and its keys, so the scan stopped early, failed to find the existing list, and spliced a second <code>enabled:</code> in directly under <code>plugins:</code>.</p>

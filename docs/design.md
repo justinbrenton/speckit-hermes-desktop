@@ -15,12 +15,13 @@ break the plan into tasks, implement. Upstream (`github/spec-kit`) does that wit
 markdown templates and CLI commands. Everything lands in a `.specify/` directory, and
 you carry it between your editor, your terminal, and your agent by hand.
 
-This project puts the same workflow inside Hermes Desktop as one interactive pane.
-You write the spec in a form, answer a constitution wizard, and the tasks become
-Kanban cards. The files on disk stay the source of truth, so anything else that reads
-`.specify/` still works.
+This project puts the same workflow inside Hermes Desktop as one guided pane. You
+describe the feature in a sentence, the workflow's own steps run one at a time, and
+every review gate stops and asks you before the next step. The files on disk stay the
+source of truth, so anything else that reads `.specify/` or `specs/` still works.
 
-The scope is narrow on purpose: three files, one pane, one project at a time.
+The scope is narrow on purpose: one pane, one project at a time, and no workflow
+logic in the pane itself.
 
 ---
 
@@ -33,10 +34,11 @@ correct and the workflow is still manual.
 
 | Stock spec-kit | This |
 |---|---|
-| `[NEEDS CLARIFICATION]` as a convention you police yourself | A counter in the spec step; the step reports ready only when three or fewer are open and the constitution is ratified |
-| Constitution written once from a template, then forgotten | A five-step wizard that writes it and rehydrates from the file next time |
-| Tasks as a checklist in a markdown file | Kanban cards carrying the requirement id, with status readable back into `spec.md` |
-| Editing files under the agent's feet | Watches the three files and raises a conflict banner instead of clobbering |
+| You remember which command comes next | The workflow's steps are the UI; the next action is the only button on screen |
+| Gates are an interactive terminal prompt | A gate card with the declared options; approving resumes the run |
+| You read the terminal to know what happened | A step tracker, plus the run's own state read off disk |
+| Artifacts are files you go and find | The artifacts the run wrote are listed in the pane, read-only |
+| A gate cannot be answered headless | `verdict_input` is added to generated gates, so resume works without a TTY |
 
 What it does not do: replace spec-kit. Templates, preset, extension hooks and the
 workflow all still come from the fork. The pane is the surface on top.
@@ -55,27 +57,22 @@ has no read or write method.
 | Backend | `~/.hermes/plugins/spec-kit-hermes/dashboard/plugin_api.py` | FastAPI router | Allowlisted file I/O with optimistic concurrency, Kanban sync |
 
 The pane reaches the backend through `ctx.rest`, which Hermes scopes to
-`/api/plugins/spec-kit-hermes`. Five routes:
+`/api/plugins/spec-kit-hermes`. The routes the pane uses:
 
 | Route | Purpose |
 |---|---|
-| `GET /status` | liveness, plus the path allowlist the backend will honour |
-| `GET /files` | read all three files with their mtimes |
-| `PUT /file` | write one file, rejected on a stale mtime |
-| `POST /kanban/sync` | materialise tasks as Kanban cards, idempotent |
-| `GET /kanban/links` | per-requirement card status, for the acceptance-criteria flow |
+| `GET /processes` | installed workflows with their inputs, steps and gate data |
+| `POST /workflows/{process}/run` | spawn a run, return a job id at once |
+| `GET /workflows/{process}/runs/latest` | newest run's status, step, gate |
+| `POST /workflows/{process}/runs/{id}/resume` | answer a gate and continue |
+| `GET /artifacts` | every artifact the run has written |
+| `GET /artifact` | read one artifact, confined to `.specify/` and `specs/` |
+| `POST /init` | `specify init --here --integration hermes`, then patch gates |
+| `POST /repair-workflows` | add missing `verdict_input` to existing projects |
 
-Three files, all under the project's `.specify/`, and nothing else is reachable:
-
-```
-.specify/spec.md                      requirements, acceptance criteria, clarifications
-.specify/memory/constitution.md       principles, architecture choices, governance
-.specify/tasks.md                     tasks with checkboxes, [P:tag] and [US#n] markers
-```
-
-`ALLOWED_PATHS` is a tuple of exactly those three names. Traversal, absolute paths and
-unknown files are refused with 400. A write carrying a stale mtime is refused with
-409, which is what produces the conflict banner instead of a lost edit.
+Reads and writes of whole files (`/files`, `/file`) and the Kanban routes
+(`/kanban/sync`, `/kanban/links`) still exist from the editor era; the wizard does
+not call them.
 
 Three plugin kinds exist, and mixing them up caused most of the confusion in earlier
 drafts:
@@ -99,19 +96,27 @@ its plugin id in `plugins.enabled`, which is why the installer edits `config.yam
 open the pane on a project
    │  GET /processes  ──▶ installed workflows, their inputs, their steps
    ▼
-"What are we doing?"   SDD · bug fixing · idea assessment · anything installed
-   │
-   ▼
-inputs                 a form built from the workflow's own `inputs:` block
+describe               one textarea: what are you building?
    │  POST /workflows/<process>/run   ──▶ specify workflow run … --json
    ▼
-run                    the engine executes steps; the pane shows progress
-   │                   command step → dispatched, output captured
+steps                  the engine executes; the pane polls /runs/latest
+   │                   command step → runs the agent, writes the artifact
    │                   gate step    → status: paused, the pane asks you
-   │  POST …/runs/<id>/resume -i gate_x=approve
+   │  POST …/runs/<id>/resume  -i gate_review_spec=approve
    ▼
-artifacts              GET /artifacts, read-only, newest first
+artifacts              read-only, from <project>/specs/ and .specify/memory/
 ```
+
+One screen, one decision at a time. The step tracker at the top shows where the
+run is; the card below it is the only thing you can act on: Start, wait, approve
+or reject. There is no separate "pick a process" screen in v1 — the pane drives
+the `speckit` workflow and lists whatever else is installed once process choice
+matters.
+
+Requests return immediately. A step dispatches a model call that can run for
+minutes, and the desktop's RPC bridge gives up at 30 seconds, so `run` and
+`resume` spawn the CLI and return a job id; the pane polls
+`GET /workflows/<process>/runs/latest` every two seconds while the engine works.
 
 The pane authoring three files by hand is gone. `spec.md`,
 `memory/constitution.md` and `tasks.md` are written by `/speckit-specify`,
@@ -122,6 +127,32 @@ only as artifacts.
 What the pane does not do, on purpose: run steps itself, decide what a process
 means, or invent a gate. It reads the workflow, posts to three routes, and renders
 what comes back.
+
+### Where artifacts actually land
+
+`specify init` scaffolds `.specify/`, but the skills write feature folders to
+`<project>/specs/<NNN>-<name>/` — not `.specify/specs/`. The artifact listing
+scans both locations plus `.specify/memory/constitution.md`, and the reader
+refuses any path outside them.
+
+### Gates need `verdict_input`
+
+A gate can only be answered from outside a terminal when its workflow declares
+which input carries the verdict:
+
+```yaml
+  - id: review-spec
+    type: gate
+    message: "Review the generated spec before planning."
+    options: [approve, reject]
+    verdict_input: gate_review_spec   # resume -i gate_review_spec=approve
+    on_reject: abort
+```
+
+The engine checks `"verdict_input" in config` (see `workflows/step/gate/`), so a
+stock gate without it ignores every `-i` you pass and pauses forever. `init` now
+patches every installed workflow after scaffolding, and `POST
+/repair-workflows` does the same for projects created earlier.
 
 ## 4.1 Processes: what the pane renders
 
@@ -251,13 +282,14 @@ The previous design described a different system. This is what survived contact.
 
 | Planned | Built | Why it changed |
 |---|---|---|
-| Three panes: SpecBuilder, TaskBoard, ConstitutionWizard | One pane with a three-step stepper | Three right-sidebar tabs read as three unrelated apps, and the steps are sequential anyway |
-| `SpecParser.ts` / `TasksParser.ts` on remark + mdast | Line-oriented parsers in `src/core.mjs` | The sections are small and regular; an AST bought indirection, not safety |
-| `chokidar` file watching | 3 s polling with mtime comparison | The renderer has no Node filesystem; the backend has no push channel yet |
-| `SpecifyCLIBridge` spawning `specify` | Not built | Templates come from the fork's preset; no Python toolchain in the app |
-| `HermesDispatch` invoking `speckit-*` skills | Not built | The pane writes files; agent dispatch is the next feature |
-| Kanban via `host.request('kanban.*')` | Backend calls `hermes_cli.kanban_db` | The backend already runs in the gateway process and owns the DB handle |
-| Implement button, convergence column | Not built | Both need skill dispatch, which is the next feature |
+| Three panes: SpecBuilder, TaskBoard, ConstitutionWizard | One guided pane with a step tracker | Three sidebar tabs read as three unrelated apps, and the steps are sequential |
+| The pane authors `spec.md`, `constitution.md`, `tasks.md` | The workflow's skills author them; the pane only reads | One producer means one format, and it matches what the CLI does |
+| `SpecParser.ts` / `TasksParser.ts` on remark + mdast | Not needed | The pane no longer edits those files |
+| `chokidar` file watching | 2 s polling of run state while a step is in flight; none when parked | No filesystem in the renderer, no push channel in the backend |
+| `SpecifyCLIBridge` for init only | Built as `POST /init` + `POST /repair-workflows` | The CLI is the only thing that knows the template layout |
+| `HermesDispatch` invoking `speckit-*` skills | Not built in the pane | The engine dispatches the skills itself; the pane never calls an agent |
+| Kanban as the task surface | Not built | The workflow owns task state; a second board would need a sync rule |
+| Implement button, convergence column | The workflow's last steps | They are steps, not pane features |
 
 ---
 
@@ -344,23 +376,23 @@ manifests now would advertise something uninstallable.
 
 Shipped:
 
-- Single pane with a three-step stepper, resuming at the furthest step with content.
-- Real reads and writes to the three `.specify/` files, with optimistic concurrency.
-- Constitution wizard that writes and rehydrates.
-- Task derivation from the spec, Kanban card creation, status pull-back.
-- `[P:tag]` and `[US#n]` parsing, rendering and round-trip.
+- One guided pane: folder, description, step tracker, gate cards, artifact reader.
+- Every workflow action goes through `specify workflow run|resume`; the pane holds
+  no workflow logic.
+- Non-blocking dispatch: run and resume return a job id, the pane polls run state.
+- Gate answers carried by a declared `verdict_input`, patched into installed
+  workflows by `/init` and `/repair-workflows`.
+- Artifact listing across `<project>/specs/` and `.specify/`, read-only viewer.
 - Installer that backs up before it writes.
-- 50 node tests.
+- 57 node tests, 39 backend tests.
 
 Next, in the order I would do them:
 
-1. Rebuild the pane as the three-screen runner: process picker, inputs form from
-   the workflow, run view with gate panel and artifact list. The three authoring
-   editors go; the workflow writes those files through the skills.
-2. Re-run a workflow from the pane in a live app, approve a gate, and watch the
-   next step land. Everything below the pane is already proven.
-3. Ship the GUI-friendly workflow in the fork's bundle: the stock `speckit`
-   workflow's gates declare no `verdict_input`, so a GUI cannot approve them.
+1. Confirm the wizard in the live app: describe, start, approve, watch `plan` land.
+2. Process choice in the pane: `/processes` already returns every installed
+   workflow, including bug fixing and assessment; the pane currently takes the first.
+3. Ship the gate-patched workflow in the fork's bundle so a fresh clone of the CLI
+   starts with answerable gates.
 4. Bundle variants (backend, fullstack, ml, api-only) and the assessment and
    bug-fix bundles as one-click installs.
 
@@ -403,10 +435,10 @@ stubbed:
 |---|---|
 | `PANES_AREA`, `STATUSBAR_AREAS` | the pane and the status chip that focuses it |
 | `Button`, `Input`, `Textarea`, `Select`, `Badge`, `ScrollArea`, `EmptyState`, `Codicon` | the UI, with no custom component layer |
-| `ctx.rest` | the five backend routes |
+| `ctx.rest` | the workflow, artifact and init routes |
 | `ctx.storage` | pane-local state (last project path) |
-| `host.composer` | inserted text and submit, for the dispatch feature |
-| `host.navigate` | switching to a session after dispatch |
+| `host.composer` | unused today; reserved for sending a finished spec to a session |
+| `host.navigate` | unused today |
 
 Available and unused: `host.request` (sessions, config, skills, cron, kanban),
 `host.skills`, `host.settings`, `host.onEvent`, `ctx.socket`, routes, sidebar nav,
@@ -422,18 +454,19 @@ SDK export. `Fragment` comes from React.
 
 | Claim | Command | Observed |
 |---|---|---|
-| Node tests pass | `npm test` | 50 tests, 50 pass, 0 fail |
+| Node tests pass | `npm test` | 57 tests, 57 pass, 0 fail |
 | The built plugin loads like the runtime loads it | `node --test test/plugin-smoke.test.mjs` | default export present, `id: spec-kit-hermes`, one pane and one status item registered |
-| The deployed plugin matches the build | `cmp desktop/plugin.js ~/.hermes/desktop-plugins/spec-kit-hermes/plugin.js` | identical, 65,162 bytes |
+| The deployed plugin matches the build | `cmp desktop/plugin.js ~/.hermes/desktop-plugins/spec-kit-hermes/plugin.js` | identical, 43,953 bytes |
 | The config edit adds one line, not a duplicate key | feed the live `config.yaml` through `config-enable.mjs` | 1 line added, `plugins.enabled` contains `spec-kit-hermes` once, file parses |
 | Backend half is installed | `ls ~/.hermes/plugins/spec-kit-hermes/dashboard/` | `plugin_api.py` (10,031 bytes), `manifest.json`, `index.js` |
-| Backend tests pass | `python -m pytest backend/tests -q` | 36 passed (routes, mount, file I/O, discovery, workflow bridge, artifacts) |
+| Backend tests pass | `python -m pytest backend/tests -q` | 39 passed (routes, mount, file I/O, discovery, workflow bridge, artifacts, gates) |
 | Process discovery is data-driven | `backend/tests/test_processes.py` | a bugfix workflow becomes inputs + command steps + a gate; skills resolved and flagged |
-| A gate pauses and resumes | `specify workflow run` / `resume -i gate_review_spec=approve` | run paused at review-spec; resume advanced to review-plan |
-| The doc pair cannot drift | `npm run docs` | HTML regenerated from this file, 13 sections |
+| A gate pauses and resumes | `POST /run` then `POST /runs/<id>/resume` with `gate_review_spec=approve` | paused at review-spec; `choice= approve`; engine ran `plan` and paused at review-plan |
+| Artifacts are listed and readable | `GET /artifacts`, `GET /artifact` | 7 artifacts in the demo project, `spec.md` read back at 1,829 chars |
+| The doc pair cannot drift | `npm run docs` | HTML regenerated from this file |
 
-Not verified: the pane rendering in a live app. That needs the desktop app open,
-which is the next step, not a claim.
+Not verified here: the wizard rendering in a live app. The routes and the run state
+behind it are, but the drawing is not.
 
 ---
 

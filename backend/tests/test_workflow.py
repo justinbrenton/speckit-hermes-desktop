@@ -98,7 +98,21 @@ def cli(monkeypatch):
         }
 
     monkeypatch.setattr(plugin_api, "_start_job", fake)
+    monkeypatch.setattr(plugin_api, "_await_new_run", lambda root, before, timeout=25.0: "run-abc")
     return calls, state
+
+
+@pytest.fixture
+def specify_run(monkeypatch):
+    """Stub the synchronous CLI call init makes (it is not a background job)."""
+    calls = []
+
+    def fake(args, cwd, timeout):
+        calls.append({"args": args, "cwd": str(cwd), "timeout": timeout})
+        return {"ok": True, "exit_code": 0, "payload": None, "output": "project ready", "stderr": ""}
+
+    monkeypatch.setattr(plugin_api, "_run_specify", fake)
+    return calls
 
 
 def test_json_tail_ignores_prose_and_braces_in_it(monkeypatch):
@@ -109,8 +123,7 @@ def test_json_tail_ignores_prose_and_braces_in_it(monkeypatch):
 
 
 def test_run_builds_the_documented_argv(client, project, cli):
-    calls, state = cli
-    state["payload"] = {"run_id": "r1", "status": "paused", "current_step_id": "review-spec"}
+    calls, _ = cli
 
     body = client.post(
         f"{PREFIX}/workflows/speckit/run",
@@ -122,9 +135,10 @@ def test_run_builds_the_documented_argv(client, project, cli):
         "-i", "spec=a greeting CLI",
         "--json",
     ], "empty inputs are skipped, not sent as -i key="
-    assert isinstance(body["run_id"], str) and len(body["run_id"]) > 0
-    assert body["status"] == "running"
-    assert any(str(arg).startswith("spec=") for arg in calls[0]["args"])
+    # The pane polls /runs/latest, so the request must return at once with a job.
+    assert body["running"] is True
+    assert body["run_id"] == "run-abc"
+    assert body["job_id"]
 
 
 def test_run_404s_when_the_workflow_is_not_installed(client, project, cli):
@@ -149,17 +163,39 @@ def test_resume_feeds_the_gate_verdict(client, project, cli):
         "-i", "gate_review_spec=approve",
         "--json",
     ]
-    assert body["status"] == "completed"
+    assert body["running"] is True
+    assert body["run_id"] == "r1"
 
 
 def test_status_reads_the_engine_state(client, project, cli):
-    calls, state = cli
-    state["payload"] = {"run_id": "r1", "status": "paused"}
+    calls, _ = cli
+    run_dir = project / ".specify" / "workflows" / "runs" / "abc123"
+    (run_dir / "state.json").write_text(
+        json.dumps({
+            "run_id": "abc123",
+            "status": "paused",
+            "current_step_id": "review-spec",
+            "current_step_index": 1,
+            "step_results": {
+                "review-spec": {
+                    "type": "gate",
+                    "status": "paused",
+                    "output": {"message": "Review the spec.", "options": ["approve", "reject"]},
+                }
+            },
+            "execution": {"nodes": [{"phase": "done"}, {"phase": "blocked"}]},
+        }),
+        encoding="utf-8",
+    )
 
-    body = client.get(f"{PREFIX}/workflows/speckit/runs/r1", params={"cwd": str(project)}).json()
+    body = client.get(f"{PREFIX}/workflows/speckit/runs/abc123", params={"cwd": str(project)}).json()
 
-    assert calls[0]["args"] == ["workflow", "status", "r1", "--json"]
+    assert calls == [], "state is read from disk, not by shelling out"
     assert body["status"] == "paused"
+    assert body["gate"]["verdict_input"] == "gate_review_spec"
+
+    missing = client.get(f"{PREFIX}/workflows/speckit/runs/nope", params={"cwd": str(project)})
+    assert missing.status_code == 404
 
 
 def test_resume_rejects_a_traversal_run_id(client, project, cli):
@@ -171,15 +207,16 @@ def test_resume_rejects_a_traversal_run_id(client, project, cli):
     assert cli[0] == []
 
 
-def test_a_failed_cli_call_is_reported_not_raised(client, project, cli):
-    calls, state = cli
-    state.update({"ok": False, "exit_code": 2, "payload": {"error": "gate rejected"}})
-    body = client.post(
+def test_a_spawn_failure_is_reported_not_swallowed(client, project, monkeypatch):
+    def boom(args, cwd, timeout=None):
+        raise OSError("specify is not installed")
+
+    monkeypatch.setattr(plugin_api, "_start_job", boom)
+    strict = TestClient(client.app, raise_server_exceptions=False)
+    response = strict.post(
         f"{PREFIX}/workflows/speckit/run", json={"cwd": str(project), "inputs": {"spec": "x"}}
-    ).json()
-    assert body["ok"] is False
-    assert body["exit_code"] == 2
-    assert body["error"] == "gate rejected"
+    )
+    assert response.status_code >= 400
 
 
 def test_artifacts_skip_run_machinery_and_sort_newest_first(client, project):
@@ -203,21 +240,16 @@ def test_artifact_reads_a_file_and_refuses_escapes(client, project):
     assert "inside .specify" in outside.json()["detail"]
 
 
-def test_init_bootstraps_a_folder_that_has_no_specify(client, tmp_path, cli):
-    calls, state = cli
+def test_init_bootstraps_a_folder_that_has_no_specify(client, tmp_path, specify_run):
+    calls = specify_run
     bare = tmp_path / "bare"
     bare.mkdir()
-    state["payload"] = None
-    state["stdout"] = "project ready"
 
     body = client.post(f"{PREFIX}/init", json={"cwd": str(bare)}).json()
 
     assert body["already"] is False
     assert body["ok"] is True
-    assert calls[0]["args"] == [
-        "init", "--here", "--force", "--non-interactive",
-        "--ignore-agent-tools", "--integration", "hermes",
-    ]
+    assert calls[0]["args"] == ["init", "--here", "--integration", "hermes"]
 
 
 def test_init_is_a_no_op_when_specify_exists(client, project, cli):
