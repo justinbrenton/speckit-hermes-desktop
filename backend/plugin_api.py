@@ -26,6 +26,7 @@ Security: every path is resolved inside ``<cwd>/.specify`` and must be one of
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import re
 import shutil
@@ -352,141 +353,226 @@ def list_processes(cwd: str = Query(..., description="Absolute project directory
 
 
 # ---------------------------------------------------------------------------
-# running a step
+# workflows — the spec-kit engine does the work, this bridge just drives it
 # ---------------------------------------------------------------------------
 
-INPUT_RE = re.compile(r"\{\{\s*inputs\.([A-Za-z0-9_.-]+)\s*\}\}")
+SPECIFY_TIMEOUT_MAX = 1800
+ARTIFACT_MAX_BYTES = 262_144
 
 
-def _render_args(template: str, values: dict[str, Any]) -> str:
-    """Fill ``{{ inputs.x }}`` from the workflow's inputs. Unknown keys render empty."""
-
-    def replace(match: re.Match[str]) -> str:
-        value = values.get(match.group(1).strip())
-        return "" if value is None else str(value)
-
-    return INPUT_RE.sub(replace, template or "")
-
-
-def _hermes_cli() -> str:
-    explicit = os.environ.get("HERMES_CLI")
+def _specify_cli() -> str:
+    explicit = os.environ.get("SPECIFY_CLI")
     if explicit and Path(explicit).exists():
         return explicit
-    found = shutil.which("hermes")
+    found = shutil.which("specify")
     if found:
         return found
-    local = os.environ.get("LOCALAPPDATA")
-    if local:
-        candidate = Path(local) / "hermes" / "bin" / "hermes.exe"
-        if candidate.exists():
-            return str(candidate)
-    raise HTTPException(status_code=503, detail="hermes CLI not found; set HERMES_CLI")
+    local = Path.home() / ".local" / "bin" / ("specify.exe" if os.name == "nt" else "specify")
+    if local.exists():
+        return str(local)
+    raise HTTPException(status_code=503, detail="specify CLI not found; set SPECIFY_CLI")
 
 
-def _spawn_hermes(
-    prompt: str, skill: str, cwd: Path, model: Optional[str], timeout: int
-) -> dict[str, Any]:
-    """Dispatch one workflow step the way the Hermes integration documents it.
+def _json_tail(text: str) -> Optional[Any]:
+    """The CLI prints step prose, then one JSON object at the end.
 
-    ``hermes chat -Q`` answers once and exits; the skill is selected with ``-s``
-    and the step's rendered arguments are the query. The query travels through a
-    temp file (``--query-file``) because it carries arbitrary user text and the
-    Windows shells re-quote it.
+    Parse from the last line that opens an object, so a brace inside the model's
+    own output cannot truncate the payload.
     """
-    exe = _hermes_cli()
-    handle, query_path = tempfile.mkstemp(prefix="speckit-step-", suffix=".txt")
+    if not text:
+        return None
+    for marker in ("\n{", "{"):
+        index = text.rfind(marker) if marker == "\n{" else text.find(marker)
+        if index < 0:
+            continue
+        start = index + (1 if marker == "\n{" else 0)
+        try:
+            return json.loads(text[start:])
+        except json.JSONDecodeError:
+            continue
+    return None
+
+
+def _run_specify(args: list[str], cwd: Path, timeout: int) -> dict[str, Any]:
+    """Spawn the CLI with a closed pipe on stdin.
+
+    That is what makes a gate pause instead of blocking a request forever, and it
+    is why the pipe and not DEVNULL is used (see below).
+    """
+    argv = [_specify_cli(), *args]
     try:
-        with os.fdopen(handle, "w", encoding="utf-8") as fh:
-            fh.write(prompt)
-        argv = [exe, "chat", "-Q", "--query-file", query_path, "-s", skill, "--in", str(cwd)]
-        if model:
-            argv += ["-m", model]
+        # input="" hands the child a pipe that closes at once. Not DEVNULL: on
+        # Windows NUL is a character device, isatty() answers True, and the gate
+        # prompts and then reads EOF as a rejection instead of pausing.
         completed = subprocess.run(
-            argv, cwd=str(cwd), capture_output=True, text=True, timeout=timeout
+            argv,
+            cwd=str(cwd),
+            input="",
+            capture_output=True,
+            text=True,
+            timeout=timeout,
         )
-        return {
-            "ok": completed.returncode == 0,
-            "exit_code": completed.returncode,
-            "stdout": completed.stdout,
-            "stderr": completed.stderr,
-            "argv": [*argv[:3], "<query-file>", *argv[4:]],
-        }
     except subprocess.TimeoutExpired:
         return {
             "ok": False,
             "exit_code": None,
-            "stdout": "",
-            "stderr": f"timed out after {timeout}s",
-            "argv": [],
+            "payload": None,
+            "output": "",
+            "stderr": f"specify timed out after {timeout}s",
+            "argv": argv,
         }
-    finally:
-        os.unlink(query_path)
-
-
-class RunStepRequest(BaseModel):
-    cwd: str
-    process: str
-    step: str
-    inputs: dict[str, Any] = {}
-    model: Optional[str] = None
-    timeout: int = 600
-
-
-@router.post("/run")
-def run_step(payload: RunStepRequest) -> dict[str, Any]:
-    """Dispatch one command step of one process.
-
-    A gate step is refused here on purpose: gates are answered by a human, and
-    the pane posts nothing for them.
-    """
-    root = _project_root(payload.cwd)
-    wf_file = root / ".specify" / "workflows" / payload.process / "workflow.yml"
-    if not wf_file.is_file():
-        raise HTTPException(status_code=404, detail=f"no such process: {payload.process}")
-
-    data = _load_yaml(wf_file) or {}
-    raw_steps = data.get("steps") or []
-    raw = next((item for item in raw_steps if (item or {}).get("id") == payload.step), None)
-    if raw is None:
-        raise HTTPException(
-            status_code=404, detail=f"no such step in {payload.process}: {payload.step}"
-        )
-    if raw.get("type", "command") != "command":
-        raise HTTPException(
-            status_code=400,
-            detail=f"step {payload.step} is a {raw.get('type')} step, not a command",
-        )
-
-    declared = data.get("inputs") or {}
-    missing = [
-        name
-        for name, spec in declared.items()
-        if (spec or {}).get("required") and not str(payload.inputs.get(name) or "").strip()
-    ]
-    if missing:
-        raise HTTPException(status_code=400, detail={"missing_inputs": missing})
-
-    values = {name: (spec or {}).get("default") for name, spec in declared.items()}
-    values.update({key: value for key, value in payload.inputs.items() if value is not None})
-
-    command = raw.get("command", "")
-    skill = _skill_for(command)
-    prompt = _render_args((raw.get("input") or {}).get("args", ""), values)
-    result = _spawn_hermes(
-        prompt, skill, root, payload.model, max(1, min(payload.timeout, 3600))
-    )
+    stdout = completed.stdout or ""
     return {
-        "process": payload.process,
-        "step": payload.step,
-        "command": command,
-        "skill": skill,
-        "prompt": prompt,
-        **result,
+        "ok": completed.returncode == 0,
+        "exit_code": completed.returncode,
+        "payload": _json_tail(stdout),
+        "output": stdout,
+        "stderr": completed.stderr or "",
+        "argv": argv,
+    }
+
+
+def _process_data(root: Path, process_id: str) -> dict[str, Any]:
+    """The installed workflow's YAML, or 404. Presence here is the install check."""
+    if not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", process_id or ""):
+        raise HTTPException(status_code=400, detail=f"invalid process id: {process_id!r}")
+    wf_file = root / ".specify" / "workflows" / process_id / "workflow.yml"
+    if not wf_file.is_file():
+        raise HTTPException(status_code=404, detail=f"no such process: {process_id}")
+    return _load_yaml(wf_file) or {}
+
+
+def _workflow_result(process: str, result: dict[str, Any]) -> dict[str, Any]:
+    payload = result.get("payload") or {}
+    gate = payload.get("gate") if isinstance(payload, dict) else None
+    return {
+        "process": process,
+        "run_id": payload.get("run_id") if isinstance(payload, dict) else None,
+        "status": payload.get("status") if isinstance(payload, dict) else None,
+        "current_step_id": payload.get("current_step_id") if isinstance(payload, dict) else None,
+        "current_step_index": payload.get("current_step_index") if isinstance(payload, dict) else None,
+        "gate": gate,
+        "error": payload.get("error") if isinstance(payload, dict) else None,
+        "ok": result.get("ok"),
+        "exit_code": result.get("exit_code"),
+        "output": result.get("output", ""),
+        "stderr": result.get("stderr", ""),
+    }
+
+
+class WorkflowRunRequest(BaseModel):
+    cwd: str
+    inputs: dict[str, Any] = {}
+    timeout: int = 1800
+
+
+class WorkflowResumeRequest(BaseModel):
+    cwd: str
+    answers: dict[str, Any] = {}
+    timeout: int = 1800
+
+
+@router.post("/workflows/{process}/run")
+def workflow_run(process: str, payload: WorkflowRunRequest) -> dict[str, Any]:
+    """Start a workflow. Gates park the run and return ``status: paused``."""
+    root = _project_root(payload.cwd)
+    _process_data(root, process)  # 404 when the workflow is not installed
+    args = ["workflow", "run", process]
+    for key, value in payload.inputs.items():
+        if value is not None and str(value) != "":
+            args += ["-i", f"{key}={value}"]
+    args.append("--json")
+    result = _run_specify(args, root, max(30, min(payload.timeout, SPECIFY_TIMEOUT_MAX)))
+    return _workflow_result(process, result)
+
+
+@router.post("/workflows/{process}/runs/{run_id}/resume")
+def workflow_resume(process: str, run_id: str, payload: WorkflowResumeRequest) -> dict[str, Any]:
+    """Answer a parked gate by feeding the gate's declared inputs."""
+    root = _project_root(payload.cwd)
+    _process_data(root, process)
+    if not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", run_id or ""):
+        raise HTTPException(status_code=400, detail=f"invalid run id: {run_id!r}")
+    args = ["workflow", "resume", run_id]
+    for key, value in payload.answers.items():
+        if value is not None and str(value) != "":
+            args += ["-i", f"{key}={value}"]
+    args.append("--json")
+    result = _run_specify(args, root, max(30, min(payload.timeout, SPECIFY_TIMEOUT_MAX)))
+    return _workflow_result(process, result)
+
+
+@router.get("/workflows/{process}/runs/{run_id}")
+def workflow_status(
+    process: str,
+    run_id: str,
+    cwd: str = Query(..., description="Absolute project directory"),
+) -> dict[str, Any]:
+    """Progress for one run, from the engine's own state."""
+    root = _project_root(cwd)
+    _process_data(root, process)
+    if not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", run_id or ""):
+        raise HTTPException(status_code=400, detail=f"invalid run id: {run_id!r}")
+    result = _run_specify(["workflow", "status", run_id, "--json"], root, 120)
+    return _workflow_result(process, result)
+
+
+# ---------------------------------------------------------------------------
+# artifacts — read-only view of what a process wrote
+# ---------------------------------------------------------------------------
+
+
+@router.get("/artifacts")
+def list_artifacts(
+    cwd: str = Query(..., description="Absolute project directory"),
+    limit: int = Query(80, ge=1, le=500),
+) -> dict[str, Any]:
+    """Files under ``.specify`` newest first. Run state is skipped: it is machinery."""
+    root = _project_root(cwd)
+    specify = root / ".specify"
+    rows: list[dict[str, Any]] = []
+    if specify.is_dir():
+        for path in specify.rglob("*"):
+            if not path.is_file() or path.suffix == ".pyc":
+                continue
+            rel = path.relative_to(root).as_posix()
+            if "/workflows/runs/" in rel or rel.startswith(".specify/workflows/runs/"):
+                continue
+            try:
+                stat = path.stat()
+            except OSError:
+                continue
+            rows.append({"path": rel, "size": stat.st_size, "mtime": int(stat.st_mtime * 1000)})
+    rows.sort(key=lambda row: row["mtime"], reverse=True)
+    return {"cwd": str(root), "artifacts": rows[:limit]}
+
+
+@router.get("/artifact")
+def read_artifact(
+    cwd: str = Query(..., description="Absolute project directory"),
+    path: str = Query(..., description="Path relative to the project root"),
+) -> dict[str, Any]:
+    root = _project_root(cwd)
+    target = (root / path).resolve()
+    specify = (root / ".specify").resolve()
+    if specify not in target.parents and target != specify:
+        raise HTTPException(status_code=400, detail="path must be inside .specify")
+    if not target.is_file():
+        raise HTTPException(status_code=404, detail=f"no such file: {path}")
+    size = target.stat().st_size
+    if size > ARTIFACT_MAX_BYTES:
+        raise HTTPException(status_code=413, detail=f"file is {size} bytes; limit is {ARTIFACT_MAX_BYTES}")
+    return {
+        "path": path,
+        "size": size,
+        "content": target.read_text(encoding="utf-8", errors="replace"),
     }
 
 
 # ---------------------------------------------------------------------------
 # kanban
+# ---------------------------------------------------------------------------
+
 # ---------------------------------------------------------------------------
 
 

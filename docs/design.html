@@ -179,11 +179,30 @@ steps:
 <li>Discovery goes through one route, so the CLI stays the source of truth for what</li>
 </ul>
 <p>a workflow means.</p>
-<h3 id="dispatch">Dispatch</h3>
-<p>The documented contract for this integration: workflow steps run <code>hermes chat -Q</code>, a slash-prefixed prompt selects a skill with <code>-s</code>, and the remaining text is the query. <code>POST /run</code> does exactly that and refuses gate steps, because a human answers those. The query travels through <code>--query-file</code> rather than <code>-q</code>: it carries the user's own words, and a Windows shell re-quotes a <code>-q</code> argument.</p>
-<p>Verified on this machine:</p>
-<pre><code>hermes chat -Q -q &quot;Reply with exactly: SKILL-OK&quot; -s speckit-specify
--&gt; SKILL-OK  (session_id: local-af99f0b5ec5f9626...)</code></pre>
+<h3 id="driving-the-engine-not-reimplementing-it">Driving the engine, not reimplementing it</h3>
+<p>The plugin runs no workflow logic of its own. <code>specify workflow run|resume|status --json</code> is the engine, and the backend is a bridge to it:</p>
+<div class="table-wrap"><table>
+<thead><tr><th>Route</th><th>Spawns</th></tr></thead>
+<tbody>
+<tr><td><code>POST /workflows/{process}/run</code></td><td><code>specify workflow run &lt;process&gt; -i k=v --json</code></td></tr>
+<tr><td><code>POST /workflows/{process}/runs/{id}/resume</code></td><td><code>specify workflow resume &lt;id&gt; -i gate_x=approve --json</code></td></tr>
+<tr><td><code>GET /workflows/{process}/runs/{id}</code></td><td><code>specify workflow status &lt;id&gt; --json</code></td></tr>
+</tbody></table></div>
+<p>Step types the engine supports beyond <code>command</code> and <code>gate</code> (shell, prompt, if, switch, while, fan-out, fan-in, github, init, slot, nested workflow) come for free, because the engine executes them. Run state, resume and history are already <code>.specify/workflows/runs/&lt;id&gt;/</code> (<code>state.json</code>, <code>inputs.json</code>, <code>log.jsonl</code>), so the pane reads it rather than keeping its own.</p>
+<p>Two Windows findings that shaped this, both measured:</p>
+<ul>
+<li><strong><code>stdin=DEVNULL</code> does not pause a gate.</strong> NUL is a character device, so</li>
+</ul>
+<p><code>sys.stdin.isatty()</code> answers True, the gate prompts, reads EOF, and the run aborts with <code>choice: reject</code>. Passing <code>input=&quot;&quot;</code> (a pipe that closes immediately) makes it pause. The bridge uses the pipe.</p>
+<ul>
+<li><strong>A gate can only be answered through a declared input.</strong> The schema rejects a</li>
+</ul>
+<p>gate whose <code>verdict_input</code> is not in <code>inputs:</code>, and without one there is no non-interactive way to say approve. Our bundle's workflow declares one input per gate.</p>
+<p>The loop, end to end on this machine:</p>
+<pre><code>run      -&gt; status=paused   current_step=review-spec
+resume -i gate_review_spec=approve
+         -&gt; progressed to review-plan (the plan step ran) and paused there</code></pre>
+<p>The first run also wrote a real spec through <code>/speckit-specify</code>: the engine dispatched <code>hermes chat -Q -s speckit-specify</code> and the pane-side output showed the model noticing it had resolved <code>spec-template</code> from the <code>hermes-desktop</code> preset.</p>
 <h3 id="where-the-skills-go">Where the skills go</h3>
 <p>The docs say <code>~/.hermes/skills/</code>. On Windows the home is <code>%LOCALAPPDATA%\hermes</code>, and a profile session reads <code>&lt;home&gt;/profiles/&lt;name&gt;/skills</code>; <code>get_hermes_home()</code> resolves context override, then <code>HERMES_HOME</code>, then the platform default.</p>
 <p>Measured here, because this is where the integration silently failed: the ten skills were first installed to <code>C:\Users\&lt;user&gt;\.hermes\skills</code> and <code>hermes skills list</code> showed none of them. After copying them into <code>profiles/codie/skills</code> the listing showed ten and <code>-s speckit-specify</code> dispatched. So <code>/processes</code> checks every candidate directory and counts a skill as installed if any one of them has it.</p>
@@ -265,19 +284,21 @@ specify bundle add    --dev ./bundles/hermes-desktop</code></pre>
 </ul>
 <p>Next, in the order I would do them:</p>
 <ol>
-<li>Confirm the pane renders in a live app with the current build.</li>
-<li>Install the ten <code>speckit-*</code> skills into the home Hermes reads, so a dispatch has</li>
+<li>Rebuild the pane as the three-screen runner: process picker, inputs form from</li>
 </ol>
-<p>a target. Until that is done every command step reports <code>skill_installed: false</code>.</p>
+<p>the workflow, run view with gate panel and artifact list. The three authoring editors go; the workflow writes those files through the skills.</p>
 <ol>
-<li>Rebuild the pane around <code>GET /processes</code>: process picker, input form built from</li>
+<li>Re-run a workflow from the pane in a live app, approve a gate, and watch the</li>
 </ol>
-<p>the workflow's <code>inputs</code>, step runner that dispatches command steps and stops at gates.</p>
+<p>next step land. Everything below the pane is already proven.</p>
 <ol>
-<li>Artifact viewer for the run in progress, driven by the paths the process writes.</li>
-<li>Keep the three authoring editors as an alternative path for SDD, since writing a</li>
+<li>Ship the GUI-friendly workflow in the fork's bundle: the stock <code>speckit</code></li>
 </ol>
-<p>spec by hand in a form beats a chat round trip for the first step.</p>
+<p>workflow's gates declare no <code>verdict_input</code>, so a GUI cannot approve them.</p>
+<ol>
+<li>Bundle variants (backend, fullstack, ml, api-only) and the assessment and</li>
+</ol>
+<p>bug-fix bundles as one-click installs.</p>
 <p>Deliberately out, and why:</p>
 <div class="table-wrap"><table>
 <thead><tr><th>Not doing</th><th>Reason</th></tr></thead>
@@ -327,8 +348,9 @@ specify bundle add    --dev ./bundles/hermes-desktop</code></pre>
 <tr><td>The deployed plugin matches the build</td><td><code>cmp desktop/plugin.js ~/.hermes/desktop-plugins/spec-kit-hermes/plugin.js</code></td><td>identical, 65,162 bytes</td></tr>
 <tr><td>The config edit adds one line, not a duplicate key</td><td>feed the live <code>config.yaml</code> through <code>config-enable.mjs</code></td><td>1 line added, <code>plugins.enabled</code> contains <code>spec-kit-hermes</code> once, file parses</td></tr>
 <tr><td>Backend half is installed</td><td><code>ls ~/.hermes/plugins/spec-kit-hermes/dashboard/</code></td><td><code>plugin_api.py</code> (10,031 bytes), <code>manifest.json</code>, <code>index.js</code></td></tr>
-<tr><td>Backend tests pass</td><td><code>python -m pytest backend/tests -q</code></td><td>27 passed (route, mount, file I/O, process discovery)</td></tr>
+<tr><td>Backend tests pass</td><td><code>python -m pytest backend/tests -q</code></td><td>36 passed (routes, mount, file I/O, discovery, workflow bridge, artifacts)</td></tr>
 <tr><td>Process discovery is data-driven</td><td><code>backend/tests/test_processes.py</code></td><td>a bugfix workflow becomes inputs + command steps + a gate; skills resolved and flagged</td></tr>
+<tr><td>A gate pauses and resumes</td><td><code>specify workflow run</code> / <code>resume -i gate_review_spec=approve</code></td><td>run paused at review-spec; resume advanced to review-plan</td></tr>
 <tr><td>The doc pair cannot drift</td><td><code>npm run docs</code></td><td>HTML regenerated from this file, 13 sections</td></tr>
 </tbody></table></div>
 <p>Not verified: the pane rendering in a live app. That needs the desktop app open, which is the next step, not a claim.</p>

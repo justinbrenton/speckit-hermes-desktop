@@ -198,20 +198,45 @@ Rules that keep it expandable, in order of importance:
 - Discovery goes through one route, so the CLI stays the source of truth for what
   a workflow means.
 
-### Dispatch
+### Driving the engine, not reimplementing it
 
-The documented contract for this integration: workflow steps run `hermes chat -Q`,
-a slash-prefixed prompt selects a skill with `-s`, and the remaining text is the
-query. `POST /run` does exactly that and refuses gate steps, because a human
-answers those. The query travels through `--query-file` rather than `-q`: it
-carries the user's own words, and a Windows shell re-quotes a `-q` argument.
+The plugin runs no workflow logic of its own. `specify workflow run|resume|status
+--json` is the engine, and the backend is a bridge to it:
 
-Verified on this machine:
+| Route | Spawns |
+|---|---|
+| `POST /workflows/{process}/run` | `specify workflow run <process> -i k=v --json` |
+| `POST /workflows/{process}/runs/{id}/resume` | `specify workflow resume <id> -i gate_x=approve --json` |
+| `GET /workflows/{process}/runs/{id}` | `specify workflow status <id> --json` |
+
+Step types the engine supports beyond `command` and `gate` (shell, prompt, if,
+switch, while, fan-out, fan-in, github, init, slot, nested workflow) come for free,
+because the engine executes them. Run state, resume and history are already
+`.specify/workflows/runs/<id>/` (`state.json`, `inputs.json`, `log.jsonl`), so the
+pane reads it rather than keeping its own.
+
+Two Windows findings that shaped this, both measured:
+
+- **`stdin=DEVNULL` does not pause a gate.** NUL is a character device, so
+  `sys.stdin.isatty()` answers True, the gate prompts, reads EOF, and the run
+  aborts with `choice: reject`. Passing `input=""` (a pipe that closes
+  immediately) makes it pause. The bridge uses the pipe.
+- **A gate can only be answered through a declared input.** The schema rejects a
+  gate whose `verdict_input` is not in `inputs:`, and without one there is no
+  non-interactive way to say approve. Our bundle's workflow declares one input per
+  gate.
+
+The loop, end to end on this machine:
 
 ```
-hermes chat -Q -q "Reply with exactly: SKILL-OK" -s speckit-specify
--> SKILL-OK  (session_id: local-af99f0b5ec5f9626...)
+run      -> status=paused   current_step=review-spec
+resume -i gate_review_spec=approve
+         -> progressed to review-plan (the plan step ran) and paused there
 ```
+
+The first run also wrote a real spec through `/speckit-specify`: the engine
+dispatched `hermes chat -Q -s speckit-specify` and the pane-side output showed the
+model noticing it had resolved `spec-template` from the `hermes-desktop` preset.
 
 ### Where the skills go
 
@@ -342,15 +367,15 @@ Shipped:
 
 Next, in the order I would do them:
 
-1. Confirm the pane renders in a live app with the current build.
-2. Install the ten `speckit-*` skills into the home Hermes reads, so a dispatch has
-   a target. Until that is done every command step reports `skill_installed: false`.
-3. Rebuild the pane around `GET /processes`: process picker, input form built from
-   the workflow's `inputs`, step runner that dispatches command steps and stops at
-   gates.
-4. Artifact viewer for the run in progress, driven by the paths the process writes.
-5. Keep the three authoring editors as an alternative path for SDD, since writing a
-   spec by hand in a form beats a chat round trip for the first step.
+1. Rebuild the pane as the three-screen runner: process picker, inputs form from
+   the workflow, run view with gate panel and artifact list. The three authoring
+   editors go; the workflow writes those files through the skills.
+2. Re-run a workflow from the pane in a live app, approve a gate, and watch the
+   next step land. Everything below the pane is already proven.
+3. Ship the GUI-friendly workflow in the fork's bundle: the stock `speckit`
+   workflow's gates declare no `verdict_input`, so a GUI cannot approve them.
+4. Bundle variants (backend, fullstack, ml, api-only) and the assessment and
+   bug-fix bundles as one-click installs.
 
 Deliberately out, and why:
 
@@ -415,8 +440,9 @@ SDK export. `Fragment` comes from React.
 | The deployed plugin matches the build | `cmp desktop/plugin.js ~/.hermes/desktop-plugins/spec-kit-hermes/plugin.js` | identical, 65,162 bytes |
 | The config edit adds one line, not a duplicate key | feed the live `config.yaml` through `config-enable.mjs` | 1 line added, `plugins.enabled` contains `spec-kit-hermes` once, file parses |
 | Backend half is installed | `ls ~/.hermes/plugins/spec-kit-hermes/dashboard/` | `plugin_api.py` (10,031 bytes), `manifest.json`, `index.js` |
-| Backend tests pass | `python -m pytest backend/tests -q` | 27 passed (route, mount, file I/O, process discovery) |
+| Backend tests pass | `python -m pytest backend/tests -q` | 36 passed (routes, mount, file I/O, discovery, workflow bridge, artifacts) |
 | Process discovery is data-driven | `backend/tests/test_processes.py` | a bugfix workflow becomes inputs + command steps + a gate; skills resolved and flagged |
+| A gate pauses and resumes | `specify workflow run` / `resume -i gate_review_spec=approve` | run paused at review-spec; resume advanced to review-plan |
 | The doc pair cannot drift | `npm run docs` | HTML regenerated from this file, 13 sections |
 
 Not verified: the pane rendering in a live app. That needs the desktop app open,
