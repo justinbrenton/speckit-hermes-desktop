@@ -48,11 +48,19 @@ def main() -> int:
     print(f"dashboard dir: {entry['_dir']}")
     assert entry["has_api"], "manifest declares no usable api file"
 
-    # Consent: the active profile's config must list the plugin.
-    import yaml
-
+    # Consent: the active profile's config must list the plugin. ruamel is what Hermes
+    # itself parses config with, so prefer it and fail loudly on a duplicate key instead
+    # of silently reading whichever copy wins.
     config_path = root / "profiles" / args.profile / "config.yaml"
-    config = yaml.safe_load(config_path.read_text(encoding="utf-8")) or {}
+    text = config_path.read_text(encoding="utf-8")
+    try:
+        from ruamel.yaml import YAML
+
+        config = YAML(typ="safe").load(text) or {}
+    except ImportError:  # PyYAML is the fallback when ruamel is not installed
+        import yaml
+
+        config = yaml.safe_load(text) or {}
     enabled = set((config.get("plugins") or {}).get("enabled") or [])
     disabled = set((config.get("plugins") or {}).get("disabled") or [])
     assert PLUGIN in enabled, f"{PLUGIN} missing from plugins.enabled in {config_path}"
