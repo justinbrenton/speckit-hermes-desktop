@@ -397,6 +397,62 @@ def list_processes(cwd: str = Query(..., description="Absolute project directory
 SPECIFY_TIMEOUT_MAX = 1800
 ARTIFACT_MAX_BYTES = 262_144
 
+#: Background dispatches, keyed by job id. The CLI's own run state lives under
+#: .specify/workflows/runs; this only tracks the process we spawned.
+JOBS: dict[str, dict[str, Any]] = {}
+
+
+def _start_job(args: list[str], cwd: Path) -> dict[str, Any]:
+    """Spawn the CLI detached and return immediately.
+
+    A workflow step dispatches a model call, which takes minutes. Holding an HTTP
+    request open for that fails in the desktop's 30 s RPC bridge, so the caller
+    polls ``GET /jobs/<id>`` instead.
+
+    stdin is a pipe that is closed at once: a gate then pauses (a closed pipe is
+    not a TTY) instead of prompting and treating EOF as a rejection.
+    """
+    job_id = os.urandom(6).hex()
+    log_path = Path(tempfile.mkstemp(prefix="speckit-job-", suffix=".log")[1])
+    handle = open(log_path, "wb")
+    try:
+        proc = subprocess.Popen(
+            [_specify_cli(), *args],
+            cwd=str(cwd),
+            stdin=subprocess.PIPE,
+            stdout=handle,
+            stderr=subprocess.STDOUT,
+        )
+        if proc.stdin is not None:
+            proc.stdin.close()
+    finally:
+        handle.close()
+    JOBS[job_id] = {
+        "id": job_id,
+        "argv": args,
+        "cwd": str(cwd),
+        "pid": proc.pid,
+        "proc": proc,
+        "log": str(log_path),
+        "started_at": time.time(),
+    }
+    return {"job_id": job_id, "pid": proc.pid, "running": True}
+
+
+def _job_state(job: dict[str, Any]) -> dict[str, Any]:
+    running = job["proc"].poll() is None
+    try:
+        text = Path(job["log"]).read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        text = ""
+    return {
+        "job_id": job["id"],
+        "running": running,
+        "exit_code": None if running else job["proc"].returncode,
+        "payload": None if running else _json_tail(text),
+        "output": text[-20000:],
+    }
+
 
 def _specify_cli() -> str:
     explicit = os.environ.get("SPECIFY_CLI")
@@ -512,16 +568,22 @@ class WorkflowResumeRequest(BaseModel):
 
 @router.post("/workflows/{process}/run")
 def workflow_run(process: str, payload: WorkflowRunRequest) -> dict[str, Any]:
-    """Start a workflow. Gates park the run and return ``status: paused``."""
+    """Start a workflow. Gates park; nothing executes synchronously."""
     root = _project_root(payload.cwd)
-    _process_data(root, process)  # 404 when the workflow is not installed
+    _process_data(root, process)
     args = ["workflow", "run", process]
     for key, value in payload.inputs.items():
         if value is not None and str(value) != "":
             args += ["-i", f"{key}={value}"]
     args.append("--json")
-    result = _run_specify(args, root, max(30, min(payload.timeout, SPECIFY_TIMEOUT_MAX)))
-    return _workflow_result(process, result)
+    job = _start_job(args, root)
+    return {
+        "process": process,
+        "run_id": job["id"],
+        "pid": job["pid"],
+        "running": True,
+        "stdout_file": job["log"],
+    }
 
 
 @router.post("/workflows/{process}/runs/{run_id}/resume")
