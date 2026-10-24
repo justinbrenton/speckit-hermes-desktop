@@ -723,7 +723,9 @@ def init_project(payload: InitRequest) -> dict[str, Any]:
     if (root / ".specify").is_dir():
         return {"ok": True, "already": True, "cwd": str(root), "output": ""}
     integration = re.sub(r"[^a-z0-9_-]", "", (payload.integration or "hermes").lower()) or "hermes"
-    result = _run_specify(["init", "--here", "--integration", integration], root, 600)
+    result = _run_specify(
+        ["init", "--here", "--force", "--non-interactive", "--integration", integration], root, 600
+    )
     synced = _sync_legacy_skills()
     patched = _ensure_gate_verdicts(root)
     return {
@@ -743,6 +745,91 @@ def repair_workflows(payload: InitRequest) -> dict[str, Any]:
     return {"cwd": str(root), "patched": _ensure_gate_verdicts(root)}
 
 
+class ArtifactWrite(BaseModel):
+    cwd: str
+    path: str
+    content: str
+    base_mtime: Optional[int] = None
+
+
+@router.put("/artifact")
+def write_artifact(payload: ArtifactWrite) -> dict[str, Any]:
+    """Save an edited artifact. A stale base_mtime returns 409 with the winner."""
+    root = _project_root(payload.cwd)
+    target = (root / payload.path).resolve()
+    allowed = [(root / ".specify").resolve(), (root / "specs").resolve()]
+    if not any(base == target or base in target.parents for base in allowed):
+        raise HTTPException(status_code=400, detail="path must stay inside .specify/ or specs/")
+
+    current = _mtime_ms(target)
+    if payload.base_mtime is None:
+        if current is not None:
+            raise HTTPException(status_code=409, detail={
+                "conflict": True,
+                "reason": "file appeared after the pane loaded it",
+                "path": payload.path,
+                "content": _read_text(target),
+                "mtime": current,
+            })
+    elif current != payload.base_mtime:
+        raise HTTPException(status_code=409, detail={
+            "conflict": True,
+            "reason": "file changed on disk since the pane loaded it",
+            "path": payload.path,
+            "content": _read_text(target) if current is not None else "",
+            "mtime": current,
+        })
+
+    mtime = _write_text_atomic(target, payload.content)
+    return {"path": payload.path, "mtime": mtime, "bytes": len(payload.content.encode("utf-8"))}
+
+
+class ExtensionRequest(BaseModel):
+    cwd: str
+    id: str
+
+
+@router.get("/extensions")
+def list_extensions(cwd: str = Query(..., description="Absolute project directory")) -> dict[str, Any]:
+    """Installed spec-kit extensions, read from the project's own manifest."""
+    root = _project_root(cwd)
+    installed: list[str] = []
+    marker = root / ".specify" / "integrations" / "speckit.manifest.json"
+    for candidate in (root / ".specify" / "extensions", root / ".specify" / "integrations"):
+        if not candidate.is_dir():
+            continue
+        for entry in candidate.iterdir():
+            if entry.is_dir():
+                installed.append(entry.name)
+    if marker.is_file():
+        try:
+            manifest = json.loads(marker.read_text(encoding="utf-8"))
+            for key in ("extensions", "installed_extensions"):
+                for item in manifest.get(key) or []:
+                    name = item.get("id") if isinstance(item, dict) else item
+                    if name:
+                        installed.append(str(name))
+        except (OSError, ValueError):
+            pass
+    return {"cwd": str(root), "installed": sorted(set(installed))}
+
+
+@router.post("/extensions/install")
+def install_extension(payload: ExtensionRequest) -> dict[str, Any]:
+    """Install a bundled extension (bug, assess) and refresh workflow discovery."""
+    root = _project_root(payload.cwd)
+    ext_id = re.sub(r"[^a-z0-9_-]", "", (payload.id or "").lower())
+    if ext_id not in {"bug", "assess"}:
+        raise HTTPException(status_code=400, detail=f"unknown extension: {payload.id!r}")
+    result = _run_specify(["extension", "add", ext_id], root, 300)
+    _ensure_gate_verdicts(root)
+    return {
+        "ok": result["ok"],
+        "extension": ext_id,
+        "output": (result.get("output", "") + result.get("stderr", ""))[-4000:],
+    }
+
+
 @router.get("/artifacts")
 def list_artifacts(cwd: str = Query(..., description="Absolute project directory")) -> dict[str, Any]:
     """Every spec-kit artifact under .specify, newest feature first."""
@@ -750,7 +837,13 @@ def list_artifacts(cwd: str = Query(..., description="Absolute project directory
     out: list[dict[str, Any]] = []
     # spec-kit writes feature folders to <project>/specs/NNN-name/. Older trees
     # kept them under .specify/specs, so both are scanned.
-    for specs in (root / "specs", root / ".specify" / "specs"):
+    # SDD writes specs/, bugs/ and assessments/ live under .specify/.
+    for specs in (
+        root / "specs",
+        root / ".specify" / "specs",
+        root / ".specify" / "bugs",
+        root / ".specify" / "assessments",
+    ):
         if not specs.is_dir():
             continue
         features = [d for d in specs.iterdir() if d.is_dir()]

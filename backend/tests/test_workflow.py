@@ -249,7 +249,9 @@ def test_init_bootstraps_a_folder_that_has_no_specify(client, tmp_path, specify_
 
     assert body["already"] is False
     assert body["ok"] is True
-    assert calls[0]["args"] == ["init", "--here", "--integration", "hermes"]
+    assert calls[0]["args"] == [
+        "init", "--here", "--force", "--non-interactive", "--integration", "hermes",
+    ], "a closed stdin would abort on the not-empty-directory prompt"
 
 
 def test_init_is_a_no_op_when_specify_exists(client, project, cli):
