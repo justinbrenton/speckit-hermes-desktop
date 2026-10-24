@@ -195,7 +195,7 @@ function PickScreen({ processes, busy, error, onPick, onReload, onInit, project,
       backendDown
         ? jsx('p', {
             className: 'rounded border border-(--ui-border) bg-(--ui-bg-tertiary) p-2 text-[0.6875rem] text-(--ui-text-secondary)',
-            children: 'The plugin backend is not answering. Quit every Hermes process and reopen — the Python half is loaded once at startup, so reloading the pane cannot pick it up.'
+            children: 'The plugin backend is not answering. Either Hermes has not been restarted since the plugin was installed, or this Hermes home does not list spec-kit-hermes in plugins.enabled. Quit every Hermes process, check that config, then reopen.'
           })
         : null,
       error ? jsx('p', { className: 'text-[0.6875rem] text-(--ui-text-secondary)', children: error }) : null,
