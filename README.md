@@ -51,9 +51,19 @@ npm run build            # src -> desktop/plugin.js
 node scripts/install.mjs --profile codie
 ```
 
-Then fully quit Hermes Desktop (every `Hermes.exe`) and start it again — the runtime
-plugin loader reads `plugin.js` at app start. The pane shows up as **Spec Kit** in the
-right sidebar, and a `Spec Kit` chip in the status bar focuses it.
+The desktop loader fs-watches `desktop-plugins/*/plugin.js` and hot-reloads, so a running
+app picks the file up on save (verified — see docs/VERIFICATION.md §9). If the pane does
+not appear, fully quit every `Hermes.exe` and start the app again. It shows up as
+**Spec Kit** in the right sidebar; the `Spec Kit` chip in the status bar focuses it.
+
+Prove the backend half is live on your machine:
+
+```bash
+PYTHONPATH="$LOCALAPPDATA/hermes/hermes-agent" python scripts/verify-install.py --profile codie
+```
+
+It re-runs Hermes' own discovery + mount against the installed files and then drives the
+routes (200 on `/status`, write, 409 on a stale mtime, 400 on `../escape.md`).
 
 `--dry-run` prints what would change. The installer backs up an existing
 `plugin.js` to `plugin.js.backup` and the profile's `config.yaml` to

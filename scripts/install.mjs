@@ -21,6 +21,7 @@ import { build } from './build.mjs'
 import { enablePlugin, isPluginEnabled } from './config-enable.mjs'
 
 export const PLUGIN_ID = 'spec-kit-hermes'
+const CH_BACKSLASH = String.fromCharCode(92)
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
 
 function parseArgs(argv) {
@@ -40,14 +41,39 @@ function parseArgs(argv) {
   return options
 }
 
-export function defaultHermesHome() {
-  if (process.env.HERMES_HOME) {
-    return process.env.HERMES_HOME
+/**
+ * The Hermes ROOT (the directory that holds `plugins/`, `desktop-plugins/` and
+ * `profiles/`), not a profile home.
+ *
+ * A `HERMES_HOME` of `<root>/profiles/<name>` — what a profile-scoped process
+ * exports — is unwrapped to `<root>`, and `<name>` becomes the default profile.
+ * This mirrors `hermes_constants.get_default_hermes_root`, and it matters:
+ * dashboard-plugin discovery scans the process home AND the default root, while
+ * the consent gate reads the ACTIVE profile's config. Installing into
+ * `<root>/plugins` with the edit in `<root>/profiles/<name>/config.yaml` is the
+ * combination that both discovers and mounts.
+ */
+export function resolveHome(explicit, env = process.env) {
+  const candidate = explicit || env.HERMES_HOME || ''
+  if (candidate) {
+    // Segment split instead of a separator regex: a HERMES_HOME exported by another
+    // process can carry doubled backslashes, and '/' form is fine for node's fs.
+    const segments = String(candidate)
+      .split('')
+      .map(ch => (ch === CH_BACKSLASH || ch === '/' ? '/' : ch))
+      .join('')
+      .split('/')
+      .filter(Boolean)
+    const marker = segments.lastIndexOf('profiles')
+    if (marker > 0 && marker === segments.length - 2) {
+      return { home: segments.slice(0, marker).join('/'), profile: segments[marker + 1] }
+    }
+    return { home: segments.join('/'), profile: '' }
   }
-  if (process.platform === 'win32' && process.env.LOCALAPPDATA) {
-    return join(process.env.LOCALAPPDATA, 'hermes')
+  if (env.LOCALAPPDATA) {
+    return { home: join(env.LOCALAPPDATA, 'hermes'), profile: '' }
   }
-  return join(process.env.HOME || process.env.USERPROFILE || '', '.hermes')
+  return { home: join(env.HOME || env.USERPROFILE || '', '.hermes'), profile: '' }
 }
 
 async function exists(path) {
@@ -89,7 +115,10 @@ async function enableInConfig(path, name, { dryRun, required }) {
   return { path, changed, alreadyEnabled }
 }
 
-export async function install({ profile, home = defaultHermesHome(), dryRun = false } = {}) {
+export async function install({ profile, home, dryRun = false } = {}) {
+  const resolved = resolveHome(home)
+  home = resolved.home
+  profile = profile || resolved.profile
   const buildResult = await build({ root: ROOT })
   const pluginSource = await readFile(buildResult.target, 'utf8')
 

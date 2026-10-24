@@ -11,6 +11,7 @@
     "build": "node scripts/build.mjs",
     "test": "node --test test/*.test.mjs",
     "test:py": "python -m pytest backend/tests -q",
-    "install:plugin": "node scripts/install.mjs"
+    "install:plugin": "node scripts/install.mjs",
+    "verify:install": "node scripts/verify-install.py"
   }
 }

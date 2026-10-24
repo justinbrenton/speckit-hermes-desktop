@@ -104,12 +104,73 @@ What the suites cover:
 | `backend/tests/test_plugin_api.py` | read/write, atomic write, mtime conflict (409 + winning copy), path allowlist refusals, relative/missing `cwd`, real Kanban create/dedupe/links in a throwaway `HERMES_HOME` |
 | `backend/tests/test_mount.py` | the mount itself, through Hermes' dashboard code |
 
-## 8. What is NOT verified
+## 8. Live install
 
-- **The pane rendering inside the running app.** `Hermes.exe` was running during the
-  build; the runtime loader reads `plugin.js` at app start (and via its fs watcher), so
-  the new pane appears after the app picks up the file. No screenshot of the live pane is
-  claimed here.
+```
+$ node scripts/install.mjs --profile codie
+Spec Kit -> C:/Users/Fortress/AppData/Local/hermes
+  wrote   …/desktop-plugins/spec-kit-hermes/plugin.js      (64888 bytes)
+  wrote   …/desktop-plugins/spec-kit-hermes/plugin.yaml
+  wrote   …/plugins/spec-kit-hermes/dashboard/plugin_api.py
+  wrote   …/plugins/spec-kit-hermes/dashboard/manifest.json
+  wrote   …/plugins/spec-kit-hermes/dashboard/index.js
+  config enabled: …/profiles/codie/config.yaml
+  config enabled: …/config.yaml
+```
+
+`…/profiles/codie/config.yaml` now lists `spec-kit-hermes` under `plugins.enabled`
+(a `.speckit-backup` copy sits beside it; the previous v1 `plugin.js` is preserved as
+`plugin.js.backup`).
+
+```
+$ PYTHONPATH="$LOCALAPPDATA/hermes/hermes-agent" python scripts/verify-install.py --profile codie
+discovered   : spec-kit-hermes (user) api=plugin_api.py
+dashboard dir: …\hermes\plugins\spec-kit-hermes\dashboard
+consent      : enabled in …\profiles\codie\config.yaml
+GET  /api/plugins/spec-kit-hermes/status -> 200 {'ok': True, 'plugin': 'spec-kit-hermes', …}
+GET  /api/plugins/spec-kit-hermes/files (empty project) -> 200, 3 files absent
+PUT  /api/plugins/spec-kit-hermes/file -> 200, wrote 32 bytes to …\.specify\spec.md
+PUT  /api/plugins/spec-kit-hermes/file (stale mtime) -> 409 with the winning copy
+PUT  /api/plugins/spec-kit-hermes/file (../escape.md) -> 400 refused
+GET  /api/plugins/spec-kit-hermes/kanban/links -> 200 (0 linked cards)
+
+OK — installed plugin is discovered, consented, mounted and serving.
+```
+
+## 9. The running app loads the plugin
+
+`Hermes.exe` was already running (packaged build, so no CDP port — the skill's rule is to
+never relaunch the user's app). The desktop plugin loader fs-watches
+`<home>/desktop-plugins/*/plugin.js` and hot-reloads, and it logs failures to
+`logs/desktop.log`. That gave a real signal in both directions:
+
+1. A deliberate fault appended to the live `plugin.js`
+   (`throw new Error('speckit-reload-probe')`) was reported **within 200 ms**, proving the
+   watcher is live and evaluates the file I installed:
+
+   ```
+   2026-10-24 01:02:24,600 [plugins] runtime load failed (spec-kit-hermes) Error: speckit-reload-probe
+   ```
+
+2. Restoring the built file produced **no** log line at all — not `runtime load failed`,
+   not `failed to register` — while the same log recorded every earlier failure
+   (`has no valid default HermesPlugin export`, from intermediate builds). The loader logs
+   both failure modes, so silence here means the module evaluated, the default export
+   validated, and `register(ctx)` completed.
+
+`test/plugin-smoke.test.mjs` covers the same contract offline: it rewrites the built
+file's import specifiers to recorders, imports it, asserts `default.id`,
+`default.register`, and that `register()` wires exactly one pane (`id: 'spec-kit'`,
+`placement: 'right'`) plus one status item.
+
+## 10. What is NOT verified
+
+- **Visual confirmation of the pane.** No screenshot and no DOM read (packaged build has
+  no CDP port, and relaunching the user's app is off-limits). Everything up to
+  "registered + serving" is verified; the pane's layout and feel are not.
+- **A Kanban sync against the user's real board.** The sync path is exercised against a
+  throwaway `HERMES_HOME` in `backend/tests/test_plugin_api.py`; creating cards on the
+  live board without being asked would leave debris in the user's backlog.
 - **`pickOpenPath` / `revealPath` OS doors** — not used by this plugin.
 - **Constitution section preservation on hand-edited prose** — the wizard regenerates the
   whole file; documented as a limit in the README rather than claimed as round-trip.
