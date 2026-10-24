@@ -656,6 +656,7 @@ function SpecKitPane() {
   const docsRef = useRef(null)
   const timers = useRef({})
   const cwdRef = useRef('')
+  const savingRef = useRef(false)
 
   const applyDocs = useCallback(next => {
     docsRef.current = next
@@ -722,6 +723,7 @@ function SpecKitPane() {
       }
       const content = serializeModel(rel, doc)
       setBusy(true)
+      savingRef.current = true
       try {
         const response = await rest('/file', {
           method: 'PUT',
@@ -742,6 +744,7 @@ function SpecKitPane() {
           host.notifyError(`Spec Kit: ${reason}`)
         }
       } finally {
+        savingRef.current = false
         setBusy(false)
       }
     },
@@ -775,7 +778,9 @@ function SpecKitPane() {
   const poll = useCallback(async () => {
     const project = cwdRef.current
     const previous = docsRef.current
-    if (!project || !previous) {
+    // A write in flight makes the server mtime legitimately newer than our base;
+    // polling through it would report a conflict against our own save.
+    if (!project || !previous || savingRef.current) {
       return
     }
     let response

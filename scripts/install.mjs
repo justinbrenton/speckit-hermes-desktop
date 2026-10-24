@@ -129,11 +129,15 @@ export async function install({ profile, home, dryRun = false } = {}) {
 
   // 1. desktop half
   const existingPlugin = join(desktopDir, 'plugin.js')
-  if (await exists(existingPlugin)) {
+  const backupPlugin = join(desktopDir, 'plugin.js.backup')
+  if ((await exists(existingPlugin)) && !(await exists(backupPlugin))) {
     const previous = await readFile(existingPlugin, 'utf8')
     if (previous !== pluginSource && !dryRun) {
-      await copyFile(existingPlugin, join(desktopDir, 'plugin.js.backup'))
-      report.notes.push(`backed up the previous plugin.js to ${join(desktopDir, 'plugin.js.backup')}`)
+      // Written ONCE: `plugin.js.backup` is the file that was there before this
+      // installer ever ran. Re-writing it on every reinstall quietly destroys the
+      // only copy of the previous plugin.
+      await copyFile(existingPlugin, backupPlugin)
+      report.notes.push(`backed up the previous plugin.js to ${backupPlugin}`)
     }
   }
   report.files.push(await writeIfChanged(existingPlugin, pluginSource, { dryRun }))
