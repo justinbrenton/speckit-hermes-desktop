@@ -403,6 +403,33 @@ ARTIFACT_MAX_BYTES = 262_144
 JOBS: dict[str, dict[str, Any]] = {}
 
 
+def _run_ids(root: Path) -> set[str]:
+    runs = root / ".specify" / "workflows" / "runs"
+    if not runs.is_dir():
+        return set()
+    return {d.name for d in runs.iterdir() if d.is_dir()}
+
+
+def _await_new_run(root: Path, before: set[str], timeout: float = 25.0) -> Optional[str]:
+    """Return the run id spec-kit just created, or None if it did not start.
+
+    ``specify workflow run`` picks its own run id; the pane needs that id to
+    resume a gate, so the spawned job's id is not enough.
+    """
+    import time as _time
+
+    deadline = _time.monotonic() + timeout
+    while _time.monotonic() < deadline:
+        fresh = _run_ids(root) - before
+        if fresh:
+            return sorted(fresh)[0] if len(fresh) == 1 else max(
+                fresh, key=lambda name: (root / ".specify" / "workflows" / "runs" / name / "state.json").stat().st_mtime
+                if (root / ".specify" / "workflows" / "runs" / name / "state.json").is_file() else 0
+            )
+        _time.sleep(0.4)
+    return None
+
+
 def _start_job(args: list[str], cwd: Path, timeout: int | None = None) -> dict[str, Any]:
     """Spawn the CLI detached and return immediately.
 
@@ -577,10 +604,13 @@ def workflow_run(process: str, payload: WorkflowRunRequest) -> dict[str, Any]:
         if value is not None and str(value) != "":
             args += ["-i", f"{key}={value}"]
     args.append("--json")
+    before = _run_ids(root)
     job = _start_job(args, root, max(30, min(payload.timeout, SPECIFY_TIMEOUT_MAX)))
+    run_id = _await_new_run(root, before)
     return {
         "process": process,
-        "run_id": job["job_id"],
+        "run_id": run_id,
+        "job_id": job["job_id"],
         "pid": job["pid"],
         "running": True,
         "stdout_file": job["stdout_file"],
@@ -607,8 +637,170 @@ def workflow_resume(process: str, run_id: str, payload: WorkflowResumeRequest) -
         if value is not None and str(value) != "":
             args += ["-i", f"{key}={value}"]
     args.append("--json")
-    result = _run_specify(args, root, max(30, min(payload.timeout, SPECIFY_TIMEOUT_MAX)))
-    return _workflow_result(process, result)
+    job = _start_job(args, root, max(30, min(payload.timeout, SPECIFY_TIMEOUT_MAX)))
+    return {"process": process, "run_id": run_id, "job_id": job["job_id"], "running": True}
+
+
+# ---------------------------------------------------------------------------
+# wizard support: init, artifacts, live run state
+# ---------------------------------------------------------------------------
+
+RUN_ID_RE = re.compile(r"^[A-Za-z0-9._-]{1,64}$")
+
+
+class InitRequest(BaseModel):
+    cwd: str
+    integration: str = "hermes"
+
+
+@router.post("/init")
+def init_project(payload: InitRequest) -> dict[str, Any]:
+    """Bootstrap .specify/ in an empty folder with the Hermes integration."""
+    root = _project_root(payload.cwd)
+    if (root / ".specify").is_dir():
+        return {"ok": True, "already": True, "cwd": str(root), "output": ""}
+    integration = re.sub(r"[^a-z0-9_-]", "", (payload.integration or "hermes").lower()) or "hermes"
+    result = _run_specify(["init", "--here", "--integration", integration], root, 600)
+    synced = _sync_legacy_skills()
+    return {
+        "ok": result["ok"],
+        "already": False,
+        "cwd": str(root),
+        "output": result.get("output", "") + result.get("stderr", ""),
+        "skills_synced": synced,
+    }
+
+
+@router.get("/artifacts")
+def list_artifacts(cwd: str = Query(..., description="Absolute project directory")) -> dict[str, Any]:
+    """Every spec-kit artifact under .specify, newest feature first."""
+    root = _project_root(cwd)
+    out: list[dict[str, Any]] = []
+    # spec-kit writes feature folders to <project>/specs/NNN-name/. Older trees
+    # kept them under .specify/specs, so both are scanned.
+    for specs in (root / "specs", root / ".specify" / "specs"):
+        if not specs.is_dir():
+            continue
+        features = [d for d in specs.iterdir() if d.is_dir()]
+        features.sort(key=lambda d: d.stat().st_mtime, reverse=True)
+        for feature in features:
+            for path in sorted(feature.rglob("*")):
+                if path.is_file():
+                    rel = path.relative_to(root).as_posix()
+                    out.append({
+                        "feature": feature.name,
+                        "path": rel,
+                        "name": path.name,
+                        "size": path.stat().st_size,
+                        "mtime": _mtime_ms(path),
+                    })
+    memory = root / ".specify" / "memory" / "constitution.md"
+    if memory.is_file():
+        out.append({
+            "feature": "memory",
+            "path": ".specify/memory/constitution.md",
+            "name": "constitution.md",
+            "size": memory.stat().st_size,
+            "mtime": _mtime_ms(memory),
+        })
+    return {"cwd": str(root), "artifacts": out, "count": len(out)}
+
+
+@router.get("/artifact")
+def read_artifact(
+    cwd: str = Query(..., description="Absolute project directory"),
+    path: str = Query(..., description="Repo-relative path under .specify/"),
+) -> dict[str, Any]:
+    """Read one artifact. Paths are confined to .specify/."""
+    root = _project_root(cwd)
+    target = (root / path).resolve()
+    allowed = [(root / ".specify").resolve(), (root / "specs").resolve()]
+    if not any(base == target or base in target.parents for base in allowed):
+        raise HTTPException(status_code=400, detail="path must stay inside .specify/ or specs/")
+    if not target.is_file():
+        raise HTTPException(status_code=404, detail=f"not found: {path}")
+    return {"path": path, "content": _read_text(target), "mtime": _mtime_ms(target), "exists": True}
+
+
+def _latest_run(root: Path) -> Optional[dict[str, Any]]:
+    runs = root / ".specify" / "workflows" / "runs"
+    if not runs.is_dir():
+        return None
+    candidates = [d for d in runs.iterdir() if d.is_dir() and (d / "state.json").is_file()]
+    if not candidates:
+        return None
+    newest = max(candidates, key=lambda d: (d / "state.json").stat().st_mtime)
+    try:
+        state = json.loads((newest / "state.json").read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return None
+    return {"run_id": newest.name, "state": state}
+
+
+def _run_view(process: str, run: dict[str, Any]) -> dict[str, Any]:
+    state = run["state"]
+    nodes = ((state.get("execution") or {}).get("nodes") or [])
+    step_id = state.get("current_step_id") or ""
+    gate = None
+    results = state.get("step_results") or {}
+    current = results.get(step_id) or {}
+    if current.get("type") == "gate" and current.get("status") == "paused":
+        output = current.get("output") or {}
+        gate = {
+            "step_id": step_id,
+            "message": output.get("message") or "Review before continuing.",
+            "options": output.get("options") or ["approve", "reject"],
+            "verdict_input": current.get("verdict_input") or f"gate_{step_id.replace('-', '_')}",
+            "show_file": output.get("show_file"),
+        }
+    return {
+        "process": process,
+        "run_id": run["run_id"],
+        "status": state.get("status"),
+        "current_step_id": step_id,
+        "current_step_index": state.get("current_step_index"),
+        "gate": gate,
+        "error": state.get("error"),
+        "inputs": state.get("inputs") or {},
+        "step_results": {
+            k: {
+                "type": v.get("type"),
+                "status": v.get("status"),
+                "error": v.get("error"),
+                "stdout": ((v.get("output") or {}).get("stdout") or "")[-4000:],
+            }
+            for k, v in results.items()
+        },
+        "nodes": [{"phase": n.get("phase"), "outcome": n.get("outcome")} for n in nodes],
+        "updated_at": state.get("updated_at"),
+    }
+
+
+@router.get("/workflows/{process}/runs/latest")
+def workflow_latest(process: str, cwd: str = Query(..., description="Absolute project directory")) -> dict[str, Any]:
+    """Newest run's live state. The pane polls this instead of holding a request open."""
+    root = _project_root(cwd)
+    _process_data(root, process)
+    run = _latest_run(root)
+    if run is None:
+        return {"process": process, "status": "none", "run_id": None, "gate": None, "nodes": []}
+    return _run_view(process, run)
+
+
+@router.get("/workflows/{process}/runs/{run_id}")
+def workflow_run_state(process: str, run_id: str, cwd: str = Query(...)) -> dict[str, Any]:
+    root = _project_root(cwd)
+    _process_data(root, process)
+    if not RUN_ID_RE.fullmatch(run_id or ""):
+        raise HTTPException(status_code=400, detail=f"invalid run id: {run_id!r}")
+    state_file = root / ".specify" / "workflows" / "runs" / run_id / "state.json"
+    if not state_file.is_file():
+        raise HTTPException(status_code=404, detail=f"no such run: {run_id}")
+    try:
+        state = json.loads(state_file.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        raise HTTPException(status_code=500, detail="run state is not readable JSON")
+    return _run_view(process, {"run_id": run_id, "state": state})
 
 
 # ---------------------------------------------------------------------------

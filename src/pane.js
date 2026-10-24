@@ -1,28 +1,24 @@
 /**
  * Spec-Kit Hermes — desktop half.
  *
- * ONE pane in the right sidebar that drives spec-kit's own workflow engine. The
- * pane runs no workflow logic: `specify workflow run|resume|status` does, through
- * the plugin backend (`/api/plugins/spec-kit-hermes`, backend/plugin_api.py).
+ * One pane, one guided flow. The pane runs no workflow logic: spec-kit's own
+ * engine does (`specify workflow run|resume|status`), reached through the plugin
+ * backend at /api/plugins/spec-kit-hermes.
  *
- * Screens: pick a process -> fill its declared inputs -> run it, stopping at
- * gates for a human. The editors that used to live here are gone; the workflow
- * writes spec.md, constitution.md and tasks.md through the skills, and the pane
- * shows the artifacts read-only.
+ * Flow: pick a folder -> describe the feature -> the engine runs each step and
+ * parks at every gate -> you approve or reject -> artifacts stay readable.
  *
- * Build: `npm run build` inlines src/core.mjs at the CORE_INJECT marker and writes
- * desktop/plugin.js. The runtime evaluates a single ESM file, so this module may
- * only import `@hermes/plugin-sdk`, `react` and `react/jsx-runtime`.
+ * Build: `npm run build` inlines src/core.mjs at the CORE_INJECT marker and
+ * writes desktop/plugin.js. The runtime evaluates a single ESM file, so this
+ * module may only import @hermes/plugin-sdk, react and react/jsx-runtime.
  */
 import {
   Badge,
   Button,
-  EmptyState,
   GlyphSpinner,
   Input,
   ScrollArea,
   Textarea,
-  cn,
   host,
   icons,
   PANES_AREA,
@@ -32,644 +28,393 @@ import {
 import { useCallback, useEffect, useRef, useState } from 'react'
 import { jsx, jsxs } from 'react/jsx-runtime'
 
-function __str(x) { if (x === null || x === undefined) return ''; if (typeof x === 'object') return String(x.current || x.path || x.value || x || '').trim(); return String(x || '').trim(); }
-
 /* CORE_INJECT */
 
 const ID = 'spec-kit-hermes'
 const PANE_ID = `${ID}:spec-kit`
 
-/** The plugin context, captured at register — `ctx.rest` is the I/O door. */
+/** Captured at register — `ctx.rest` is the only door to the backend. */
 let ctxRef = null
 
+function __str(x) {
+  if (x === null || x === undefined) return ''
+  if (typeof x === 'object') return String(x.current || x.path || x.value || '').trim()
+  return String(x).trim()
+}
+
 function rest(path, opts) {
-  if (!ctxRef || typeof ctxRef.rest !== 'function') {
-    return Promise.reject(new Error('plugin context unavailable — reload the plugin'))
-  }
-  return ctxRef.rest(path, opts)
+  const call = ctxRef && ctxRef.rest
+  if (!call) return Promise.reject(new Error('plugin backend unavailable'))
+  return call(path, opts)
 }
 
-function projectQuery(cwd) {
-  return `cwd=${encodeURIComponent(__str(cwd || ''))}`
+function errorText(err) {
+  const raw = err && err.message ? err.message : String(err || 'request failed')
+  if (/cwd must be absolute/.test(raw)) return 'That project path was not readable. Pick the folder again.'
+  if (/Timed out/i.test(raw)) return 'Hermes did not answer in time. Check that the gateway is running.'
+  if (/Not Found|NotFound|404/.test(raw)) return 'The plugin backend is older than this pane. Restart Hermes Desktop.'
+  return raw
 }
 
-function shortPath(path) {
-  const parts = String(path || '').split(/[\\/]/).filter(Boolean)
-  return parts.length > 2 ? `…/${parts.slice(-2).join('/')}` : String(path || '')
+function titleCase(id) {
+  return __str(id)
+    .replace(/[-_]+/g, ' ')
+    .trim()
+    .replace(/^./, c => c.toUpperCase())
 }
 
-function errorText(error) {
-  if (!error) {
-    return ''
-  }
-  if (typeof error === 'string') {
-    return error
-  }
-  const detail = error.detail || error.message || ''
-  if (typeof detail === 'string') {
-    return detail
-  }
-  if (detail && detail.missing_inputs) {
-    return `Missing: ${detail.missing_inputs.join(', ')}`
-  }
-  return JSON.stringify(detail)
-}
-
-function statusTone(status) {
-  if (status === 'completed' || status === 'done') {
-    return 'success'
-  }
-  if (status === 'failed' || status === 'aborted') {
-    return 'muted'
-  }
-  return 'outline'
-}
-
-// ---------------------------------------------------------------------------
-// small pieces
-// ---------------------------------------------------------------------------
-
-function Field({ label, hint, children }) {
-  return jsxs('label', {
-    className: 'flex flex-col gap-1',
-    children: [
-      jsx('span', { className: 'text-[0.6875rem] font-medium text-(--ui-text-secondary)', children: label }),
-      children,
-      hint ? jsx('span', { className: 'text-[0.625rem] text-(--ui-text-tertiary)', children: hint }) : null
-    ]
-  })
-}
-
-function StatusChip({ run }) {
-  if (!run || !run.status) {
-    return null
-  }
-  return jsx(Badge, {
-    variant: statusTone(run.status),
-    className: 'text-[0.625rem] capitalize',
-    children: run.status
-  })
-}
-
-function ProcessCard({ process, onPick }) {
-  const commandSteps = (process.steps || []).filter(step => step.type === 'command').length
-  const gateSteps = (process.steps || []).filter(step => step.type === 'gate').length
-  const missing = (process.steps || []).filter(step => step.type === 'command' && step.skill_installed === false)
-  return jsxs('button', {
-    type: 'button',
-    onClick: () => onPick(process),
-    className:
-      'w-full rounded-md border border-(--ui-border) bg-(--ui-bg-tertiary) p-3 text-left transition-colors hover:border-(--ui-accent)',
-    children: [
-      jsxs('div', { className: 'flex items-start justify-between gap-2', children: [
-        jsx('span', { className: 'text-sm font-medium', children: process.name || process.id }),
-        process.ready
-          ? jsx(Badge, { variant: 'success', className: 'text-[0.625rem]', children: 'ready' })
-          : jsx(Badge, { variant: 'muted', className: 'text-[0.625rem]', children: 'skills missing' })
-      ] }),
-      process.description
-        ? jsx('p', { className: 'mt-1 text-[0.6875rem] leading-snug text-(--ui-text-tertiary)', children: process.description })
-        : null,
-      jsxs('div', { className: 'mt-2 flex items-center gap-2 text-[0.625rem] text-(--ui-text-tertiary)', children: [
-        jsx('span', { children: `${commandSteps} step${commandSteps === 1 ? '' : 's'}` }),
-        gateSteps ? jsx('span', { children: `· ${gateSteps} gate${gateSteps === 1 ? '' : 's'}` }) : null,
-        missing.length ? jsx('span', { children: `· ${missing.length} skill(s) missing` }) : null
-      ] })
-    ]
-  })
-}
-
-function ProjectField({ project, busy, onUse }) {
-  const [draft, setDraft] = useState(project || '')
-  useEffect(() => {
-    setDraft(project || '')
-  }, [project])
-  const commit = () => {
-    const next = String(draft || '').trim()
-    if (next && next !== project) {
-      onUse(next)
-    }
-  }
-  return jsx('div', { className: 'flex flex-col gap-1', children: [
-    jsx('span', { className: 'text-[0.625rem] font-medium text-(--ui-text-secondary)', children: 'Project folder' }),
-    jsxs('div', { className: 'flex items-center gap-1', children: [
-      jsx(Input, {
-        value: draft,
-        placeholder: 'C:\\path\\to\\your\\project',
-        className: 'text-[0.625rem] font-mono',
-        onChange: event => setDraft(event.target.value),
-        onKeyDown: event => {
-          if (event.key === 'Enter') {
-            commit()
-          }
-        }
-      }),
-      jsx(Button, { size: 'xs', variant: 'secondary', disabled: busy, onClick: commit, children: 'Use' })
-    ] }),
-    jsx('span', {
-      className: 'text-[0.625rem] text-(--ui-text-tertiary)',
-      children: 'Defaults to the folder Hermes has open. Point it at a spec-kit project if that is not the right one.'
-    })
-  ] })
-}
-
-function PickScreen({ processes, busy, error, onPick, onReload, onInit, project, hasSpecify, onUseFolder, backendDown }) {
-  if (busy && !processes.length) {
-    return jsxs('div', { className: 'flex h-full items-center justify-center gap-2', children: [
-      jsx(GlyphSpinner, { size: 'sm' }),
-      jsx('span', { className: 'text-xs text-(--ui-text-tertiary)', children: 'Reading installed workflows…' })
-    ] })
-  }
-
-  if (!processes.length) {
-    const title = !project
-      ? 'Choose a project folder'
-      : hasSpecify
-        ? 'This project has no workflows'
-        : 'Not a spec-kit project yet'
-    const description = !project
-      ? 'The pane works on one project folder at a time.'
-      : hasSpecify
-        ? `${project} has a .specify directory but no workflows in it. Install a bundle, or re-run "specify init".`
-        : `${project} has no .specify directory. Initialise it here, or point at a folder that already has one.`
-    return jsxs('div', { className: 'flex h-full flex-col gap-3 p-3', children: [
-      jsx(ProjectField, { project, busy, onUse: onUseFolder }),
-      backendDown
-        ? jsx('p', {
-            className: 'rounded border border-(--ui-border) bg-(--ui-bg-tertiary) p-2 text-[0.6875rem] text-(--ui-text-secondary)',
-            children: 'The plugin backend is not answering. Either Hermes has not been restarted since the plugin was installed, or this Hermes home does not list spec-kit-hermes in plugins.enabled. Quit every Hermes process, check that config, then reopen.'
-          })
-        : null,
-      error ? jsx('p', { className: 'text-[0.6875rem] text-(--ui-text-secondary)', children: error }) : null,
-      jsx('div', { className: 'flex-1', children: jsx(EmptyState, {
-        icon: icons.Book,
-        title,
-        description,
-        action: jsxs('div', { className: 'flex items-center gap-1.5', children: [
-          jsx(Button, { size: 'xs', variant: 'ghost', disabled: busy, onClick: () => onReload(project), children: 'Reload' }),
-          project && !hasSpecify
-            ? jsx(Button, { size: 'xs', variant: 'secondary', disabled: busy, onClick: () => onInit(project), children: busy ? 'Initialising…' : 'Initialise this folder' })
-            : null
-        ] })
-      }) })
-    ] })
-  }
-
-  return jsxs('div', { className: 'flex h-full flex-col gap-3 p-3', children: [
-    jsx(ProjectField, { project, busy, onUse: onUseFolder }),
-    jsxs('div', { children: [
-      jsx('h3', { className: 'text-sm font-medium', children: 'What are we doing?' }),
-      jsx('p', { className: 'mt-0.5 text-[0.6875rem] text-(--ui-text-tertiary)', children: 'Each process below is an installed spec-kit workflow.' })
-    ] }),
-    error ? jsx('p', { className: 'text-[0.6875rem] text-(--ui-text-secondary)', children: error }) : null,
-    jsx(ScrollArea, {
-      className: 'flex-1 min-h-0',
-      children: jsx('div', { className: 'flex flex-col gap-2', children: processes.map(process =>
-        jsx(ProcessCard, { process, onPick }, process.id)
-      ) })
-    }),
-    jsx('div', { className: 'flex items-center justify-between pt-1', children: [
-      jsx('span', { className: 'truncate text-[0.625rem] text-(--ui-text-tertiary)', children: shortPath(project) }),
-      jsx(Button, { size: 'xs', variant: 'ghost', disabled: busy, onClick: onReload, children: 'Reload' })
-    ] })
-  ] })
-}
-
-function InputsScreen({ process, values, onChange, onSubmit, onBack, busy, error }) {
-  const inputs = process.inputs || []
-  return jsxs('div', { className: 'flex h-full flex-col gap-3 p-3', children: [
-    jsxs('div', { children: [
-      jsx('h3', { className: 'text-sm font-medium', children: process.name || process.id }),
-      jsx('p', { className: 'mt-0.5 text-[0.6875rem] text-(--ui-text-tertiary)', children: 'These are the inputs the workflow declares.' })
-    ] }),
-    error ? jsx('p', { className: 'text-[0.6875rem] text-(--ui-text-secondary)', children: error }) : null,
-    jsx(ScrollArea, {
-      className: 'flex-1 min-h-0',
-      children: jsx('div', { className: 'flex flex-col gap-3', children: inputs.length
-        ? inputs.map(input => {
-            const long = input.name === 'spec' || input.name === 'report' || (input.prompt || '').length > 40
-            const value = values[input.name] == null ? '' : values[input.name]
-            return jsx(Field, {
-              label: `${input.prompt || input.name}${input.required ? ' *' : ''}`,
-              hint: input.required ? 'required' : input.default ? `default: ${input.default}` : '',
-              children: long
-                ? jsx(Textarea, {
-                    value,
-                    rows: 4,
-                    className: 'font-mono text-xs',
-                    placeholder: input.prompt || input.name,
-                    onChange: event => onChange(input.name, event.target.value)
-                  })
-                : jsx(Input, {
-                    value,
-                    placeholder: input.prompt || input.name,
-                    onChange: event => onChange(input.name, event.target.value)
-                  })
-            }, input.name)
-          })
-        : jsx('p', { className: 'text-xs text-(--ui-text-tertiary)', children: 'This workflow takes no inputs.' })
-      })
-    }),
-    jsxs('div', { className: 'flex items-center justify-between gap-2 pt-1', children: [
-      jsx(Button, { size: 'xs', variant: 'ghost', onClick: onBack, children: 'Back' }),
-      jsx(Button, { size: 'sm', variant: 'secondary', disabled: busy, onClick: onSubmit, children: busy ? 'Starting…' : 'Start' })
-    ] })
-  ] })
-}
+const GATE_LABELS = { approve: 'Approve', reject: 'Reject' }
 
 function StepList({ steps, run }) {
-  const index = run && Number.isFinite(Number(run.current_step_index)) ? Number(run.current_step_index) : -1
-  return jsx('div', { className: 'flex flex-col gap-1', children: steps.map((step, position) => {
-    const isCurrent = index === position
-    const isDone = index >= 0 ? position < index : run && run.status === 'completed'
-    return jsxs('div', {
-      className: cn(
-        'flex items-center gap-1.5 rounded border px-2 py-1',
-        isCurrent ? 'border-(--ui-accent) bg-(--ui-bg-tertiary)' : 'border-(--ui-border)'
-      ),
-      children: [
-        jsx('span', {
-          className: cn('w-4 text-center text-[0.625rem]', isDone ? 'text-(--ui-accent)' : 'text-(--ui-text-tertiary)'),
-          children: isDone ? '✓' : String(position + 1)
-        }),
-        jsx('span', { className: 'flex-1 truncate text-[0.6875rem]', children: step.id }),
-        jsx(Badge, {
-          variant: 'outline',
-          className: 'text-[0.625rem]',
-          children: step.type === 'gate' ? 'gate' : step.skill || step.command || step.type
-        })
-      ]
-    }, step.id)
-  }) })
-}
-
-function GatePanel({ gate, step, busy, onDecide, problem }) {
-  if (!gate) {
-    return null
-  }
-  const verdictInput = step && step.verdict_input
-  const options = gate.options && gate.options.length ? gate.options : ['approve', 'reject']
-  return jsxs('div', {
-    className: 'rounded-md border border-(--ui-accent) bg-(--ui-bg-tertiary) p-3',
-    children: [
-      jsx('p', { className: 'text-[0.6875rem] font-medium', children: 'Waiting on you' }),
-      jsx('p', { className: 'mt-1 text-[0.6875rem] leading-snug text-(--ui-text-secondary)', children: gate.message || gate.step_id }),
-      problem ? jsx('p', { className: 'mt-1 text-[0.625rem] text-(--ui-text-tertiary)', children: problem }) : null,
-      jsx('div', { className: 'mt-2 flex items-center gap-1.5', children: options.map(option =>
-        jsx(Button, {
-          size: 'xs',
-          variant: option === 'reject' ? 'ghost' : 'secondary',
-          disabled: busy || !verdictInput,
-          onClick: () => onDecide(option)
-        }, option)
-      ) })
-    ]
+  const nodes = (run && run.nodes) || []
+  const currentIndex = run && run.status !== 'none' ? run.current_step_index : -1
+  if (!steps || !steps.length) return null
+  return jsx('ol', {
+    className: 'flex flex-col gap-1',
+    children: steps.map((step, index) => {
+      const node = nodes[index] || {}
+      const done = node.phase === 'done'
+      const active = index === currentIndex
+      const failed = node.phase === 'failed'
+      const mark = failed ? '!' : done ? '✓' : active ? '•' : String(index + 1)
+      const tone = failed
+        ? 'text-red-400'
+        : done
+          ? 'text-emerald-400'
+          : active
+            ? 'text-(--ui-accent)'
+            : 'text-(--ui-text-tertiary)'
+      return jsxs('li', {
+        className: 'flex items-center gap-2 text-[0.6875rem]',
+        children: [
+          jsx('span', { className: `w-4 text-center font-mono ${tone}`, children: mark }),
+          jsx('span', {
+            className: active ? 'text-(--ui-text-primary)' : 'text-(--ui-text-secondary)',
+            children: titleCase(step.id)
+          }),
+          step.type === 'gate' ? jsx(Badge, { variant: 'secondary', children: 'gate' }) : null
+        ]
+      }, step.id)
+    })
   })
 }
 
-function ArtifactPanel({ artifacts, onOpen, open, busy }) {
-  return jsxs('div', { className: 'flex flex-col gap-1', children: [
-    jsxs('div', { className: 'flex items-center justify-between', children: [
-      jsx('span', { className: 'text-[0.6875rem] font-medium', children: 'Artifacts' }),
-      jsx('span', { className: 'text-[0.625rem] text-(--ui-text-tertiary)', children: `${artifacts.length} file(s)` })
-    ] }),
-    jsx('div', { className: 'flex max-h-40 flex-col gap-0.5 overflow-y-auto', children: artifacts.length
-      ? artifacts.map(row => jsxs('button', {
-          type: 'button',
-          onClick: () => onOpen(row.path),
-          className: cn(
-            'flex items-center justify-between gap-2 rounded px-1.5 py-1 text-left text-[0.625rem] hover:bg-(--ui-bg-tertiary)',
-            open && open.path === row.path ? 'bg-(--ui-bg-tertiary)' : ''
-          ),
-          children: [
-            jsx('span', { className: 'truncate', children: row.path.replace(/^\.specify\//, '') }),
-            jsx('span', { className: 'shrink-0 text-(--ui-text-tertiary)', children: row.size > 1024 ? `${Math.round(row.size / 1024)}k` : `${row.size}b` })
-          ]
-        }, row.path))
-      : jsx('span', { className: 'text-[0.625rem] text-(--ui-text-tertiary)', children: busy ? '…' : 'nothing written yet' })
+function ArtifactList({ artifacts, onOpen }) {
+  if (!artifacts.length) {
+    return jsx('p', {
+      className: 'text-[0.6875rem] text-(--ui-text-tertiary)',
+      children: 'No artifacts yet. They appear as the workflow writes them.'
+    })
+  }
+  return jsx('div', {
+    className: 'flex flex-col gap-1',
+    children: artifacts.map(item =>
+      jsxs('button', {
+        type: 'button',
+        onClick: () => onOpen(item.path),
+        className: 'flex items-center justify-between gap-2 rounded border border-(--ui-border) px-2 py-1 text-left text-[0.6875rem] hover:bg-(--ui-bg-tertiary)',
+        children: [
+          jsx('span', { className: 'truncate', children: item.name }),
+          jsx('span', { className: 'shrink-0 font-mono text-[0.625rem] text-(--ui-text-tertiary)', children: item.feature })
+        ]
+      }, item.path)
+    )
+  })
+}
+
+function FolderGate({ draft, onDraft, onUse, onInit, hasSpecify, busy, error }) {
+  return jsxs('div', { className: 'flex h-full flex-col gap-3 p-3', children: [
+    jsx('h2', { className: 'text-sm font-medium', children: 'Spec Kit' }),
+    jsx('p', {
+      className: 'text-[0.6875rem] text-(--ui-text-secondary)',
+      children: 'Point at the project folder. Spec Kit writes specs, plans and tasks into its .specify directory.'
     }),
-    open
-      ? jsxs('div', { className: 'mt-1 flex flex-col gap-1', children: [
-          jsx('span', { className: 'truncate text-[0.625rem] text-(--ui-text-tertiary)', children: open.path }),
-          jsx(Textarea, { value: open.content, readOnly: true, rows: 8, className: 'font-mono text-[0.625rem]' })
+    jsxs('div', { className: 'flex gap-2', children: [
+      jsx(Input, {
+        value: draft,
+        placeholder: 'C:\\path\\to\\project',
+        onChange: event => onDraft(event.target.value),
+        onKeyDown: event => { if (event.key === 'Enter') onUse() }
+      }),
+      jsx(Button, { size: 'sm', onClick: onUse, disabled: busy || !__str(draft), children: 'Use' })
+    ] }),
+    hasSpecify === false
+      ? jsxs('div', { className: 'flex flex-col gap-2 rounded border border-(--ui-border) p-2', children: [
+          jsx('p', { className: 'text-[0.6875rem] text-(--ui-text-secondary)', children: 'This folder has no .specify directory yet.' }),
+          jsx(Button, { size: 'sm', variant: 'outline', onClick: onInit, disabled: busy, children: 'Initialise Spec Kit here' })
         ] })
-      : null
+      : null,
+    error ? jsx('p', { className: 'text-[0.6875rem] text-red-400', children: error }) : null
   ] })
 }
 
-function RunScreen({ process, run, output, steps, gate, artifacts, open, busy, error, onDecide, onRestart, onBack, onOpen, project }) {
-  const gateStep = gate && steps ? steps.find(step => step.id === gate.step_id) : null
-  const gateProblem = gate && gateStep && !gateStep.verdict_input
-    ? 'This workflow declares no input for this gate, so it cannot be answered from here. Add verdict_input to the gate.'
-    : ''
-  const paused = Boolean(run && run.status === 'paused')
-  return jsxs('div', { className: 'flex h-full flex-col gap-2 p-3', children: [
-    jsxs('div', { className: 'flex items-start justify-between gap-2', children: [
-      jsxs('div', { className: 'min-w-0', children: [
-        jsx('h3', { className: 'truncate text-sm font-medium', children: process.name || process.id }),
-        jsx('p', { className: 'truncate text-[0.625rem] text-(--ui-text-tertiary)', children: run && run.run_id ? `run ${run.run_id} · ${shortPath(project)}` : shortPath(project) })
-      ] }),
-      jsxs('div', { className: 'flex shrink-0 items-center gap-1', children: [
-        jsx(StatusChip, { run }),
-        jsx(Button, { size: 'xs', variant: 'ghost', onClick: onBack, children: 'Exit' })
-      ] })
+function StartCard({ process, folder, value, onChange, onStart, busy, error }) {
+  const inputs = (process && process.inputs) || []
+  return jsxs('div', { className: 'flex flex-col gap-3', children: [
+    jsxs('div', { children: [
+      jsx('p', { className: 'text-[0.6875rem] font-medium', children: 'Describe what you want to build' }),
+      jsx('p', {
+        className: 'mt-1 text-[0.6875rem] text-(--ui-text-secondary)',
+        children: 'Plain language. The first step turns this into a spec, and you review it before planning.'
+      })
     ] }),
-
-    error ? jsx('p', { className: 'text-[0.6875rem] text-(--ui-text-secondary)', children: error }) : null,
-    busy ? jsxs('div', { className: 'flex items-center gap-2 text-[0.6875rem] text-(--ui-text-tertiary)', children: [
-      jsx(GlyphSpinner, { size: 'sm' }),
-      jsx('span', { children: 'Running a step — this can take a minute.' })
-    ] }) : null,
-
-    jsx(ScrollArea, {
-      className: 'flex-1 min-h-0',
-      children: jsxs('div', { className: 'flex flex-col gap-3', children: [
-        jsx(GatePanel, { gate, step: gateStep, busy, onDecide, problem: gateProblem }),
-        steps && steps.length ? jsx(StepList, { steps, run }) : null,
-        jsxs('div', { className: 'flex flex-col gap-1', children: [
-          jsx('span', { className: 'text-[0.6875rem] font-medium', children: 'Output' }),
-          jsx(Textarea, {
-            value: output || 'No output yet. Press Run to start.',
-            readOnly: true,
-            rows: 10,
-            className: 'font-mono text-[0.625rem]'
-          })
-        ] }),
-        jsx(ArtifactPanel, { artifacts, open, onOpen, busy })
-      ] })
+    jsx(Textarea, {
+      value,
+      rows: 5,
+      placeholder: 'A todo web app where I can add, complete and delete tasks…',
+      onChange: event => onChange(event.target.value)
     }),
+    inputs.length
+      ? jsx('div', { className: 'flex flex-wrap gap-1', children: inputs.map(input =>
+          jsx(Badge, { variant: 'secondary', children: `${input.name}${input.required ? '' : ' (optional)'}` }, input.name)
+        ) })
+      : null,
+    jsx(Button, { size: 'sm', onClick: onStart, disabled: busy || !__str(value), children: busy ? 'Starting…' : 'Start' }),
+    error ? jsx('p', { className: 'text-[0.6875rem] text-red-400', children: error }) : null,
+    jsx('p', { className: 'truncate text-[0.625rem] text-(--ui-text-tertiary)', children: folder })
+  ] })
+}
 
-    jsxs('div', { className: 'flex items-center justify-between gap-2 pt-1', children: [
-      jsx(Button, { size: 'xs', variant: 'ghost', disabled: busy, onClick: onRestart, children: 'Start over' }),
+function RunningCard({ run }) {
+  return jsxs('div', { className: 'flex flex-col gap-2', children: [
+    jsxs('div', { className: 'flex items-center gap-2', children: [
+      jsx(GlyphSpinner, { size: 'sm' }),
+      jsx('span', { className: 'text-[0.6875rem]', children: `Running: ${titleCase(run.current_step_id) || 'workflow'}` })
+    ] }),
+    jsx('p', { className: 'text-[0.625rem] text-(--ui-text-tertiary)', children: 'This step calls your agent. It can take a few minutes.' })
+  ] })
+}
+
+function GateCard({ run, busy, onDecide, error }) {
+  const gate = run.gate || {}
+  const options = gate.options && gate.options.length ? gate.options : ['approve', 'reject']
+  return jsxs('div', { className: 'flex flex-col gap-2 rounded border border-(--ui-accent) p-2', children: [
+    jsx('p', { className: 'text-[0.6875rem] font-medium', children: gate.message || 'Review before continuing' }),
+    jsx('p', { className: 'text-[0.625rem] text-(--ui-text-tertiary)', children: `Step: ${titleCase(gate.step_id || run.current_step_id)}` }),
+    jsxs('div', { className: 'flex flex-wrap gap-2', children: options.map(option =>
       jsx(Button, {
         size: 'sm',
-        variant: 'secondary',
-        disabled: busy || paused,
-        onClick: () => onDecide(null),
-        children: busy ? 'Running…' : paused ? 'Answer the gate above' : 'Run next step'
-      })
-    ] })
+        variant: option === 'reject' ? 'outline' : 'default',
+        disabled: busy,
+        onClick: () => onDecide(option),
+        children: GATE_LABELS[option] || titleCase(option)
+      }, option)
+    ) }),
+    error ? jsx('p', { className: 'text-[0.6875rem] text-red-400', children: error }) : null
   ] })
 }
 
-// ---------------------------------------------------------------------------
-// master pane
-// ---------------------------------------------------------------------------
+function DoneCard({ run, onRestart }) {
+  const failed = run.status === 'aborted' || run.status === 'failed' || Boolean(run.error)
+  return jsxs('div', { className: 'flex flex-col gap-2 rounded border border-(--ui-border) p-2', children: [
+    jsx('p', { className: 'text-[0.6875rem] font-medium', children: failed ? 'Workflow stopped' : 'Workflow complete' }),
+    run.error ? jsx('p', { className: 'text-[0.625rem] text-red-400', children: __str(run.error) }) : null,
+    jsx(Button, { size: 'sm', variant: 'outline', onClick: onRestart, children: 'Start another feature' })
+  ] })
+}
+
+function ArtifactViewer({ path, content, busy, onClose }) {
+  return jsxs('div', { className: 'flex min-h-0 flex-1 flex-col gap-1 rounded border border-(--ui-border)', children: [
+    jsxs('div', { className: 'flex items-center justify-between gap-2 border-b border-(--ui-border) px-2 py-1', children: [
+      jsx('span', { className: 'truncate font-mono text-[0.625rem]', children: path }),
+      jsx(Button, { size: 'xs', variant: 'ghost', onClick: onClose, children: 'Close' })
+    ] }),
+    busy
+      ? jsx('div', { className: 'p-2', children: jsx(GlyphSpinner, { size: 'sm' }) })
+      : jsx(ScrollArea, { className: 'min-h-0 flex-1', children:
+          jsx('pre', { className: 'whitespace-pre-wrap p-2 text-[0.625rem] leading-relaxed', children: content || '(empty)' })
+        })
+  ] })
+}
 
 function SpecKitPane() {
-  const cwd = useValue(host.state.cwd)
-  const [phase, setPhase] = useState('loading')
-  const [busy, setBusy] = useState(false)
-  const [error, setError] = useState('')
-  const [processes, setProcesses] = useState([])
-  const [projectInfo, setProjectInfo] = useState({ hasSpecify: false, hasWorkflows: false })
-  const [selected, setSelected] = useState(null)
-  const [inputs, setInputs] = useState({})
+  const workspaceCwd = useValue(host.state.cwd)
+  const [folder, setFolder] = useState('')
+  const [draftFolder, setDraftFolder] = useState('')
+  const [hasSpecify, setHasSpecify] = useState(null)
+  const [process, setProcess] = useState(null)
   const [run, setRun] = useState(null)
-  const [gate, setGate] = useState(null)
-  const [output, setOutput] = useState('')
+  const [description, setDescription] = useState('')
   const [artifacts, setArtifacts] = useState([])
   const [openArtifact, setOpenArtifact] = useState(null)
-  const cwdRef = useRef('')
-  const storedProject = useRef('')
-  const [project, setProject] = useState('')
-  const [backendDown, setBackendDown] = useState(false)
+  const [openContent, setOpenContent] = useState('')
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const pollRef = useRef(null)
 
-  // Whether the Python half is reachable is decided by the real /processes call
-  // below, not by a synthetic probe: /status exists in older builds too, and an
-  // empty cwd would 400 rather than prove anything.
-
-  const refreshArtifacts = useCallback(async project => {
+  const refreshRun = useCallback(async target => {
+    const path = __str(target)
+    if (!path) return
     try {
-      const response = await rest(`/artifacts?${projectQuery(project)}`)
-      setArtifacts((response && response.artifacts) || [])
+      const latest = await rest(`/workflows/speckit/runs/latest?cwd=${encodeURIComponent(path)}`)
+      setRun(latest)
+      if (latest && latest.status && latest.status !== 'none') {
+        const listed = await rest(`/artifacts?cwd=${encodeURIComponent(path)}`)
+        setArtifacts((listed && listed.artifacts) || [])
+      }
     } catch (err) {
-      setArtifacts([])
+      setError(errorText(err))
     }
   }, [])
 
-  const loadProcesses = useCallback(async project => {
+  const loadFolder = useCallback(async target => {
+    const path = __str(target)
+    if (!path) return
     setBusy(true)
     setError('')
     try {
-      const response = await rest(`/processes?${projectQuery(project)}`)
-      const list = (response && response.processes) || []
-      setProcesses(list)
-      setProjectInfo({
-        hasSpecify: Boolean(response && response.has_specify),
-        hasWorkflows: Boolean(response && response.has_workflows)
-      })
-      setPhase('pick')
-      setBackendDown(false)
-      if (response && response.errors && response.errors.length) {
-        setError(`${response.errors.length} workflow file(s) could not be read`)
-      }
-      await refreshArtifacts(project)
+      const info = await rest(`/processes?cwd=${encodeURIComponent(path)}`)
+      const list = (info && info.processes) || []
+      setHasSpecify(Boolean(info && info.has_specify))
+      setProcess(list.length ? list[0] : null)
+      setFolder(path)
+      setDraftFolder(path)
+      setRun(null)
+      if (ctxRef && ctxRef.storage) ctxRef.storage.set('specKitProject', path)
+      if (info && info.has_specify) await refreshRun(path)
     } catch (err) {
-      setProcesses([])
-      setPhase('pick')
-      setBackendDown(true)
       setError(errorText(err))
+      setHasSpecify(null)
     } finally {
       setBusy(false)
     }
-  }, [refreshArtifacts])
-
-  // A pinned folder wins over the workspace folder: `host.state.cwd` follows the
-  // app's workspace, which is not necessarily the project the user is working in.
-  useEffect(() => {
-    const stored = (ctxRef && ctxRef.storage && ctxRef.storage.get('specKitProject', '')) || ''
-    storedProject.current = stored
-    if (!stored) {
-      return
-    }
-    cwdRef.current = stored
-    setProject(stored)
-    loadProcesses(stored)
-  }, [loadProcesses])
+  }, [refreshRun])
 
   useEffect(() => {
-    if (storedProject.current) {
-      return
+    const stored = ctxRef && ctxRef.storage ? ctxRef.storage.get('specKitProject', '') : ''
+    const initial = __str(stored) || __str(workspaceCwd)
+    if (initial) {
+      setDraftFolder(initial)
+      loadFolder(initial)
     }
-    const next = __str(cwd)
-    if (!next || next === cwdRef.current) {
-      return
-    }
-    cwdRef.current = next
-    setProject(next)
-    loadProcesses(next)
-  }, [cwd, loadProcesses])
+  }, [loadFolder])
 
-  const useFolder = useCallback(next => {
-    const path = __str(next)
-    if (!path) {
-      return
+  // Poll while the engine is working. A parked gate needs no polling.
+  useEffect(() => {
+    if (!folder || !run || run.status !== 'running') {
+      if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null }
+      return undefined
     }
-    storedProject.current = path
-    if (ctxRef && ctxRef.storage) {
-      ctxRef.storage.set('specKitProject', path)
-    }
-    cwdRef.current = path
-    setProject(path)
-    setSelected(null)
-    setRun(null)
-    setGate(null)
-    setOutput('')
-    setPhase('loading')
-    loadProcesses(path)
-  }, [loadProcesses])
+    pollRef.current = setInterval(() => { refreshRun(folder) }, 2000)
+    return () => { if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null } }
+  }, [folder, run, refreshRun])
 
-  const initProject = useCallback(async explicit => {
-    const target = __str(explicit || cwdRef.current)
-    if (!target) {
-      return
-    }
+  const useFolder = useCallback(() => { loadFolder(draftFolder) }, [draftFolder, loadFolder])
+
+  const initFolder = useCallback(async () => {
+    const path = __str(draftFolder) || folder
+    if (!path) return
     setBusy(true)
     setError('')
     try {
-      const response = await rest('/init', { method: 'POST', body: { cwd: target } })
-      if (response && response.ok === false) {
-        setError(`specify init failed (exit ${response.exit_code}) ${(response.stderr || '').slice(-200)}`)
-      }
-      await loadProcesses(target)
+      const result = await rest('/init', { method: 'POST', body: { cwd: path, integration: 'hermes' } })
+      if (result && result.ok === false) throw new Error(__str(result.output) || 'specify init failed')
+      await loadFolder(path)
     } catch (err) {
       setError(errorText(err))
     } finally {
       setBusy(false)
     }
-  }, [loadProcesses])
+  }, [draftFolder, folder, loadFolder])
 
-  const pick = useCallback(process => {
-    const values = {}
-    for (const input of process.inputs || []) {
-      values[input.name] = input.default == null ? '' : input.default
-    }
-    setSelected(process)
-    setInputs(values)
-    setError('')
-    setPhase('inputs')
-  }, [])
-
-  const startRun = useCallback(async () => {
-    if (!selected) {
-      return
-    }
+  const start = useCallback(async () => {
+    const spec = __str(description)
+    if (!spec || !process || !folder) return
     setBusy(true)
     setError('')
     try {
-      const response = await rest(`/workflows/${encodeURIComponent(selected.id)}/run`, {
+      await rest(`/workflows/${encodeURIComponent(process.id)}/run`, {
         method: 'POST',
-        body: { cwd: cwdRef.current, inputs }
+        body: { cwd: folder, inputs: { spec } }
       })
-      setRun(response || null)
-      setGate((response && response.gate) || null)
-      setOutput((response && response.output) || '')
-      setPhase('run')
-      await refreshArtifacts(cwdRef.current)
+      setRun({ status: 'running', run_id: null, gate: null, current_step_id: '' })
+      setTimeout(() => { refreshRun(folder) }, 800)
     } catch (err) {
       setError(errorText(err))
     } finally {
       setBusy(false)
     }
-  }, [selected, inputs, refreshArtifacts])
+  }, [description, process, folder, refreshRun])
 
-  const resume = useCallback(async decision => {
-    if (!selected) {
-      return
-    }
+  const decide = useCallback(async choice => {
+    if (!run || !run.run_id || !run.gate) return
     setBusy(true)
     setError('')
     try {
-      const gateStep = (selected.steps || []).find(step => gate && step.id === gate.step_id)
-      const answers = {}
-      if (decision && gateStep && gateStep.verdict_input) {
-        answers[gateStep.verdict_input] = decision
-      }
-      const response = await rest(
-        `/workflows/${encodeURIComponent(selected.id)}/runs/${encodeURIComponent((run && run.run_id) || '')}/resume`,
-        { method: 'POST', body: { cwd: cwdRef.current, answers } }
-      )
-      setRun(response || null)
-      setGate((response && response.gate) || null)
-      setOutput(previous => `${previous || ''}\n\n${(response && response.output) || ''}`.trim())
-      await refreshArtifacts(cwdRef.current)
+      await rest(`/workflows/${encodeURIComponent(process.id)}/runs/${encodeURIComponent(run.run_id)}/resume`, {
+        method: 'POST',
+        body: { cwd: folder, answers: { [run.gate.verdict_input]: choice } }
+      })
+      setRun({ ...run, status: 'running', gate: null })
+      setTimeout(() => { refreshRun(folder) }, 800)
     } catch (err) {
       setError(errorText(err))
     } finally {
       setBusy(false)
     }
-  }, [selected, run, gate, refreshArtifacts])
+  }, [run, process, folder, refreshRun])
 
-  const openFile = useCallback(async path => {
+  const open = useCallback(async path => {
+    setOpenArtifact(path)
+    setOpenContent('')
     try {
-      const response = await rest(`/artifact?${projectQuery(cwdRef.current)}&path=${encodeURIComponent(path)}`)
-      setOpenArtifact({ path: response.path, content: response.content })
+      const file = await rest(`/artifact?cwd=${encodeURIComponent(folder)}&path=${encodeURIComponent(path)}`)
+      setOpenContent(__str(file && file.content))
     } catch (err) {
-      setOpenArtifact({ path, content: errorText(err) })
+      setOpenContent(errorText(err))
     }
-  }, [])
-
-  const back = useCallback(() => {
-    setGate(null)
-    setRun(null)
-    setOutput('')
-    setOpenArtifact(null)
-    setError('')
-    setPhase(selected ? 'inputs' : 'pick')
-  }, [selected])
+  }, [folder])
 
   const restart = useCallback(() => {
-    setGate(null)
     setRun(null)
-    setOutput('')
+    setDescription('')
     setError('')
-    setPhase('inputs')
   }, [])
 
-  if (phase === 'inputs' && selected) {
-    return jsx(InputsScreen, {
-      process: selected,
-      values: inputs,
-      onChange: (name, value) => setInputs(previous => ({ ...previous, [name]: value })),
-      onSubmit: startRun,
-      onBack: () => setPhase('pick'),
+  if (!folder) {
+    return jsx(FolderGate, {
+      draft: draftFolder,
+      onDraft: setDraftFolder,
+      onUse: useFolder,
+      onInit: initFolder,
+      hasSpecify,
       busy,
       error
     })
   }
 
-  if (phase === 'run' && selected) {
-    return jsx(RunScreen, {
-      process: selected,
-      run,
-      steps: selected.steps,
-      gate,
-      output,
-      artifacts,
-      open: openArtifact,
-      busy,
-      error,
-      project: cwdRef.current,
-      onDecide: decision => resume(decision),
-      onRestart: restart,
-      onBack: back,
-      onOpen: openFile
-    })
-  }
+  const status = (run && run.status) || 'none'
+  const showStart = status === 'none' || !run
+  const showRunning = status === 'running'
+  const showGate = status === 'paused' && Boolean(run && run.gate)
+  const showDone = status === 'completed' || status === 'aborted' || status === 'failed'
 
-  return jsx(PickScreen, {
-    processes,
-    busy,
-    error,
-    onPick: pick,
-    onReload: target => loadProcesses(String(target || cwdRef.current || '').trim()),
-    onInit: initProject,
-    onUseFolder: useFolder,
-    project,
-    hasSpecify: projectInfo.hasSpecify,
-    backendDown
-  })
+  return jsxs('div', { className: 'flex h-full min-h-0 flex-col gap-2 p-3', children: [
+    jsxs('div', { className: 'flex items-center justify-between gap-2', children: [
+      jsx('div', { className: 'min-w-0', children: [
+        jsx('p', { className: 'text-sm font-medium', children: 'Spec Kit' }),
+        jsx('p', { className: 'truncate text-[0.625rem] text-(--ui-text-tertiary)', children: folder })
+      ] }),
+      jsx(Button, {
+        size: 'xs',
+        variant: 'ghost',
+        onClick: () => { setFolder(''); setProcess(null); setRun(null); setError('') },
+        children: 'Change'
+      })
+    ] }),
+    jsx(StepList, { steps: (process && process.steps) || [], run }),
+    jsx('div', { className: 'h-px bg-(--ui-border)' }),
+    showStart ? jsx(StartCard, { process, folder, value: description, onChange: setDescription, onStart: start, busy, error }) : null,
+    showRunning ? jsx(RunningCard, { run }) : null,
+    showGate ? jsx(GateCard, { run, busy, onDecide: decide, error }) : null,
+    showDone ? jsx(DoneCard, { run, onRestart: restart }) : null,
+    jsxs('div', { className: 'flex min-h-0 flex-1 flex-col gap-1', children: [
+      jsx('p', { className: 'text-[0.625rem] font-medium text-(--ui-text-secondary)', children: 'Artifacts' }),
+      openArtifact
+        ? jsx(ArtifactViewer, { path: openArtifact, content: openContent, busy, onClose: () => setOpenArtifact(null) })
+        : jsx(ScrollArea, { className: 'min-h-0 flex-1', children: jsx(ArtifactList, { artifacts, onOpen: open }) })
+    ] })
+  ] })
 }
 
 function renderPane() {
@@ -691,7 +436,7 @@ function renderStatus() {
 export default {
   id: ID,
   name: 'Spec Kit',
-  description: 'Run installed spec-kit processes — SDD, bug fixing, assessment — with gates and artifacts',
+  description: 'Guided spec-kit workflow: describe, review at each gate, implement',
   defaultEnabled: true,
   register(ctx) {
     ctxRef = ctx
