@@ -171,7 +171,7 @@ function ProjectField({ project, busy, onUse }) {
   ] })
 }
 
-function PickScreen({ processes, busy, error, onPick, onReload, onInit, project, hasSpecify, onUseFolder }) {
+function PickScreen({ processes, busy, error, onPick, onReload, onInit, project, hasSpecify, onUseFolder, backendDown }) {
   if (busy && !processes.length) {
     return jsxs('div', { className: 'flex h-full items-center justify-center gap-2', children: [
       jsx(GlyphSpinner, { size: 'sm' }),
@@ -192,6 +192,13 @@ function PickScreen({ processes, busy, error, onPick, onReload, onInit, project,
         : `${project} has no .specify directory. Initialise it here, or point at a folder that already has one.`
     return jsxs('div', { className: 'flex h-full flex-col gap-3 p-3', children: [
       jsx(ProjectField, { project, busy, onUse: onUseFolder }),
+      backendDown
+        ? jsx('p', {
+            className: 'rounded border border-(--ui-border) bg-(--ui-bg-tertiary) p-2 text-[0.6875rem] text-(--ui-text-secondary)',
+            children: 'The plugin backend is not answering. Quit every Hermes process and reopen — the Python half is loaded once at startup, so reloading the pane cannot pick it up.'
+          })
+        : null,
+      error ? jsx('p', { className: 'text-[0.6875rem] text-(--ui-text-secondary)', children: error }) : null,
       jsx('div', { className: 'flex-1', children: jsx(EmptyState, {
         icon: icons.Book,
         title,
@@ -424,6 +431,11 @@ function SpecKitPane() {
   const cwdRef = useRef('')
   const storedProject = useRef('')
   const [project, setProject] = useState('')
+  const [backendDown, setBackendDown] = useState(false)
+
+  // Whether the Python half is reachable is decided by the real /processes call
+  // below, not by a synthetic probe: /status exists in older builds too, and an
+  // empty cwd would 400 rather than prove anything.
 
   const refreshArtifacts = useCallback(async project => {
     try {
@@ -446,6 +458,7 @@ function SpecKitPane() {
         hasWorkflows: Boolean(response && response.has_workflows)
       })
       setPhase('pick')
+      setBackendDown(false)
       if (response && response.errors && response.errors.length) {
         setError(`${response.errors.length} workflow file(s) could not be read`)
       }
@@ -453,6 +466,7 @@ function SpecKitPane() {
     } catch (err) {
       setProcesses([])
       setPhase('pick')
+      setBackendDown(true)
       setError(errorText(err))
     } finally {
       setBusy(false)
@@ -651,7 +665,8 @@ function SpecKitPane() {
     onInit: initProject,
     onUseFolder: useFolder,
     project,
-    hasSpecify: projectInfo.hasSpecify
+    hasSpecify: projectInfo.hasSpecify,
+    backendDown
   })
 }
 
