@@ -53,28 +53,27 @@
 </style>
 </head>
 <body>
-<nav class="toc"><p class="toc-title">Contents</p><ol><li><a href="#1-what-this-is">What this is</a></li><li><a href="#2-why-not-just-install-spec-kit-and-use-the-cli">Why not just install spec-kit and use the CLI</a></li><li><a href="#3-what-exists-today">What exists today</a></li><li><a href="#4-how-a-session-actually-runs">How a session actually runs</a></li><li><a href="#5-repository-layout">Repository layout</a></li><li><a href="#6-what-ships-in-the-fork">What ships in the fork</a></li><li><a href="#7-scope">Scope</a></li><li><a href="#8-verification">Verification</a></li><li><a href="#9-the-config-corruption-and-what-changed-because-of-it">The config corruption, and what changed because of it</a></li><li><a href="#10-upstream-maintenance">Upstream maintenance</a></li><li><a href="#11-other-harnesses">Other harnesses</a></li><li><a href="#12-risks">Risks</a></li><li><a href="#13-open-decisions">Open decisions</a></li></ol></nav>
+<nav class="toc"><p class="toc-title">Contents</p><ol><li><a href="#1-what-this-is">What this is</a></li><li><a href="#2-why-not-just-install-spec-kit-and-use-the-cli">Why not just install spec-kit and use the CLI</a></li><li><a href="#3-what-exists-today">What exists today</a></li><li><a href="#4-how-a-session-actually-runs">How a session actually runs</a></li><li><a href="#5-planned-versus-built">Planned versus built</a></li><li><a href="#6-repository-layout">Repository layout</a></li><li><a href="#7-what-ships-in-the-fork">What ships in the fork</a></li><li><a href="#8-scope">Scope</a></li><li><a href="#9-sdk-surface">SDK surface</a></li><li><a href="#10-verification">Verification</a></li><li><a href="#11-the-config-corruption-and-what-changed-because-of-it">The config corruption, and what changed because of it</a></li><li><a href="#12-upstream-maintenance">Upstream maintenance</a></li><li><a href="#13-other-harnesses">Other harnesses</a></li><li><a href="#14-risks">Risks</a></li><li><a href="#15-decisions-and-open-questions">Decisions and open questions</a></li></ol></nav>
 <h1 id="spec-kit-for-hermes-desktop">Spec-Kit for Hermes Desktop</h1>
-<p>Status: working implementation, pre-release. This document describes what exists, what it does, and what is deliberately not built yet. Every claim in the &quot;Verification&quot; section was produced by a command that ran on this machine.</p>
+<p>Status: working implementation, pre-release. This document describes what exists, what it does, and what is deliberately not built yet. Every claim in the &quot;Verification&quot; section came from a command that ran on this machine.</p>
 <p>Last updated: 2026-10-24.</p>
 <hr>
 <h2 id="1-what-this-is">1. What this is</h2>
-<p>Spec-Kit is a specification-driven development toolkit: you write a spec, derive a plan, break the plan into tasks, then implement. Upstream (<code>github/spec-kit</code>) does that with markdown templates and CLI commands. Everything ends up in a <code>.specify/</code> directory, and you move between your editor, your terminal, and your agent by hand.</p>
+<p>Spec-Kit is a specification-driven development toolkit: write a spec, derive a plan, break the plan into tasks, implement. Upstream (<code>github/spec-kit</code>) does that with markdown templates and CLI commands. Everything lands in a <code>.specify/</code> directory, and you carry it between your editor, your terminal, and your agent by hand.</p>
 <p>This project puts the same workflow inside Hermes Desktop as one interactive pane. You write the spec in a form, answer a constitution wizard, and the tasks become Kanban cards. The files on disk stay the source of truth, so anything else that reads <code>.specify/</code> still works.</p>
-<p>The scope is deliberately narrow: three files, one pane, one project at a time.</p>
+<p>The scope is narrow on purpose: three files, one pane, one project at a time.</p>
 <hr>
 <h2 id="2-why-not-just-install-spec-kit-and-use-the-cli">2. Why not just install spec-kit and use the CLI</h2>
-<p>Because the loop breaks at the handoff. Stock spec-kit gives you files, and then you are on your own: read <code>spec.md</code>, decide what changed, retype it into a prompt, run a command, come back, read <code>tasks.md</code>, work out which checkbox is yours. The documents are correct and the workflow is still manual.</p>
-<p>Concretely, what the pane adds:</p>
+<p>Because the loop breaks at the handoff. Stock spec-kit gives you files, and then you are on your own: read <code>spec.md</code>, work out what changed, retype it into a prompt, run a command, come back, read <code>tasks.md</code>, find which checkbox is yours. The documents are correct and the workflow is still manual.</p>
 <div class="table-wrap"><table>
 <thead><tr><th>Stock spec-kit</th><th>This</th></tr></thead>
 <tbody>
-<tr><td><code>[NEEDS CLARIFICATION]</code> markers as a convention you police yourself</td><td>A counter in the spec step; the step reports itself ready only when three or fewer are open and the constitution is ratified</td></tr>
-<tr><td>Constitution written once from a template, then forgotten</td><td>A five-step wizard that writes it, and rehydrates from the file next time you open it</td></tr>
-<tr><td>Tasks as a checklist in a markdown file</td><td>Kanban cards with the requirement id attached, status readable back into <code>spec.md</code></td></tr>
-<tr><td>Editing files while the agent has them open</td><td>Watches the three files and shows a conflict banner instead of silently clobbering</td></tr>
+<tr><td><code>[NEEDS CLARIFICATION]</code> as a convention you police yourself</td><td>A counter in the spec step; the step reports ready only when three or fewer are open and the constitution is ratified</td></tr>
+<tr><td>Constitution written once from a template, then forgotten</td><td>A five-step wizard that writes it and rehydrates from the file next time</td></tr>
+<tr><td>Tasks as a checklist in a markdown file</td><td>Kanban cards carrying the requirement id, with status readable back into <code>spec.md</code></td></tr>
+<tr><td>Editing files under the agent's feet</td><td>Watches the three files and raises a conflict banner instead of clobbering</td></tr>
 </tbody></table></div>
-<p>What it does not do: replace spec-kit. The templates, the preset, the extension hooks, and the workflow all still come from the fork. The pane is the surface.</p>
+<p>What it does not do: replace spec-kit. Templates, preset, extension hooks and the workflow all still come from the fork. The pane is the surface on top.</p>
 <hr>
 <h2 id="3-what-exists-today">3. What exists today</h2>
 <p>Two halves, because that split is the only supported way for a desktop plugin to touch files. The renderer has no filesystem access, and the gateway JSON-RPC surface has no read or write method.</p>
@@ -84,35 +83,69 @@
 <tr><td>Desktop</td><td><code>~/.hermes/desktop-plugins/spec-kit-hermes/plugin.js</code></td><td>single ESM file, <code>@hermes/plugin-sdk</code> + React</td><td>One pane, stepper, editors, debounced saves, polling watcher, conflict banner</td></tr>
 <tr><td>Backend</td><td><code>~/.hermes/plugins/spec-kit-hermes/dashboard/plugin_api.py</code></td><td>FastAPI router</td><td>Allowlisted file I/O with optimistic concurrency, Kanban sync</td></tr>
 </tbody></table></div>
-<p>The pane reaches the backend through <code>ctx.rest('/files')</code>, which Hermes scopes to <code>/api/plugins/spec-kit-hermes</code>.</p>
-<p>Three files, all under the project's <code>.specify/</code>:</p>
+<p>The pane reaches the backend through <code>ctx.rest</code>, which Hermes scopes to <code>/api/plugins/spec-kit-hermes</code>. Five routes:</p>
+<div class="table-wrap"><table>
+<thead><tr><th>Route</th><th>Purpose</th></tr></thead>
+<tbody>
+<tr><td><code>GET /status</code></td><td>liveness, plus the path allowlist the backend will honour</td></tr>
+<tr><td><code>GET /files</code></td><td>read all three files with their mtimes</td></tr>
+<tr><td><code>PUT /file</code></td><td>write one file, rejected on a stale mtime</td></tr>
+<tr><td><code>POST /kanban/sync</code></td><td>materialise tasks as Kanban cards, idempotent</td></tr>
+<tr><td><code>GET /kanban/links</code></td><td>per-requirement card status, for the acceptance-criteria flow</td></tr>
+</tbody></table></div>
+<p>Three files, all under the project's <code>.specify/</code>, and nothing else is reachable:</p>
 <pre><code>.specify/spec.md                      requirements, acceptance criteria, clarifications
 .specify/memory/constitution.md       principles, architecture choices, governance
-.specify/tasks.md                     tasks with checkboxes, [P] and [US#] markers</code></pre>
-<p>Paths are allowlisted to exactly those three names. A path that escapes the project root is rejected with 400. A write carrying a stale mtime is rejected with 409, which is what produces the conflict banner rather than a lost edit.</p>
+.specify/tasks.md                     tasks with checkboxes, [P:tag] and [US#n] markers</code></pre>
+<p><code>ALLOWED_PATHS</code> is a tuple of exactly those three names. Traversal, absolute paths and unknown files are refused with 400. A write carrying a stale mtime is refused with 409, which is what produces the conflict banner instead of a lost edit.</p>
+<p>Three plugin kinds exist, and mixing them up caused most of the confusion in earlier drafts:</p>
+<div class="table-wrap"><table>
+<thead><tr><th>Kind</th><th>Manifest</th><th>Loaded by</th><th>Config</th></tr></thead>
+<tbody>
+<tr><td>Desktop disk plugin</td><td><code>plugin.js</code> (ESM)</td><td>auto-loaded from <code>desktop-plugins/&lt;id&gt;/</code></td><td><code>ctx.storage</code>, or its own backend</td></tr>
+<tr><td>Agent plugin</td><td><code>plugin.yaml</code> + Python</td><td><code>hermes plugins install</code></td><td><code>config_schema</code> in <code>plugin.yaml</code></td></tr>
+<tr><td>Unified package</td><td><code>plugin.yaml</code> + <code>desktop/plugin.js</code></td><td>agent install copies the desktop half</td><td><code>config_schema</code></td></tr>
+</tbody></table></div>
+<p>This project is a desktop plugin with a dashboard backend. <code>desktop/plugin.yaml</code> ships for packaging and version metadata; the disk loader does not read it, so there is no <code>config_schema</code> here and settings belong in <code>ctx.storage</code>. The backend half does need its plugin id in <code>plugins.enabled</code>, which is why the installer edits <code>config.yaml</code>.</p>
 <hr>
 <h2 id="4-how-a-session-actually-runs">4. How a session actually runs</h2>
 <pre><code>open pane
    │  GET /files  ──▶ backend reads the three files
    ▼
-step 1  Spec          edit requirements, acceptance criteria, clarifications
-   │                  700 ms after typing stops ──▶ PUT /files {path, text, mtime}
+step 1  Spec          requirements, acceptance criteria, clarifications
+   │                  700 ms after typing stops ──▶ PUT /file {path, text, mtime}
    ▼
 step 2  Constitution  purpose → principles → architecture → governance → ratify
    │                  ratify writes .specify/memory/constitution.md
    ▼
-step 3  Tasks         &quot;From spec&quot;   one task per requirement that has no task yet
-                      &quot;To Kanban&quot;   create cards, idempotent per requirement
-                      &quot;From Kanban&quot; read card status back, tick acceptance criteria
+step 3  Tasks         &quot;From spec&quot;   one task per requirement with no task yet
+                      &quot;To Kanban&quot;   POST /kanban/sync, idempotent per requirement
+                      &quot;From Kanban&quot; GET /kanban/links, tick acceptance criteria
    │
    ▼
-every 3 s: GET /files again. External edit reloads the editor; a local unsaved edit
-at the same moment raises the conflict banner (Keep mine / Take theirs).</code></pre>
-<p>The spec step gates on the constitution: it reports itself ready only when the constitution is ratified, at least one requirement exists, and no more than three clarifications are open. That gate is a UI state, not a lock. Nothing stops you from writing files by hand.</p>
-<p>Kanban cards carry an idempotency key, <code>speckit:&lt;project hash&gt;:&lt;FR-n&gt;</code>, so pressing &quot;To Kanban&quot; twice does not duplicate anything.</p>
+every 3 s: GET /files again. An external edit reloads the editor; a local unsaved
+edit at the same moment raises the conflict banner (Keep mine / Take theirs).</code></pre>
+<p>The spec step gates on the constitution. It reports itself ready only when the constitution is ratified, at least one requirement exists, and no more than three clarifications are open. That gate is a UI state, not a lock; nothing stops you writing the files by hand.</p>
+<p><code>tasks.md</code> markers are parsed and rendered: a <code>[US#n]</code> tag becomes a story label and a <code>[P:tag]</code> heading becomes a parallel-group badge. Serialising writes them back.</p>
+<p>Kanban work happens inside the Python half, not from the renderer. <code>kanban/sync</code> opens the board through <code>hermes_cli.kanban_db</code> and calls <code>create_task</code>, reusing existing cards by idempotency key <code>speckit:&lt;project hash&gt;:&lt;FR-n&gt;</code>, so pressing the button twice does not duplicate anything. <code>kanban/links</code> reads <code>list_tasks</code> and reports each requirement's card status. The 16-method JSON-RPC surface described in the previous draft is not what this uses.</p>
+<p>Reload behaviour, learned the hard way: editing <code>plugin.js</code> for a plugin the app has already loaded is picked up. A brand new plugin directory is not. That needs a full quit of every <code>Hermes.exe</code> and a restart, because the loader caches the discovered plugin list at startup.</p>
 <hr>
-<h2 id="5-repository-layout">5. Repository layout</h2>
-<p>One home for the app: <code>C:\Users\Fortress\speckit-hermes</code>.</p>
+<h2 id="5-planned-versus-built">5. Planned versus built</h2>
+<p>The previous design described a different system. This is what survived contact.</p>
+<div class="table-wrap"><table>
+<thead><tr><th>Planned</th><th>Built</th><th>Why it changed</th></tr></thead>
+<tbody>
+<tr><td>Three panes: SpecBuilder, TaskBoard, ConstitutionWizard</td><td>One pane with a three-step stepper</td><td>Three right-sidebar tabs read as three unrelated apps, and the steps are sequential anyway</td></tr>
+<tr><td><code>SpecParser.ts</code> / <code>TasksParser.ts</code> on remark + mdast</td><td>Line-oriented parsers in <code>src/core.mjs</code></td><td>The sections are small and regular; an AST bought indirection, not safety</td></tr>
+<tr><td><code>chokidar</code> file watching</td><td>3 s polling with mtime comparison</td><td>The renderer has no Node filesystem; the backend has no push channel yet</td></tr>
+<tr><td><code>SpecifyCLIBridge</code> spawning <code>specify</code></td><td>Not built</td><td>Templates come from the fork's preset; no Python toolchain in the app</td></tr>
+<tr><td><code>HermesDispatch</code> invoking <code>speckit-*</code> skills</td><td>Not built</td><td>The pane writes files; agent dispatch is the next feature</td></tr>
+<tr><td>Kanban via <code>host.request('kanban.*')</code></td><td>Backend calls <code>hermes_cli.kanban_db</code></td><td>The backend already runs in the gateway process and owns the DB handle</td></tr>
+<tr><td>Implement button, convergence column</td><td>Not built</td><td>Both need skill dispatch, which is the next feature</td></tr>
+</tbody></table></div>
+<hr>
+<h2 id="6-repository-layout">6. Repository layout</h2>
+<p>One home: <code>C:\Users\Fortress\speckit-hermes</code>.</p>
 <pre><code>src/core.mjs              pure model layer, no SDK imports, unit tested
                           (parsers, constitution gate, stepper, sync decisions)
 src/pane.js               pane UI and registration
@@ -129,10 +162,9 @@ docs/design.html          generated from this file, do not hand edit
 docs/VERIFICATION.md      the evidence behind each claim
 docs/archive/             superseded v0 design, v1 sources, spike notes</code></pre>
 <p><code>desktop/plugin.js</code> is a build artifact. Edit <code>src/</code>, run <code>npm run build</code>.</p>
-<p>The Kubernetes-style &quot;everything in one directory per concern&quot; habit does not apply here: this is a two-half plugin, and the halves have to sit where Hermes looks for them. The repo mirrors the two install targets, nothing else.</p>
 <hr>
-<h2 id="6-what-ships-in-the-fork">6. What ships in the fork</h2>
-<p><code>justinbrenton/spec-kit</code> is a fork of <code>github/spec-kit</code>. It carries the distribution layer, not the app. All Hermes additions are new directories plus catalog entries.</p>
+<h2 id="7-what-ships-in-the-fork">7. What ships in the fork</h2>
+<p><code>justinbrenton/spec-kit</code> is a fork of <code>github/spec-kit</code>. It carries the distribution layer, not the app. Every Hermes addition is a new directory plus a catalog entry.</p>
 <pre><code>presets/hermes-desktop/       preset.yml (priority 1, strategy: append) + 5 templates + 10 commands
 extensions/hermes-desktop/    4 optional hooks, each implemented as a command
 workflows/hermes-desktop/     8-step SDD workflow (command, parallel, loop steps; no gates)
@@ -142,7 +174,7 @@ extensions/catalog.json       + hermes-desktop
 workflows/catalog.json        + hermes-desktop
 bundles/catalog.json          + hermes-desktop
 docs/hermes-integration/      pointer to this document's home, not a copy of it</code></pre>
-<p>Catalogs live at <code>presets/catalog.json</code> and friends, not in a <code>catalogs/</code> directory.</p>
+<p>Catalogs live at <code>presets/catalog.json</code> and friends, not in a <code>catalogs/</code> directory. The four <code>SPECKIT_PRESET_CATALOG_URL</code>, <code>SPECKIT_EXTENSION_CATALOG_URL</code>, <code>SPECKIT_WORKFLOW_CATALOG_URL</code> and <code>SPECKIT_BUNDLE_CATALOG_URL</code> environment variables override them per machine or per CI job, which is how the fork gets tested without publishing.</p>
 <p>The hooks:</p>
 <div class="table-wrap"><table>
 <thead><tr><th>Hook</th><th>Command</th><th>What it does</th></tr></thead>
@@ -152,15 +184,23 @@ docs/hermes-integration/      pointer to this document's home, not a copy of it<
 <tr><td><code>after_implement</code></td><td><code>speckit.converge.auto</code></td><td>convergence pass after implementation</td></tr>
 <tr><td><code>after_converge</code></td><td><code>speckit.pr.prepare</code></td><td>assemble PR context</td></tr>
 </tbody></table></div>
-<p>All four are <code>optional: true</code>. A missing hook must degrade, not break the workflow.</p>
+<p>All four are <code>optional: true</code>. A missing hook degrades; it does not break the workflow.</p>
+<p>Adding something to the fork without publishing first:</p>
+<pre><code class="language-bash">specify preset add    --dev ./presets/hermes-desktop
+specify extension add --dev ./extensions/hermes-desktop
+specify workflow run      ./workflows/hermes-desktop/workflow.yml
+specify bundle add    --dev ./bundles/hermes-desktop</code></pre>
+<p>Rules that keep the next merge boring: follow the upstream schema exactly, use <code>strategy: append</code> so presets compose instead of replacing, and keep every hook <code>optional: true</code> by default.</p>
+<p>Bundle variants (backend, fullstack, ml, api-only) are planned, not built. Each would compose the base preset with role presets that do not exist yet, so shipping the manifests now would advertise something uninstallable.</p>
 <hr>
-<h2 id="7-scope">7. Scope</h2>
+<h2 id="8-scope">8. Scope</h2>
 <p>Shipped:</p>
 <ul>
-<li>Single pane with a three-step stepper, resumable at the furthest step with content.</li>
+<li>Single pane with a three-step stepper, resuming at the furthest step with content.</li>
 <li>Real reads and writes to the three <code>.specify/</code> files, with optimistic concurrency.</li>
 <li>Constitution wizard that writes and rehydrates.</li>
 <li>Task derivation from the spec, Kanban card creation, status pull-back.</li>
+<li><code>[P:tag]</code> and <code>[US#n]</code> parsing, rendering and round-trip.</li>
 <li>Installer that backs up before it writes.</li>
 <li>50 node tests.</li>
 </ul>
@@ -171,27 +211,58 @@ docs/hermes-integration/      pointer to this document's home, not a copy of it<
 <p>backend tests, including the real mount test, have not run on this machine.</p>
 <ol>
 <li>Confirm the pane renders in a live app with the current build.</li>
-<li>Wizard completion → send to an agent session or bot group chat. The SDK surface</li>
+<li>Wizard completion → send to an agent session or bot group chat. The SDK surface is</li>
 </ol>
-<p>is verified (<code>host.composer.submit</code>, <code>host.navigate</code>); the wiring is not written.</p>
+<p>verified (<code>host.composer.submit</code>, <code>host.navigate</code>); the wiring is not written. Skill invocation, once it exists, is <code>hermes chat -Q -q &quot;&lt;query&gt;&quot; -s speckit-&lt;skill&gt;</code>.</p>
 <ol>
-<li>Plan canvas: a <code>plan.md</code> surface with the tech choices made in the wizard.</li>
+<li>Implement button: dispatch a task to an agent from the task step, then read the</li>
+</ol>
+<p>result back into the row.</p>
+<ol>
+<li>Plan canvas: a <code>plan.md</code> surface carrying the tech choices made in the wizard.</li>
 <li>Workflow runner: drive <code>workflows/hermes-desktop/workflow.yml</code> from the pane.</li>
 </ol>
 <p>Deliberately out, and why:</p>
 <div class="table-wrap"><table>
 <thead><tr><th>Not doing</th><th>Reason</th></tr></thead>
 <tbody>
-<tr><td>Drag-and-drop Kanban</td><td>The pane has no DnD primitive; buttons do the same job without a custom drag layer</td></tr>
-<tr><td>Deleting or renaming Kanban cards</td><td>The read-back model assumes create-only; deletion needs an ownership story first</td></tr>
-<tr><td><code>chokidar</code> or inotify</td><td>The renderer has no Node filesystem access; polling every 3 s is the honest implementation</td></tr>
-<tr><td>Preserving hand-edited prose in <code>constitution.md</code></td><td>The wizard owns that file. <code>spec.md</code> and <code>tasks.md</code> are rewritten surgically, section by section</td></tr>
-<tr><td>Multi-project workspace</td><td>One project per pane keeps the state model small; more is a redesign, not a flag</td></tr>
+<tr><td>Drag-and-drop Kanban</td><td>The pane has no drag primitive; buttons do the same job without a custom layer</td></tr>
+<tr><td>Deleting or renaming cards</td><td>Read-back assumes create-only; deletion needs an ownership story first</td></tr>
+<tr><td>Convergence as a watched column</td><td>Needs implement first; a column that never fills is decoration</td></tr>
+<tr><td>Extension marketplace, bundle installer UI</td><td>Both are fork-side problems today; a UI before the catalogs are proven is backwards</td></tr>
+<tr><td>Internal skill API</td><td>Not exposed; <code>host.composer</code> covers the dispatch case</td></tr>
+<tr><td><code>chokidar</code> or inotify</td><td>The renderer has no Node filesystem; polling is the honest implementation</td></tr>
+<tr><td>Preserving hand-edited prose in <code>constitution.md</code></td><td>The wizard owns that file. <code>spec.md</code> and <code>tasks.md</code> are rewritten surgically</td></tr>
+<tr><td>Multi-project workspace</td><td>One project per pane keeps the state model small; more is a redesign</td></tr>
 <tr><td>Bundling the <code>specify</code> CLI</td><td>Templates come from the fork's preset; no Python toolchain in the app</td></tr>
 </tbody></table></div>
+<p>Known gaps, not designed yet. These came out of the earlier review and none has an owner or a shape:</p>
+<div class="table-wrap"><table>
+<thead><tr><th>Gap</th><th>Why it matters</th></tr></thead>
+<tbody>
+<tr><td>Plugin security model</td><td>No sandboxing, capability permissions, resource limits or signing. A plugin can do whatever the gateway can</td></tr>
+<tr><td>Dependency and version resolution</td><td>Nothing records which preset or extension version a project was generated with</td></tr>
+<tr><td>Spec versioning and migration</td><td>A template change can invalidate every existing <code>.specify/</code> tree with no migration path</td></tr>
+<tr><td>Validation beyond clarifications</td><td><code>[NEEDS CLARIFICATION]</code> is the only rule; no schema check on a malformed spec</td></tr>
+</tbody></table></div>
+<p>MCP workflow steps (a shell step calling <code>hermes mcp call ...</code>) were sketched earlier and never verified. There is no registry for the workflow engine to read, so it stays an idea, not a plan.</p>
 <hr>
-<h2 id="8-verification">8. Verification</h2>
-<p>Everything below ran on this machine. Re-run any line to check it.</p>
+<h2 id="9-sdk-surface">9. SDK surface</h2>
+<p>What the pane actually uses, checked by loading the built artifact with the SDK stubbed:</p>
+<div class="table-wrap"><table>
+<thead><tr><th>Used</th><th>For</th></tr></thead>
+<tbody>
+<tr><td><code>PANES_AREA</code>, <code>STATUSBAR_AREAS</code></td><td>the pane and the status chip that focuses it</td></tr>
+<tr><td><code>Button</code>, <code>Input</code>, <code>Textarea</code>, <code>Select</code>, <code>Badge</code>, <code>ScrollArea</code>, <code>EmptyState</code>, <code>Codicon</code></td><td>the UI, with no custom component layer</td></tr>
+<tr><td><code>ctx.rest</code></td><td>the five backend routes</td></tr>
+<tr><td><code>ctx.storage</code></td><td>pane-local state (last project path)</td></tr>
+<tr><td><code>host.composer</code></td><td>inserted text and submit, for the dispatch feature</td></tr>
+<tr><td><code>host.navigate</code></td><td>switching to a session after dispatch</td></tr>
+</tbody></table></div>
+<p>Available and unused: <code>host.request</code> (sessions, config, skills, cron, kanban), <code>host.skills</code>, <code>host.settings</code>, <code>host.onEvent</code>, <code>ctx.socket</code>, routes, sidebar nav, palette commands, keybinds, themes, settings pages.</p>
+<p>Not available, despite appearing in earlier drafts: <code>host.rest</code> (the API explorer reports <code>no host.rest</code>), any gateway JSON-RPC file read or write, and <code>Fragment</code> as an SDK export. <code>Fragment</code> comes from React.</p>
+<hr>
+<h2 id="10-verification">10. Verification</h2>
 <div class="table-wrap"><table>
 <thead><tr><th>Claim</th><th>Command</th><th>Observed</th></tr></thead>
 <tbody>
@@ -200,25 +271,26 @@ docs/hermes-integration/      pointer to this document's home, not a copy of it<
 <tr><td>The deployed plugin matches the build</td><td><code>cmp desktop/plugin.js ~/.hermes/desktop-plugins/spec-kit-hermes/plugin.js</code></td><td>identical, 65,162 bytes</td></tr>
 <tr><td>The config edit adds one line, not a duplicate key</td><td>feed the live <code>config.yaml</code> through <code>config-enable.mjs</code></td><td>1 line added, <code>plugins.enabled</code> contains <code>spec-kit-hermes</code> once, file parses</td></tr>
 <tr><td>Backend half is installed</td><td><code>ls ~/.hermes/plugins/spec-kit-hermes/dashboard/</code></td><td><code>plugin_api.py</code> (10,031 bytes), <code>manifest.json</code>, <code>index.js</code></td></tr>
+<tr><td>The doc pair cannot drift</td><td><code>npm run docs</code></td><td>HTML regenerated from this file, 13 sections</td></tr>
 </tbody></table></div>
-<p>Not verified: the Python backend suite (no <code>pytest</code> in the venv), and the pane rendering in a live app. Both are listed as next steps, not claimed as done.</p>
+<p>Not verified: the Python backend suite (no <code>pytest</code> in the venv) and the pane rendering in a live app. Both are next steps, not claims.</p>
 <hr>
-<h2 id="9-the-config-corruption-and-what-changed-because-of-it">9. The config corruption, and what changed because of it</h2>
+<h2 id="11-the-config-corruption-and-what-changed-because-of-it">11. The config corruption, and what changed because of it</h2>
 <p>On 2026-10-24 Hermes refused to start with <code>DuplicateKeyError: found duplicate key &quot;enabled&quot;</code>. The cause was <code>scripts/config-enable.mjs</code>. It edits <code>plugins.enabled</code> by text surgery, and its block scan treated any unindented line as the end of the <code>plugins:</code> mapping. Real configs put a column-0 section banner between <code>plugins:</code> and its keys, so the scan stopped early, failed to find the existing list, and spliced a second <code>enabled:</code> in directly under <code>plugins:</code>.</p>
-<p>Fixes (commit <code>accca5d</code>):</p>
+<p>Fixed in <code>accca5d</code>:</p>
 <ul>
-<li>Column-0 comments no longer end the mapping. This is the actual bug.</li>
+<li>Column-0 comments no longer end the mapping. That is the bug.</li>
 <li>The editor refuses to touch a file that already carries two <code>enabled:</code> keys,</li>
 </ul>
-<p>instead of appending to the first one and writing back something still broken.</p>
+<p>instead of appending to the first and writing back something still broken.</p>
 <ul>
 <li>The self-check applies the same rule, so it cannot report success on a bad edit.</li>
-<li>Two regression tests use the real banner shape, one of which fails against the old</li>
+<li>Two regression tests use the real banner shape; one of them fails against the old</li>
 </ul>
 <p>code with the same signature the corruption had.</p>
-<p>Standing rule: any script that edits <code>config.yaml</code> must (a) back the file up first, (b) prove the result parses, and (c) prove the key it wrote appears exactly once.</p>
+<p>Standing rule: any script that edits <code>config.yaml</code> must back the file up first, prove the result parses, and prove the key it wrote appears exactly once.</p>
 <hr>
-<h2 id="10-upstream-maintenance">10. Upstream maintenance</h2>
+<h2 id="12-upstream-maintenance">12. Upstream maintenance</h2>
 <ul>
 <li>Isolation: Hermes additions are new directories and catalog entries. No upstream</li>
 </ul>
@@ -235,40 +307,72 @@ docs/hermes-integration/      pointer to this document's home, not a copy of it<
 <li>Version pin: <code>speckit_version: &quot;^0.16.0&quot;</code> in the bundle. A major bump gets tested,</li>
 </ul>
 <p>not absorbed.</p>
+<ul>
+<li>Not built: the scheduled sync job, and the CI check that fails on a non-catalog</li>
+</ul>
+<p>conflict. Until those exist the merge is manual.</p>
 <hr>
-<h2 id="11-other-harnesses">11. Other harnesses</h2>
-<p>The spec-kit primitives are markdown and YAML, so the distribution layer is portable by construction. A second harness needs three things: a way to invoke a skill, a way to read and write <code>.specify/</code>, and some UI to put the three steps in.</p>
-<p>That is a thin adapter, not a rewrite. The adapter contract is small:</p>
-<pre><code>invokeSkill(skill, prompt)     -&gt; result
+<h2 id="13-other-harnesses">13. Other harnesses</h2>
+<p>The spec-kit primitives are markdown and YAML, so the distribution layer is portable by construction. A second harness needs three things: a way to invoke a skill, a way to read and write <code>.specify/</code>, and somewhere to put the three steps.</p>
+<p>That is a thin adapter, not a rewrite:</p>
+<pre><code>invokeSkill(skill, prompt)                    -&gt; result
 readFile(path) / writeFile(path, text, mtime)
 registerSteps(spec, constitution, tasks)</code></pre>
-<p>The candidate harnesses worth naming: OpenClaw, Orca, Codex, Claude Desktop, OpenCode. Their plugin models differ enough that each needs its own adapter, and I have not verified any of them against their own docs. Treat that list as a research queue, not a compatibility claim. Hermes is the only one verified here.</p>
-<p>The part that does carry over unchanged: templates, preset composition, extension hooks, workflow YAML, and the <code>.specify/</code> layout. Those are files, not APIs.</p>
+<p>Candidate harnesses worth naming: OpenClaw, Orca, Codex, Claude Desktop, OpenCode. Their plugin models differ enough that each needs its own adapter. None has been checked against its own documentation, so treat this as a research queue, not a compatibility claim. Hermes is the only one verified here.</p>
+<p>What carries over unchanged: templates, preset composition, extension hooks, workflow YAML, and the <code>.specify/</code> layout. Those are files, not APIs.</p>
+<p>Per-harness work, when someone picks one up:</p>
+<div class="table-wrap"><table>
+<thead><tr><th>Harness</th><th>Needs beyond the adapter</th></tr></thead>
+<tbody>
+<tr><td>OpenClaw</td><td>dashboard widget instead of a pane; ACP session templates</td></tr>
+<tr><td>Orca</td><td>panel HTML in an isolated view; capability declarations for the sandboxed worker</td></tr>
+<tr><td>Codex</td><td>pane layout; MCP UI for any hosted surface</td></tr>
+<tr><td>Claude Desktop</td><td><code>.claude-plugin</code> manifest; pane layout</td></tr>
+<tr><td>OpenCode</td><td>terminal rendering plus a web UI path</td></tr>
+</tbody></table></div>
+<p>Checklist for a new harness: implement the adapter, declare capabilities, map <code>speckit-*</code> to its invocation, build the three step surfaces, prove round-trip against a real file, run a workflow, run a hook, install a bundle, and write down the quirks that bit you.</p>
 <hr>
-<h2 id="12-risks">12. Risks</h2>
+<h2 id="14-risks">14. Risks</h2>
 <div class="table-wrap"><table>
 <thead><tr><th>Risk</th><th>Mitigation</th></tr></thead>
 <tbody>
-<tr><td>Installer damages <code>config.yaml</code></td><td>Backup first, parse after, assert the key appears once, throw on anything unexpected. This is a rule now, not a hope</td></tr>
+<tr><td>Installer damages <code>config.yaml</code></td><td>Backup first, parse after, assert the key appears once, throw on anything unexpected. A rule now, not a hope</td></tr>
 <tr><td>Backend silently not mounted</td><td><code>scripts/verify-install.py</code> runs Hermes' own discovery and mount, then calls <code>/status</code></td></tr>
 <tr><td>Polling feels laggy or misses an edit</td><td>3 s poll with mtime comparison; a WebSocket route on the backend is the upgrade path</td></tr>
 <tr><td>Wizard clobbers hand-written constitution prose</td><td>Documented limitation; the wizard owns that file</td></tr>
-<tr><td>Plugin API churn in Hermes Desktop</td><td>The pane imports only documented SDK exports; the smoke test evaluates the built artifact, so a broken import fails in CI rather than in the app</td></tr>
-<tr><td>Growing past one pane</td><td>Scope table above; new surfaces are new decisions, not drift</td></tr>
+<tr><td>Plugin API churn in Hermes Desktop</td><td>The pane imports only documented SDK exports; the smoke test evaluates the built artifact, so a broken import fails in tests rather than in the app</td></tr>
+<tr><td>Fork drift from upstream</td><td>Merge not rebase, catalog-only conflicts, <code>hermes-desktop/</code> directories isolated</td></tr>
+<tr><td>Growing past one pane</td><td>Scope table above; new surfaces are decisions, not drift</td></tr>
 </tbody></table></div>
 <hr>
-<h2 id="13-open-decisions">13. Open decisions</h2>
+<h2 id="15-decisions-and-open-questions">15. Decisions and open questions</h2>
+<p>Decisions from the design phase, with where they landed:</p>
+<div class="table-wrap"><table>
+<thead><tr><th>Decision</th><th>Status</th></tr></thead>
+<tbody>
+<tr><td>Constitution wizard ships in the first release</td><td>Built, as step two of the pane</td></tr>
+<tr><td>Template overrides delivered as a preset</td><td>Built: <code>presets/hermes-desktop</code>, priority 1, <code>strategy: append</code></td></tr>
+<tr><td>Parsers built on an AST for round-trip safety</td><td>Superseded: line-oriented parsing with round-trip tests</td></tr>
+<tr><td>Kanban as a first-class surface</td><td>Partly built: cards created and read back, no board UI of our own</td></tr>
+<tr><td>Skill invocation through the CLI as a stopgap</td><td>Deferred with skill dispatch</td></tr>
+<tr><td>Project state in the repo, profile state in the profile</td><td>Built</td></tr>
+</tbody></table></div>
+<p>Open:</p>
 <ol>
 <li>Where the app's code is versioned. It has no remote today, so the only copy is on</li>
 </ol>
 <p>this disk. A separate repo is cleaner than a branch of the fork, since the fork should stay a spec-kit distribution.</p>
 <ol>
-<li>Whether the installer should enable the plugin in the root <code>config.yaml</code> as well</li>
+<li>Whether the installer should enable the plugin in the root <code>config.yaml</code> as well as</li>
 </ol>
-<p>as the profile's. Today it would touch both; the profile one is sufficient.</p>
+<p>the profile's. Today it would touch both; the profile one is sufficient.</p>
 <ol>
-<li>Who owns <code>workflows/hermes-desktop/workflow.yml</code>. It has no gates, which is</li>
+<li><code>workflows/hermes-desktop/workflow.yml</code> has 8 steps and no gates. For a</li>
 </ol>
-<p>probably wrong for a human-in-the-loop workflow, but the gate count is a product call, not a technical one.</p>
+<p>human-in-the-loop workflow that is probably wrong, but the gate count is a product call, not a technical one.</p>
+<ol>
+<li>Whether the next round of work splits between two agents as <code>researcher-architect</code></li>
+</ol>
+<p>and <code>reviewer-tester</code>, or stays with one. The split was agreed, then never used.</p>
 </body>
 </html>
