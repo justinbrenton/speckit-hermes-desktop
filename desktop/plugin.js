@@ -932,7 +932,41 @@ function ProcessCard({ process, onPick }) {
   })
 }
 
-function PickScreen({ processes, busy, error, onPick, onReload, onInit, project, hasSpecify }) {
+function ProjectField({ project, busy, onUse }) {
+  const [draft, setDraft] = useState(project || '')
+  useEffect(() => {
+    setDraft(project || '')
+  }, [project])
+  const commit = () => {
+    const next = String(draft || '').trim()
+    if (next && next !== project) {
+      onUse(next)
+    }
+  }
+  return jsx('div', { className: 'flex flex-col gap-1', children: [
+    jsx('span', { className: 'text-[0.625rem] font-medium text-(--ui-text-secondary)', children: 'Project folder' }),
+    jsxs('div', { className: 'flex items-center gap-1', children: [
+      jsx(Input, {
+        value: draft,
+        placeholder: 'C:\\path\\to\\your\\project',
+        className: 'text-[0.625rem] font-mono',
+        onChange: event => setDraft(event.target.value),
+        onKeyDown: event => {
+          if (event.key === 'Enter') {
+            commit()
+          }
+        }
+      }),
+      jsx(Button, { size: 'xs', variant: 'secondary', disabled: busy, onClick: commit, children: 'Use' })
+    ] }),
+    jsx('span', {
+      className: 'text-[0.625rem] text-(--ui-text-tertiary)',
+      children: 'Defaults to the folder Hermes has open. Point it at a spec-kit project if that is not the right one.'
+    })
+  ] })
+}
+
+function PickScreen({ processes, busy, error, onPick, onReload, onInit, project, hasSpecify, onUseFolder }) {
   if (busy && !processes.length) {
     return jsxs('div', { className: 'flex h-full items-center justify-center gap-2', children: [
       jsx(GlyphSpinner, { size: 'sm' }),
@@ -942,29 +976,33 @@ function PickScreen({ processes, busy, error, onPick, onReload, onInit, project,
 
   if (!processes.length) {
     const title = !project
-      ? 'Open a project folder first'
+      ? 'Choose a project folder'
       : hasSpecify
         ? 'This project has no workflows'
         : 'Not a spec-kit project yet'
     const description = !project
-      ? 'The pane works on the folder Hermes has open.'
+      ? 'The pane works on one project folder at a time.'
       : hasSpecify
         ? `${project} has a .specify directory but no workflows in it. Install a bundle, or re-run "specify init".`
-        : `${project} has no .specify directory. Initialise it here, or open a folder that already has one.`
-    return jsx(EmptyState, {
-      icon: icons.Book,
-      title,
-      description,
-      action: jsxs('div', { className: 'flex items-center gap-1.5', children: [
-        jsx(Button, { size: 'xs', variant: 'ghost', disabled: busy, onClick: onReload, children: 'Reload' }),
-        project && !hasSpecify
-          ? jsx(Button, { size: 'xs', variant: 'secondary', disabled: busy, onClick: onInit, children: busy ? 'Initialising…' : 'Initialise this folder' })
-          : null
-      ] })
-    })
+        : `${project} has no .specify directory. Initialise it here, or point at a folder that already has one.`
+    return jsxs('div', { className: 'flex h-full flex-col gap-3 p-3', children: [
+      jsx(ProjectField, { project, busy, onUse: onUseFolder }),
+      jsx('div', { className: 'flex-1', children: jsx(EmptyState, {
+        icon: icons.Book,
+        title,
+        description,
+        action: jsxs('div', { className: 'flex items-center gap-1.5', children: [
+          jsx(Button, { size: 'xs', variant: 'ghost', disabled: busy, onClick: () => onReload(project), children: 'Reload' }),
+          project && !hasSpecify
+            ? jsx(Button, { size: 'xs', variant: 'secondary', disabled: busy, onClick: () => onInit(project), children: busy ? 'Initialising…' : 'Initialise this folder' })
+            : null
+        ] })
+      }) })
+    ] })
   }
 
   return jsxs('div', { className: 'flex h-full flex-col gap-3 p-3', children: [
+    jsx(ProjectField, { project, busy, onUse: onUseFolder }),
     jsxs('div', { children: [
       jsx('h3', { className: 'text-sm font-medium', children: 'What are we doing?' }),
       jsx('p', { className: 'mt-0.5 text-[0.6875rem] text-(--ui-text-tertiary)', children: 'Each process below is an installed spec-kit workflow.' })
@@ -1179,6 +1217,8 @@ function SpecKitPane() {
   const [artifacts, setArtifacts] = useState([])
   const [openArtifact, setOpenArtifact] = useState(null)
   const cwdRef = useRef('')
+  const storedProject = useRef('')
+  const [project, setProject] = useState('')
 
   const refreshArtifacts = useCallback(async project => {
     try {
@@ -1214,29 +1254,64 @@ function SpecKitPane() {
     }
   }, [refreshArtifacts])
 
+  // A pinned folder wins over the workspace folder: `host.state.cwd` follows the
+  // app's workspace, which is not necessarily the project the user is working in.
   useEffect(() => {
-    const project = String(cwd || '')
-    if (project === cwdRef.current) {
+    const stored = (ctxRef && ctxRef.storage && ctxRef.storage.get('specKitProject', '')) || ''
+    storedProject.current = stored
+    if (!stored) {
       return
     }
-    cwdRef.current = project
-    if (!project) {
-      setProcesses([])
-      setPhase('pick')
+    cwdRef.current = stored
+    setProject(stored)
+    loadProcesses(stored)
+  }, [loadProcesses])
+
+  useEffect(() => {
+    if (storedProject.current) {
       return
     }
-    loadProcesses(project)
+    const next = String(cwd || '')
+    if (!next || next === cwdRef.current) {
+      return
+    }
+    cwdRef.current = next
+    setProject(next)
+    loadProcesses(next)
   }, [cwd, loadProcesses])
 
-  const initProject = useCallback(async () => {
+  const useFolder = useCallback(next => {
+    const path = String(next || '').trim()
+    if (!path) {
+      return
+    }
+    storedProject.current = path
+    if (ctxRef && ctxRef.storage) {
+      ctxRef.storage.set('specKitProject', path)
+    }
+    cwdRef.current = path
+    setProject(path)
+    setSelected(null)
+    setRun(null)
+    setGate(null)
+    setOutput('')
+    setPhase('loading')
+    loadProcesses(path)
+  }, [loadProcesses])
+
+  const initProject = useCallback(async explicit => {
+    const target = String(explicit || cwdRef.current || '').trim()
+    if (!target) {
+      return
+    }
     setBusy(true)
     setError('')
     try {
-      const response = await rest('/init', { method: 'POST', body: { cwd: cwdRef.current } })
+      const response = await rest('/init', { method: 'POST', body: { cwd: target } })
       if (response && response.ok === false) {
-        setError(errorText({ detail: `specify init failed (exit ${response.exit_code})` }) + ` ${(response.stderr || '').slice(-200)}`)
+        setError(`specify init failed (exit ${response.exit_code}) ${(response.stderr || '').slice(-200)}`)
       }
-      await loadProcesses(cwdRef.current)
+      await loadProcesses(target)
     } catch (err) {
       setError(errorText(err))
     } finally {
@@ -1367,9 +1442,10 @@ function SpecKitPane() {
     busy,
     error,
     onPick: pick,
-    onReload: () => loadProcesses(cwdRef.current),
+    onReload: target => loadProcesses(String(target || cwdRef.current || '').trim()),
     onInit: initProject,
-    project: cwdRef.current,
+    onUseFolder: useFolder,
+    project,
     hasSpecify: projectInfo.hasSpecify
   })
 }
