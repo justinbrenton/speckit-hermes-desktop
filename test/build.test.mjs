@@ -54,7 +54,8 @@ test('the built plugin registers exactly one pane', async () => {
 test('the built plugin only talks to its own REST namespace', async () => {
   const code = await source()
   // every backend call goes through ctx.rest with a relative path
-  const calls = [...code.matchAll(/rest\((?:'|")([^'"]+)/g)].map(match => match[1])
+  // Template literals carry query strings, so accept all three quote styles.
+  const calls = [...code.matchAll(/rest\((['"`])([^'"`]+)/g)].map(match => match[2])
   assert.ok(calls.length > 0)
   for (const call of calls) {
     assert.ok(call.startsWith('/'), `rest path must be namespace-relative: ${call}`)

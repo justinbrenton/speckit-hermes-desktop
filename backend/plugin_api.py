@@ -325,6 +325,9 @@ def list_processes(cwd: str = Query(..., description="Absolute project directory
                         "message": raw.get("message", ""),
                         "options": raw.get("options", []),
                         "on_reject": raw.get("on_reject"),
+                        # The input a GUI must fill to answer this gate. Without it
+                        # the engine can only prompt, which a pane cannot do.
+                        "verdict_input": raw.get("verdict_input"),
                     }
                 )
             steps.append(step)

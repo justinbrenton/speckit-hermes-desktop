@@ -121,6 +121,7 @@ def test_workflow_becomes_a_process_with_inputs_and_steps(client, tmp_path, monk
     assert gate["type"] == "gate"
     assert gate["options"] == ["approve", "reject"]
     assert gate["on_reject"] == "abort"
+    assert gate["verdict_input"] is None, "undeclared gates cannot be answered from a GUI"
     assert "Review the assessment" in gate["message"]
 
 

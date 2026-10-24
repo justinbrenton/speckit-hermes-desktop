@@ -96,45 +96,32 @@ its plugin id in `plugins.enabled`, which is why the installer edits `config.yam
 ## 4. How a session actually runs
 
 ```
-open pane
-   │  GET /files  ──▶ backend reads the three files
+open the pane on a project
+   │  GET /processes  ──▶ installed workflows, their inputs, their steps
    ▼
-step 1  Spec          requirements, acceptance criteria, clarifications
-   │                  700 ms after typing stops ──▶ PUT /file {path, text, mtime}
-   ▼
-step 2  Constitution  purpose → principles → architecture → governance → ratify
-   │                  ratify writes .specify/memory/constitution.md
-   ▼
-step 3  Tasks         "From spec"   one task per requirement with no task yet
-                      "To Kanban"   POST /kanban/sync, idempotent per requirement
-                      "From Kanban" GET /kanban/links, tick acceptance criteria
+"What are we doing?"   SDD · bug fixing · idea assessment · anything installed
    │
    ▼
-every 3 s: GET /files again. An external edit reloads the editor; a local unsaved
-edit at the same moment raises the conflict banner (Keep mine / Take theirs).
+inputs                 a form built from the workflow's own `inputs:` block
+   │  POST /workflows/<process>/run   ──▶ specify workflow run … --json
+   ▼
+run                    the engine executes steps; the pane shows progress
+   │                   command step → dispatched, output captured
+   │                   gate step    → status: paused, the pane asks you
+   │  POST …/runs/<id>/resume -i gate_x=approve
+   ▼
+artifacts              GET /artifacts, read-only, newest first
 ```
 
-The spec step gates on the constitution. It reports itself ready only when the
-constitution is ratified, at least one requirement exists, and no more than three
-clarifications are open. That gate is a UI state, not a lock; nothing stops you
-writing the files by hand.
+The pane authoring three files by hand is gone. `spec.md`,
+`memory/constitution.md` and `tasks.md` are written by `/speckit-specify`,
+`/speckit-constitution` and `/speckit-tasks` inside the workflow, so there is one
+way to produce them and one place they come from. The pane still reads files, but
+only as artifacts.
 
-`tasks.md` markers are parsed and rendered: a `[US#n]` tag becomes a story label and a
-`[P:tag]` heading becomes a parallel-group badge. Serialising writes them back.
-
-Kanban work happens inside the Python half, not from the renderer. `kanban/sync` opens
-the board through `hermes_cli.kanban_db` and calls `create_task`, reusing existing
-cards by idempotency key `speckit:<project hash>:<FR-n>`, so pressing the button twice
-does not duplicate anything. `kanban/links` reads `list_tasks` and reports each
-requirement's card status. The 16-method JSON-RPC surface described in the previous
-draft is not what this uses.
-
-Reload behaviour, learned the hard way: editing `plugin.js` for a plugin the app has
-already loaded is picked up. A brand new plugin directory is not. That needs a full
-quit of every `Hermes.exe` and a restart, because the loader caches the discovered
-plugin list at startup.
-
----
+What the pane does not do, on purpose: run steps itself, decide what a process
+means, or invent a gate. It reads the workflow, posts to three routes, and renders
+what comes back.
 
 ## 4.1 Processes: what the pane renders
 
