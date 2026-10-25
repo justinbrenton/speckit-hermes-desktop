@@ -900,3 +900,72 @@ def test_resume_does_not_kill_the_step_it_just_started(client, project, cli):
     finally:
         plugin_api.ACTIVE_RUNS.clear()
 
+
+def test_a_fresh_run_can_be_answered_as_soon_as_it_parks(client, project, cli):
+    """The grace window protects a resume, not a run that just parked."""
+    run_dir = project / ".specify" / "workflows" / "runs" / "parked2"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "state.json").write_text(json.dumps({"workflow_id": "speckit", "status": "paused"}), encoding="utf-8")
+
+    proc = ParkedProc()
+    plugin_api.ACTIVE_RUNS[(str(project).lower(), "speckit")] = {
+        "proc": proc, "run_id": "parked2", "kind": "run", "started_at": time.time()
+    }
+    try:
+        response = client.post(
+            f"{PREFIX}/workflows/speckit/runs/parked2/resume",
+            json={"cwd": str(project), "answers": {"gate_review_spec": "approve"}},
+        )
+        assert response.status_code == 200, response.text
+    finally:
+        plugin_api.ACTIVE_RUNS.clear()
+
+
+def test_a_gate_carries_the_output_of_the_step_it_reviews(client, project, cli):
+    """`analyze` writes no artifact; its findings are the command output."""
+    run_dir = project / ".specify" / "workflows" / "runs" / "gate1"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    state = {
+        "workflow_id": "speckit",
+        "status": "paused",
+        "current_step_id": "review-analyze",
+        "step_results": {
+            "analyze": {"type": "command", "status": "completed",
+                        "output": {"stdout": "Two findings: plan and tasks disagree on scope."}},
+            "review-analyze": {"type": "gate", "status": "paused",
+                               "output": {"message": "Review the findings", "options": ["approve", "reject"]}},
+        },
+    }
+    (run_dir / "state.json").write_text(json.dumps(state), encoding="utf-8")
+
+    view = client.get(f"{PREFIX}/workflows/speckit/runs/gate1", params={"cwd": str(project)}).json()
+    gate = view["gate"]
+    assert gate["reviewed_step"] == "analyze"
+    assert "Two findings" in gate["reviewed_stdout"]
+
+
+def test_clarification_markers_do_not_backtrack_on_long_space_runs(client, project, cli):
+    """Two overlapping quantifiers made matching quadratic; the regex no longer has them."""
+    artifact = project / ".specify" / "specs" / "001-demo" / "spec.md"
+    artifact.write_text("[NEEDS CLARIFICATION:" + " " * 20000 + "x]\n", encoding="utf-8")
+
+    started = time.time()
+    body = client.get(f"{PREFIX}/questions", params={"cwd": str(project), "path": ".specify/specs/001-demo/spec.md"}).json()
+    elapsed = time.time() - started
+    assert body["count"] == 1
+    assert body["questions"][0]["text"] == "x"
+    assert elapsed < 1.0, f"matching took {elapsed:.2f}s on 20k spaces"
+
+
+def test_workflow_parse_errors_do_not_leak_internals(client, tmp_path):
+    root = tmp_path / "proj"
+    wf = root / ".specify" / "workflows" / "broken"
+    wf.mkdir(parents=True)
+    (wf / "workflow.yml").write_text("workflow: [unclosed\n", encoding="utf-8")
+
+    body = client.get(f"{PREFIX}/processes", params={"cwd": str(root)}).json()
+    assert body["errors"], "a broken workflow is still reported"
+    message = body["errors"][0]["error"]
+    assert message == "workflow could not be parsed"
+    assert "line" not in message.lower() and "yaml" not in message.lower()
+

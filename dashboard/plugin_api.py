@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 import shutil
@@ -49,10 +50,39 @@ ALLOWED_PATHS: tuple[str, ...] = ("spec.md", "memory/constitution.md", "tasks.md
 #: Prefix for the Kanban idempotency keys that mark a card as spec-kit generated.
 KANBAN_KEY_PREFIX = "speckit"
 
+logger = logging.getLogger(__name__)
+
 
 # ---------------------------------------------------------------------------
 # paths
 # ---------------------------------------------------------------------------
+
+
+def _allowed_roots() -> list[Path]:
+    """Optional ceiling on where this plugin will work, from SPECKIT_ALLOWED_ROOTS.
+
+    The pane is a local tool whose whole job is to open the project folder the
+    user picks, so nothing is restricted by default. An operator who wants the
+    backend fenced in sets this to a list of directories (``os.pathsep`` between
+    them) and every project root must live under one of them.
+    """
+    raw = os.environ.get("SPECKIT_ALLOWED_ROOTS", "").strip()
+    if not raw:
+        return []
+    roots: list[Path] = []
+    for part in raw.split(os.pathsep):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            roots.append(Path(part).expanduser().resolve())
+        except OSError:
+            continue
+    return roots
+
+
+def _within_allowed(path: Path, roots: list[Path]) -> bool:
+    return any(path == base or base in path.parents for base in roots)
 
 
 def _project_root(cwd: str) -> Path:
@@ -62,9 +92,13 @@ def _project_root(cwd: str) -> Path:
     root = Path(cwd).expanduser()
     if not root.is_absolute():
         raise HTTPException(status_code=400, detail=f"cwd must be absolute: {cwd!r}")
+    # resolve() removes ".." segments and follows links before anything touches it
     root = root.resolve()
     if not root.is_dir():
         raise HTTPException(status_code=400, detail=f"cwd is not a directory: {root}")
+    allowed = _allowed_roots()
+    if allowed and not _within_allowed(root, allowed):
+        raise HTTPException(status_code=403, detail=f"cwd is outside SPECKIT_ALLOWED_ROOTS: {root}")
     return root
 
 
@@ -379,7 +413,8 @@ def list_processes(cwd: str = Query(..., description="Absolute project directory
         try:
             data = _load_yaml(wf_file) or {}
         except Exception as exc:  # a broken workflow must not take the pane down
-            errors.append({"file": str(wf_file), "error": str(exc)})
+            logger.warning("workflow %s could not be parsed: %s", wf_file, exc)
+            errors.append({"file": str(wf_file), "error": "workflow could not be parsed"})
             continue
         if not isinstance(data, dict):
             errors.append({"file": str(wf_file), "error": "not a mapping"})
@@ -397,7 +432,8 @@ def list_processes(cwd: str = Query(..., description="Absolute project directory
         try:
             data = yaml.safe_load(_process_yaml(process_id))
         except Exception as exc:
-            errors.append({"file": process_id, "error": str(exc)})
+            logger.warning("generated workflow %s is unusable: %s", process_id, exc)
+            errors.append({"file": process_id, "error": "generated workflow is unusable"})
             continue
         entry = build_entry(data, "", False)
         if entry:
@@ -914,8 +950,13 @@ def workflow_resume(process: str, run_id: str, payload: WorkflowResumeRequest) -
         # file says paused. That process has nothing left to do: the run is on
         # disk, so answering the gate now is safe and must not be refused. A run
         # that is genuinely executing still gets the 409.
-        age = time.time() - float(ACTIVE_RUNS[key].get("started_at") or 0)
-        if _run_state_status(root, run_id) == "paused" and age > GATE_TAKEOVER_GRACE:
+        entry = ACTIVE_RUNS[key]
+        age = time.time() - float(entry.get("started_at") or 0)
+        # Only a *resume* can be the step that a second answer would kill. A fresh
+        # run that parked quickly must be answerable at once, so the window does
+        # not apply to it.
+        just_answered = entry.get("kind") == "resume" and age <= GATE_TAKEOVER_GRACE
+        if _run_state_status(root, run_id) == "paused" and not just_answered:
             parked = ACTIVE_RUNS.pop(key, {})
             proc = parked.get("proc")
             if proc is not None and proc.poll() is None:
@@ -1725,7 +1766,9 @@ def browse(path: str = Query("", description="Directory to list; empty lists fil
 # clarification interview
 # ---------------------------------------------------------------------------
 
-CLARIFICATION = re.compile(r"\[NEEDS CLARIFICATION:\s*([^\]]*)\]")
+# No \s* after the colon: [^\]]* can match spaces too, and two overlapping
+# quantifiers make matching quadratic on a long run of spaces. Trim instead.
+CLARIFICATION = re.compile(r"\[NEEDS CLARIFICATION:([^\]]*)\]")
 
 
 def _read_confined(root: Path, path: str) -> Path:
@@ -1918,6 +1961,21 @@ def _run_view(process: str, run: dict[str, Any], root: Path) -> dict[str, Any]:
             "verdict_input": current.get("verdict_input") or f"gate_{step_id.replace('-', '_')}",
             "show_file": output.get("show_file"),
         }
+        # Some steps produce no artifact, `analyze` above all: its findings are
+        # the command's own output. Carry the reviewed step's output into the gate
+        # so the reviewer can read what they are approving.
+        reviewed_id = ""
+        reviewed: dict[str, Any] = {}
+        for key, value in results.items():
+            if key == step_id:
+                continue
+            if value.get("type") == "command" and value.get("status") in {"completed", "failed"}:
+                reviewed_id, reviewed = key, value
+        if reviewed:
+            output_block = reviewed.get("output") or {}
+            gate["reviewed_step"] = reviewed_id
+            gate["reviewed_stdout"] = (output_block.get("stdout") or "")[-6000:]
+            gate["reviewed_stderr"] = (output_block.get("stderr") or "")[-2000:]
     return {
         "process": process,
         "run_id": run["run_id"],
