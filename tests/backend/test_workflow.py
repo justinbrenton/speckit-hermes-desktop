@@ -473,6 +473,10 @@ INTEGRATION_SRC = (
     "    def build_exec_args(self, prompt, *, model=None, output_json=True,\n"
     "                        integration_args=None, integration_options=None, project_root=None):\n"
     '        args = [self._resolve_executable(), "chat", "-Q"]\n'
+    '        if prompt.startswith("/"):\n'
+    '            command, _, remainder = prompt[1:].partition(" ")\n'
+    "            if command:\n"
+    '                args.extend(["-s", command])\n'
     "        return args\n"
 )
 
@@ -500,6 +504,31 @@ def test_integration_repair_adds_the_working_directory(client, tmp_path, monkeyp
     text = copy.read_text(encoding="utf-8")
     assert 'args.extend(["--in", str(Path(project_root).resolve())])' in text
     assert 'args = [self._resolve_executable(), "chat", "-Q"]' in text, "the anchor must survive"
+    assert 'command = command.replace(".", "-")' in text, "dotted command names must become skill names"
+    assert 'command, _, remainder = prompt[1:].partition(" ")' in text
+
+
+def test_integration_health_names_which_fix_is_missing(tmp_path, monkeypatch):
+    copy = tmp_path / "hermes" / "__init__.py"
+    copy.parent.mkdir(parents=True)
+    # The project fix only.
+    copy.write_text(INTEGRATION_SRC.replace(
+        '        args = [self._resolve_executable(), "chat", "-Q"]\n',
+        '        args = [self._resolve_executable(), "chat", "-Q"]\n'
+        '        # Run the agent inside the project.\n'
+        '        if project_root is not None:\n'
+        '            args.extend(["--in", str(Path(project_root).resolve())])\n',
+    ), encoding="utf-8")
+    monkeypatch.setattr(plugin_api, "_integration_files", lambda: [copy])
+
+    health = plugin_api._integration_health()
+    assert health["patched"] is False
+    assert health["copies"][0]["project_patch"] is True
+    assert health["copies"][0]["skill_patch"] is False
+
+    applied = plugin_api._patch_integration_file(copy)
+    assert applied == ["skill"], "only the missing fix is applied"
+    assert plugin_api._integration_health()["patched"] is True
 
 
 def test_integration_repair_is_idempotent(client, tmp_path, monkeypatch):
@@ -662,4 +691,84 @@ def test_repair_leaves_other_processes_alone(client, project):
     assert "id: constitution" not in after
     assert "principles" not in after
     assert "verdict_input: gate_review_assessment" in after, "the gate is still made answerable"
+
+
+class ParkedProc:
+    """A dispatched process that has not exited yet."""
+
+    def __init__(self):
+        self.pid = 4242
+        self.killed = False
+
+    def poll(self):
+        return None
+
+    def kill(self):
+        self.killed = True
+
+
+def test_resume_takes_over_a_run_that_is_still_parked(client, project, cli):
+    """The parked CLI can outlive the pause by a moment; answering must not 409."""
+    run_dir = project / ".specify" / "workflows" / "runs" / "parked1"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "state.json").write_text(json.dumps({"status": "paused"}), encoding="utf-8")
+
+    proc = ParkedProc()
+    plugin_api.ACTIVE_RUNS[(str(project).lower(), "speckit")] = {"proc": proc, "run_id": "parked1", "kind": "run"}
+    try:
+        response = client.post(
+            f"{PREFIX}/workflows/speckit/runs/parked1/resume",
+            json={"cwd": str(project), "answers": {"gate_review_spec": "approve"}},
+        )
+        assert response.status_code == 200, response.text
+        assert proc.killed is True, "the parked process is stopped before the resume runs"
+    finally:
+        plugin_api.ACTIVE_RUNS.clear()
+
+
+def test_resume_still_refuses_a_run_that_is_executing(client, project, cli):
+    run_dir = project / ".specify" / "workflows" / "runs" / "busy1"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "state.json").write_text(json.dumps({"status": "running"}), encoding="utf-8")
+
+    plugin_api.ACTIVE_RUNS[(str(project).lower(), "speckit")] = {"proc": ParkedProc(), "run_id": "busy1", "kind": "run"}
+    try:
+        response = client.post(
+            f"{PREFIX}/workflows/speckit/runs/busy1/resume",
+            json={"cwd": str(project), "answers": {"gate_review_spec": "approve"}},
+        )
+        assert response.status_code == 409
+    finally:
+        plugin_api.ACTIVE_RUNS.clear()
+
+
+def test_dotted_commands_get_a_skill_of_that_exact_name(tmp_path, monkeypatch):
+    """`-s speckit.bug.fix` needs a skill named that, or Hermes aborts the step."""
+    ext = tmp_path / "proj" / ".specify" / "extensions" / "bug"
+    (ext / "commands").mkdir(parents=True)
+    (ext / "commands" / "speckit.bug.fix.md").write_text("# Apply the fix\nDo the thing.\n", encoding="utf-8")
+    (ext / "extension.yml").write_text(
+        "schema_version: \"1.0\"\n"
+        "extension:\n  id: bug\n  name: Bug\n"
+        "provides:\n  commands:\n"
+        "    - name: speckit.bug.fix\n      file: commands/speckit.bug.fix.md\n"
+        "      description: Apply the remediation\n"
+        "    - name: plain\n      file: commands/plain.md\n",
+        encoding="utf-8",
+    )
+    skills = tmp_path / "skills"
+    skills.mkdir()
+    monkeypatch.setattr(plugin_api, "_profile_skills_dir", lambda: skills)
+
+    written = plugin_api._sync_command_aliases(tmp_path / "proj")
+    assert len(written) == 1, "only dotted command names need an alias"
+    alias = skills / "speckit.bug.fix" / "SKILL.md"
+    assert alias.is_file()
+    text = alias.read_text(encoding="utf-8")
+    assert "name: speckit.bug.fix" in text
+    assert "Do the thing." in text, "the alias must carry the command's own instructions"
+    assert not (skills / "plain").exists()
+
+    again = plugin_api._sync_command_aliases(tmp_path / "proj")
+    assert again == written, "re-syncing is stable"
 

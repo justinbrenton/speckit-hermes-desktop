@@ -495,6 +495,15 @@ def _output_check(root: Path, run_id: str) -> dict[str, Any]:
 ACTIVE_RUNS: dict[tuple[str, str], dict[str, Any]] = {}
 
 
+def _run_state_status(root: Path, run_id: str) -> Optional[str]:
+    """The engine's own status for a run, or None when it cannot be read."""
+    path = root / ".specify" / "workflows" / "runs" / run_id / "state.json"
+    try:
+        return (json.loads(path.read_text(encoding="utf-8")) or {}).get("status")
+    except (OSError, ValueError):
+        return None
+
+
 def _active_key(root: Path, process: str) -> tuple[str, str]:
     return (str(root).lower(), process)
 
@@ -861,10 +870,23 @@ def workflow_resume(process: str, run_id: str, payload: WorkflowResumeRequest) -
     _release_finished_jobs()
     key = _active_key(root, process)
     if key in ACTIVE_RUNS:
-        raise HTTPException(
-            status_code=409,
-            detail=f"a {process} run is already in progress in this project",
-        )
+        # A job parked at a gate can still be alive for a moment after the state
+        # file says paused. That process has nothing left to do: the run is on
+        # disk, so answering the gate now is safe and must not be refused. A run
+        # that is genuinely executing still gets the 409.
+        if _run_state_status(root, run_id) == "paused":
+            parked = ACTIVE_RUNS.pop(key, {})
+            proc = parked.get("proc")
+            if proc is not None and proc.poll() is None:
+                try:
+                    proc.kill()
+                except OSError:
+                    pass
+        else:
+            raise HTTPException(
+                status_code=409,
+                detail=f"a {process} run is already in progress in this project",
+            )
     _write_snapshot(root, run_id)
     job = _start_job(args, root, max(30, min(payload.timeout, SPECIFY_TIMEOUT_MAX)))
     ACTIVE_RUNS[key] = {"proc": JOBS.get(job["job_id"], {}).get("proc"), "run_id": run_id, "kind": "resume"}
@@ -925,6 +947,7 @@ def init_project(payload: InitRequest) -> dict[str, Any]:
         ["init", "--here", "--force", "--non-interactive", "--integration", integration], root, 600
     )
     synced = _sync_legacy_skills()
+    aliases = _sync_command_aliases(root)
     patched = _ensure_gate_verdicts(root)
     return {
         "ok": result["ok"],
@@ -1022,9 +1045,11 @@ def install_extension(payload: ExtensionRequest) -> dict[str, Any]:
     result = _run_specify(["extension", "add", ext_id], root, 300)
     # Only this extension's own workflows are touched; the SDD shape is its own.
     _ensure_gate_verdicts(root)
+    aliases = _sync_command_aliases(root)
     return {
         "ok": result["ok"],
         "extension": ext_id,
+        "aliases": len(aliases),
         "output": (result.get("output", "") + result.get("stderr", ""))[-4000:],
     }
 
@@ -1318,11 +1343,19 @@ def shape_workflow(payload: ShapeRequest) -> dict[str, Any]:
 # ---------------------------------------------------------------------------
 
 #: Marks the local fix in spec-kit's Hermes integration.
+#: Upstream's build_exec_args has two defects for a GUI driver. Both are file
+#: edits, and ``uv tool upgrade`` replaces the file, so both are detected and
+#: re-applied rather than assumed.
+#:
+#: 1. it accepts project_root and ignores it, so every skill runs in the
+#:    gateway's workspace and writes outside the project;
+#: 2. it passes a command name to ``-s`` unchanged, so a dotted extension
+#:    command (``speckit.bug.fix``) does not match the installed skill
+#:    (``speckit-bug-fix``) and Hermes aborts the step with no output.
 INTEGRATION_MARKER = "Run the agent inside the project"
+SKILL_MARKER = "Skills are named with dashes"
 
-#: The line the fix is anchored to, verbatim from the integration.
 INTEGRATION_ANCHOR = '        args = [self._resolve_executable(), "chat", "-Q"]\n'
-
 INTEGRATION_ADDITION = INTEGRATION_ANCHOR + '''
         # Run the agent inside the project. Without this the skill executes in
         # whatever workspace the gateway sits in, so specs/ and code land
@@ -1330,6 +1363,76 @@ INTEGRATION_ADDITION = INTEGRATION_ANCHOR + '''
         if project_root is not None:
             args.extend(["--in", str(Path(project_root).resolve())])
 '''
+
+SKILL_ANCHOR = '            command, _, remainder = prompt[1:].partition(" ")'
+SKILL_ADDITION = SKILL_ANCHOR + '''
+            # Skills are named with dashes: speckit.bug.fix -> speckit-bug-fix.
+            # Passing the command name through unchanged makes Hermes reject the
+            # step with unknown_skill and no output.
+            command = command.replace(".", "-")'''
+
+
+def _profile_skills_dir() -> Path:
+    """The skills directory of the profile this backend runs under."""
+    for candidate in _hermes_skills_dirs():
+        if candidate.is_dir():
+            return candidate
+    first = _hermes_skills_dirs()[0]
+    first.mkdir(parents=True, exist_ok=True)
+    return first
+
+
+def _sync_command_aliases(root: Path) -> list[str]:
+    """Give every dotted extension command a skill of that exact name.
+
+    spec-kit's Hermes integration dispatches ``-s <command>``, so an extension
+    command named ``speckit.bug.assess`` asks Hermes for a skill of that name,
+    while the integration installs skills with dashes (``speckit-bug-assess``).
+    The result is ``unknown_skill`` and a step that fails with no output.
+
+    ``specify`` ships as a frozen executable here, so the integration cannot be
+    patched at runtime. Hermes does accept a skill whose name contains dots, so
+    the fix is an alias skill per command, carrying the command's own text and
+    regenerated whenever the extension is installed or repaired.
+    """
+    written: list[str] = []
+    skills_dir = None
+    for ext_file in sorted((root / ".specify" / "extensions").glob("*/extension.yml")):
+        try:
+            data = yaml.safe_load(ext_file.read_text(encoding="utf-8")) or {}
+        except (OSError, yaml.YAMLError):
+            continue
+        commands = ((data.get("provides") or {}).get("commands") or [])
+        for command in commands:
+            name = str(command.get("name") or "")
+            if "." not in name:
+                continue
+            source = ext_file.parent / str(command.get("file") or "")
+            if not source.is_file():
+                continue
+            if skills_dir is None:
+                skills_dir = _profile_skills_dir()
+            body = source.read_text(encoding="utf-8", errors="replace")
+            description = str(command.get("description") or f"Runs {name}")
+            content = (
+                "---\n"
+                f"name: {name}\n"
+                f"description: {description}\n"
+                "---\n\n"
+                f"<!-- generated by spec-kit-hermes from {source.relative_to(root).as_posix()} -->\n\n"
+                + body
+            )
+            target = skills_dir / name / "SKILL.md"
+            try:
+                if target.is_file() and target.read_text(encoding="utf-8") == content:
+                    written.append(str(target))
+                    continue
+                target.parent.mkdir(parents=True, exist_ok=True)
+                target.write_text(content, encoding="utf-8")
+                written.append(str(target))
+            except OSError:
+                continue
+    return written
 
 
 def _integration_files() -> list[Path]:
@@ -1362,7 +1465,16 @@ def _integration_copies() -> list[dict[str, Any]]:
             text = file.read_text(encoding="utf-8")
         except OSError:
             continue
-        copies.append({"path": str(file), "patched": INTEGRATION_MARKER in text})
+        project_patch = INTEGRATION_MARKER in text
+        skill_patch = SKILL_MARKER in text
+        copies.append(
+            {
+                "path": str(file),
+                "project_patch": project_patch,
+                "skill_patch": skill_patch,
+                "patched": project_patch and skill_patch,
+            }
+        )
     return copies
 
 
@@ -1375,15 +1487,22 @@ def _integration_health() -> dict[str, Any]:
     }
 
 
-def _patch_integration_file(file: Path) -> bool:
+def _patch_integration_file(file: Path) -> list[str]:
+    """Apply whichever fix this copy is missing. Returns what was applied."""
     try:
         text = file.read_text(encoding="utf-8")
     except OSError:
-        return False
-    if INTEGRATION_MARKER in text or INTEGRATION_ANCHOR not in text:
-        return False
-    file.write_text(text.replace(INTEGRATION_ANCHOR, INTEGRATION_ADDITION, 1), encoding="utf-8")
-    return True
+        return []
+    applied: list[str] = []
+    if INTEGRATION_MARKER not in text and INTEGRATION_ANCHOR in text:
+        text = text.replace(INTEGRATION_ANCHOR, INTEGRATION_ADDITION, 1)
+        applied.append("project")
+    if SKILL_MARKER not in text and SKILL_ANCHOR in text:
+        text = text.replace(SKILL_ANCHOR, SKILL_ADDITION, 1)
+        applied.append("skill")
+    if applied:
+        file.write_text(text, encoding="utf-8")
+    return applied
 
 
 @router.get("/integration/health")
