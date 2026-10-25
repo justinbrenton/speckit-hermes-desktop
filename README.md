@@ -5,6 +5,7 @@
 <h1 align="center">Spec Kit for Hermes Desktop</h1>
 
 <p align="center">
+  <img src="https://img.shields.io/badge/status-alpha-orange" alt="Alpha">
   <a href="LICENSE"><img src="https://img.shields.io/github/license/justinbrenton/speckit-hermes-desktop" alt="MIT license"></a>
   <img src="https://img.shields.io/github/last-commit/justinbrenton/speckit-hermes-desktop" alt="Last commit">
   <img src="https://img.shields.io/badge/hermes-%3E%3D0.22.2-blue" alt="Requires Hermes 0.22.2 or newer">
@@ -13,6 +14,13 @@
 </p>
 
 <p align="center">Run spec-kit processes from a pane in Hermes Desktop, with every review gate in front of you.</p>
+
+
+> [!WARNING]
+> **Alpha.** This is early software. It has only been run on Windows against Hermes
+> Desktop 0.22.2, and it needs a local patch to spec-kit that an upgrade can undo.
+> The pane, the package layout and the workflow shapes can change without notice.
+> If you need stability, pin a commit.
 
 Spec Kit is GitHub's toolkit for specification-driven development. It ships skills for
 your coding agent: constitution, specify, clarify, plan, tasks, analyze, implement,
