@@ -881,32 +881,49 @@ const PROCESS_COPY = [
   }
 ]
 
-function StepList({ steps, run }) {
-  const nodes = (run && run.nodes) || []
-  const currentIndex = run && run.status !== 'none' ? run.current_step_index : -1
-  if (!steps || !steps.length) return null
-  return jsx('ol', {
-    className: 'flex flex-col gap-1',
-    children: steps.map((step, index) => {
-      const node = nodes[index] || {}
-      const active = index === currentIndex
-      const done = node.phase === 'done'
-      const failed = node.phase === 'failed'
-      const mark = failed ? '!' : done ? '✓' : active ? '•' : String(index + 1)
-      const tone = failed ? 'text-red-400' : done ? 'text-emerald-400' : active ? 'text-(--ui-accent)' : 'text-(--ui-text-tertiary)'
-      return jsxs('li', {
-        className: 'flex items-center gap-2 text-[0.6875rem]',
-        children: [
-          jsx('span', { className: `w-4 text-center font-mono ${tone}`, children: mark }),
-          jsx('span', {
-            className: active ? 'text-(--ui-text-primary)' : 'text-(--ui-text-secondary)',
-            children: titleCase(step.id)
-          }),
-          step.type === 'gate' ? jsx(Badge, { variant: 'secondary', children: 'review' }) : null
-        ]
-      }, step.id)
+const STEP_TITLES = {
+  constitution: 'Set the ground rules',
+  specify: 'Describe what to build',
+  clarify: 'Resolve ambiguity',
+  plan: 'Choose the tech stack',
+  checklist: 'Validate the spec',
+  tasks: 'Break the work down',
+  analyze: 'Check consistency',
+  implement: 'Build it',
+  converge: 'Verify completeness',
+  assess: 'Assess the bug',
+  fix: 'Fix the assessed cause',
+  test: 'Test the fix',
+  intake: 'Capture the idea',
+  research: 'Research the evidence',
+  define: 'Define the problem',
+  shape: 'Shape the options',
+  decide: 'Make the decision'
+}
+
+function ProgressHeader({ steps, run }) {
+  const flow = (steps || []).filter(step => step.type !== 'gate')
+  if (!flow.length) return null
+  const currentId = __str(run && run.current_step_id)
+  // a gate reports its own id; the work it reviews is the step before it
+  const position = Math.max(0, flow.findIndex(step => step.id === currentId || `review-${step.id}` === currentId))
+  const total = flow.length
+  const done = run && run.status === 'completed'
+  const index = done ? total : position + 1
+  const step = flow[position] || {}
+  const title = STEP_TITLES[step.id] || titleCase(step.id)
+  return jsxs('div', { className: 'flex flex-col gap-1', children: [
+    jsxs('div', { className: 'flex items-baseline justify-between gap-2', children: [
+      jsx('p', { className: 'text-[0.8125rem] font-medium', children: title }),
+      jsx('span', { className: 'shrink-0 text-[0.625rem] text-(--ui-text-tertiary)', children: done ? `${total} of ${total}` : `${index} of ${total}` })
+    ] }),
+    jsx('div', { className: 'h-1 w-full overflow-hidden rounded bg-(--ui-bg-tertiary)', children:
+      jsx('div', {
+        className: 'h-full rounded bg-(--ui-accent) transition-all',
+        style: { width: `${Math.round((index / total) * 100)}%` }
+      })
     })
-  })
+  ] })
 }
 
 function ProcessChoice({ processes, onPick, onInstall, error, busy }) {
@@ -1352,6 +1369,9 @@ function SpecKitPane() {
     try {
       if (process.id === 'speckit') {
         await rest('/workflow/shape', { method: 'POST', body: { cwd: folder, mode } })
+        const shaped = await rest(`/processes?cwd=${encodeURIComponent(folder)}`)
+        const updated = ((shaped && shaped.processes) || []).find(item => item.id === 'speckit')
+        if (updated) setProcess(updated)
       }
       await rest(`/workflows/${encodeURIComponent(process.id)}/run`, {
         method: 'POST',
@@ -1479,7 +1499,7 @@ function SpecKitPane() {
         jsx(Button, { size: 'xs', variant: 'ghost', onClick: () => { setProcess(null); setRun(null) }, children: 'Change process' })
       ] })
     ] }),
-    jsx(StepList, { steps: process.steps || [], run }),
+    jsx(ProgressHeader, { steps: process.steps || [], run }),
     jsx('div', { className: 'h-px bg-(--ui-border)' }),
     status === 'none' || !run
       ? (process.id === 'speckit' && !pathChosen
@@ -1517,17 +1537,6 @@ function SpecKitPane() {
                 jsx('pre', { className: 'whitespace-pre-wrap p-2 text-[0.625rem] leading-relaxed text-(--ui-text-secondary)', children: logText || 'No output yet.' })
               })
             : null
-        ] })
-      : null,
-    status === 'paused' && run.gate
-      ? jsxs('div', { className: 'flex flex-col gap-2', children: [
-          run.output_check && run.output_check.checked && run.output_check.unchanged
-            ? jsx('p', {
-                className: 'rounded border border-(--ui-border) bg-(--ui-bg-tertiary) p-2 text-[0.625rem] text-(--ui-text-secondary)',
-                children: 'The step before this gate finished without changing any artifact. The agent may have failed without saying so — check the artifact list before approving.'
-              })
-            : null,
-          jsx(GateCard, { run, busy, onDecide: decide, error })
         ] })
       : null,
     status === 'completed' || status === 'aborted' || status === 'failed'
@@ -1581,7 +1590,18 @@ function SpecKitPane() {
                 }, item.path))
               : jsx('p', { className: 'text-[0.6875rem] text-(--ui-text-tertiary)', children: 'Nothing written yet.' })
           ] })
-        })
+        }),
+    status === 'paused' && run.gate
+      ? jsxs('div', { className: 'flex flex-col gap-2 border-t border-(--ui-border) pt-2', children: [
+          run.output_check && run.output_check.checked && run.output_check.unchanged
+            ? jsx('p', {
+                className: 'rounded border border-(--ui-border) bg-(--ui-bg-tertiary) p-2 text-[0.625rem] text-(--ui-text-secondary)',
+                children: 'The step before this gate finished without changing any artifact. The agent may have failed without saying so — check the artifact list before approving.'
+              })
+            : null,
+          jsx(GateCard, { run, busy, onDecide: decide, error })
+        ] })
+      : null
   ] })
 }
 
