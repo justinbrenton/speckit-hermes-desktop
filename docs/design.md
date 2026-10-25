@@ -181,6 +181,21 @@ resume, and `GET /runs/...` compares. When a gate is reached and nothing changed
 the pane says so before you approve. It is a warning, not a hard failure: some
 steps legitimately edit nothing (analysis is read-only).
 
+### You can watch a step work
+
+A dispatch runs for minutes with nothing on screen. `GET /log` tails the newest
+job log for the project (the same file the backend already writes for every
+spawn), and the pane polls it every two seconds while a step runs, behind a
+"Show log" toggle. Failures usually announce themselves there first — a missing
+skill, an auth error — long before the artifact is checked.
+
+### Run history
+
+`GET /workflows/{process}/runs` lists every run on disk with its status, step and
+the input that started it. The pane shows the last few under the artifacts, so a
+previous attempt is identifiable by what it was asked to build rather than by a
+hex id.
+
 ### One run at a time, and a way out
 
 `POST /workflows/{process}/runs/{id}/stop` kills the dispatched process tree for

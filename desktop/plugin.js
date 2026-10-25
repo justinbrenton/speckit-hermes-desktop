@@ -1154,6 +1154,9 @@ function SpecKitPane() {
   const [pathChosen, setPathChosen] = useState(false)
   const [questions, setQuestions] = useState([])
   const [answers, setAnswers] = useState({})
+  const [logText, setLogText] = useState('')
+  const [showLog, setShowLog] = useState(false)
+  const [runs, setRuns] = useState([])
   const pollRef = useRef(null)
 
   const openBrowser = useCallback(async path => {
@@ -1200,6 +1203,8 @@ function SpecKitPane() {
       setRun(latest)
       const listed = await rest(`/artifacts?cwd=${encodeURIComponent(path)}`)
       setArtifacts((listed && listed.artifacts) || [])
+      const history = await rest(`/workflows/${encodeURIComponent(processId)}/runs?cwd=${encodeURIComponent(path)}`)
+      setRuns((history && history.runs) || [])
     } catch (err) {
       setError(errorText(err))
     }
@@ -1213,6 +1218,24 @@ function SpecKitPane() {
       loadFolder(initial)
     }
   }, [loadFolder])
+
+  useEffect(() => {
+    if (!folder || !run || run.status !== 'running') {
+      return undefined
+    }
+    let alive = true
+    const pull = async () => {
+      try {
+        const data = await rest(`/log?cwd=${encodeURIComponent(folder)}`)
+        if (alive) setLogText(__str(data && data.output))
+      } catch (err) {
+        /* a missing log is not an error worth showing */
+      }
+    }
+    pull()
+    const id = setInterval(pull, 2000)
+    return () => { alive = false; clearInterval(id) }
+  }, [folder, run])
 
   useEffect(() => {
     if (!folder || !process || !run || run.status !== 'running') {
@@ -1483,6 +1506,19 @@ function SpecKitPane() {
           jsx(Button, { size: 'xs', variant: 'outline', onClick: stop, disabled: busy || !run.run_id, children: 'Stop' })
         ] })
       : null,
+    status === 'running' || (status === 'paused' && logText)
+      ? jsxs('div', { className: 'flex flex-col gap-1', children: [
+          jsxs('div', { className: 'flex items-center justify-between', children: [
+            jsx('span', { className: 'text-[0.625rem] font-medium text-(--ui-text-secondary)', children: 'Step output' }),
+            jsx(Button, { size: 'xs', variant: 'ghost', onClick: () => setShowLog(v => !v), children: showLog ? 'Hide' : 'Show log' })
+          ] }),
+          showLog
+            ? jsx(ScrollArea, { className: 'max-h-40', children:
+                jsx('pre', { className: 'whitespace-pre-wrap p-2 text-[0.625rem] leading-relaxed text-(--ui-text-secondary)', children: logText || 'No output yet.' })
+              })
+            : null
+        ] })
+      : null,
     status === 'paused' && run.gate
       ? jsxs('div', { className: 'flex flex-col gap-2', children: [
           run.output_check && run.output_check.checked && run.output_check.unchanged
@@ -1521,6 +1557,18 @@ function SpecKitPane() {
       : jsx(ScrollArea, { className: 'min-h-0 flex-1', children:
           jsxs('div', { className: 'flex flex-col gap-1', children: [
             jsx('p', { className: 'text-[0.625rem] font-medium text-(--ui-text-secondary)', children: 'Artifacts' }),
+            runs.length > 1
+              ? jsxs('div', { className: 'mt-2 flex flex-col gap-1', children: [
+                  jsx('p', { className: 'text-[0.625rem] font-medium text-(--ui-text-secondary)', children: 'Previous runs' }),
+                  ...runs.slice(1, 6).map(item => jsxs('div', {
+                    className: 'flex items-center justify-between gap-2 rounded border border-(--ui-border) px-2 py-1 text-[0.625rem]',
+                    children: [
+                      jsx('span', { className: 'truncate', children: item.summary || item.run_id }),
+                      jsx('span', { className: 'shrink-0 text-(--ui-text-tertiary)', children: item.status })
+                    ]
+                  }, item.run_id))
+                ] })
+              : null,
             artifacts.length
               ? artifacts.map(item => jsxs('button', {
                   type: 'button',

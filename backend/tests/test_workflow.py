@@ -416,3 +416,52 @@ def test_questions_refuse_paths_outside_the_project(client, project):
     )
     assert response.status_code == 400
 
+
+def test_log_tails_the_newest_job_for_this_project(client, project, tmp_path, monkeypatch):
+    log = tmp_path / "job.log"
+    log.write_text("line one\nline two\n", encoding="utf-8")
+
+    class FakeProc:
+        def poll(self):
+            return None
+
+    monkeypatch.setattr(plugin_api, "JOBS", {
+        "j1": {"proc": FakeProc(), "argv": ["workflow", "run"], "cwd": str(project), "log": str(log), "started_at": 1.0}
+    })
+    body = client.get(f"{PREFIX}/log", params={"cwd": str(project)}).json()
+    assert body["running"] is True
+    assert "line two" in body["output"]
+
+
+def test_log_ignores_other_projects(client, project, tmp_path, monkeypatch):
+    other = tmp_path / "other"
+    other.mkdir()
+    log = tmp_path / "other.log"
+    log.write_text("secret other output", encoding="utf-8")
+
+    class FakeProc:
+        def poll(self):
+            return None
+
+    monkeypatch.setattr(plugin_api, "JOBS", {
+        "j1": {"proc": FakeProc(), "argv": ["workflow", "run"], "cwd": str(other), "log": str(log), "started_at": 1.0}
+    })
+    body = client.get(f"{PREFIX}/log", params={"cwd": str(project)}).json()
+    assert body["running"] is False
+    assert body["output"] == ""
+
+
+def test_runs_are_listed_newest_first(client, project):
+    runs = project / ".specify" / "workflows" / "runs"
+    for name, spec, status in (("aaa", "first feature", "completed"), ("bbb", "second feature", "paused")):
+        folder = runs / name
+        folder.mkdir(parents=True, exist_ok=True)
+        (folder / "state.json").write_text(
+            json.dumps({"status": status, "current_step_id": "plan", "inputs": {"spec": spec}}),
+            encoding="utf-8",
+        )
+    body = client.get(f"{PREFIX}/workflows/speckit/runs", params={"cwd": str(project)}).json()
+    assert body["count"] >= 2
+    assert body["runs"][0]["summary"] in {"first feature", "second feature"}
+    assert {run["status"] for run in body["runs"]} >= {"completed", "paused"}
+

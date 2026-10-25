@@ -1154,6 +1154,77 @@ def shape_workflow(payload: ShapeRequest) -> dict[str, Any]:
     return {"mode": mode, "path": str(target), "steps": [step["id"] for step in data.get("steps", [])]}
 
 
+@router.get("/log")
+def tail_log(
+    cwd: str = Query(..., description="Absolute project directory"),
+    tail: int = Query(8000, ge=200, le=60000),
+) -> dict[str, Any]:
+    """Tail of the newest dispatcher log for this project.
+
+    A step dispatches an agent call that can run for minutes. Without this the
+    pane can only say "running"; with it the user can see progress or a stack
+    trace as it happens.
+    """
+    root = _project_root(cwd)
+    candidates = [
+        job for job in JOBS.values()
+        if str(job.get("cwd", "")).lower() == str(root).lower()
+    ]
+    if not candidates:
+        return {"running": False, "output": "", "path": None}
+    job = max(candidates, key=lambda item: item.get("started_at", 0))
+    path = Path(str(job.get("log", "")))
+    text = ""
+    try:
+        with open(path, "rb") as handle:
+            handle.seek(0, os.SEEK_END)
+            size = handle.tell()
+            handle.seek(max(0, size - tail))
+            text = handle.read().decode("utf-8", errors="replace")
+    except OSError:
+        text = ""
+    proc = job.get("proc")
+    return {
+        "running": bool(proc is not None and proc.poll() is None),
+        "output": text,
+        "path": str(path),
+        "started_at": job.get("started_at"),
+    }
+
+
+@router.get("/workflows/{process}/runs")
+def list_runs(process: str, cwd: str = Query(..., description="Absolute project directory")) -> dict[str, Any]:
+    """Every run on disk for this project, newest first."""
+    root = _project_root(cwd)
+    _process_data(root, process)
+    runs_dir = root / ".specify" / "workflows" / "runs"
+    out: list[dict[str, Any]] = []
+    if runs_dir.is_dir():
+        for entry in runs_dir.iterdir():
+            state_file = entry / "state.json"
+            if not state_file.is_file():
+                continue
+            try:
+                state = json.loads(state_file.read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            out.append({
+                "run_id": entry.name,
+                "status": state.get("status"),
+                "current_step_id": state.get("current_step_id"),
+                "current_step_index": state.get("current_step_index"),
+                "updated_at": state.get("updated_at"),
+                "created_at": state.get("created_at"),
+                "summary": (state.get("inputs") or {}).get("spec")
+                    or (state.get("inputs") or {}).get("report")
+                    or (state.get("inputs") or {}).get("idea")
+                    or "",
+                "mtime": _mtime_ms(state_file),
+            })
+    out.sort(key=lambda item: item.get("mtime") or 0, reverse=True)
+    return {"runs": out, "count": len(out)}
+
+
 @router.get("/browse")
 def browse(path: str = Query("", description="Directory to list; empty lists filesystem roots")) -> dict[str, Any]:
     """Directory listing for the pane's folder browser.
