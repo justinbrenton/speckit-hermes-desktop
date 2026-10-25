@@ -1258,7 +1258,10 @@ function SpecKitPane() {
   if (!process) {
     return jsxs('div', { className: 'flex h-full min-h-0 flex-col gap-2 p-3', children: [
       jsx(ProcessChoice, { processes, onPick: pickProcess, onInstall: installExtension, error, busy }),
-      jsx('p', { className: 'truncate text-[0.625rem] text-(--ui-text-tertiary)', children: folder })
+      jsxs('div', { className: 'flex items-center justify-between gap-2', children: [
+        jsx('span', { className: 'truncate text-[0.625rem] text-(--ui-text-tertiary)', children: folder }),
+        jsx(Button, { size: 'xs', variant: 'ghost', onClick: () => setFolder(''), children: 'Change folder' })
+      ] })
     ] })
   }
 
@@ -1271,7 +1274,10 @@ function SpecKitPane() {
         jsx('p', { className: 'text-sm font-medium', children: process.name || titleCase(process.id) }),
         jsx('p', { className: 'truncate text-[0.625rem] text-(--ui-text-tertiary)', children: folder })
       ] }),
-      jsx(Button, { size: 'xs', variant: 'ghost', onClick: () => { setProcess(null); setRun(null) }, children: 'Change' })
+      jsxs('div', { className: 'flex shrink-0 items-center gap-1', children: [
+        jsx(Button, { size: 'xs', variant: 'ghost', onClick: () => { setFolder(''); setProcess(null); setRun(null) }, children: 'Change folder' }),
+        jsx(Button, { size: 'xs', variant: 'ghost', onClick: () => { setProcess(null); setRun(null) }, children: 'Change process' })
+      ] })
     ] }),
     jsx(StepList, { steps: process.steps || [], run }),
     jsx('div', { className: 'h-px bg-(--ui-border)' }),
