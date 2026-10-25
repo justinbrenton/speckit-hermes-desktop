@@ -16,6 +16,7 @@ import time
 from pathlib import Path
 
 import pytest
+import yaml
 from fastapi import FastAPI
 from starlette.testclient import TestClient
 
@@ -771,4 +772,28 @@ def test_dotted_commands_get_a_skill_of_that_exact_name(tmp_path, monkeypatch):
 
     again = plugin_api._sync_command_aliases(tmp_path / "proj")
     assert again == written, "re-syncing is stable"
+
+
+def test_every_generated_command_step_passes_text():
+    """Empty args make the integration drop -q, and the CLI then opens a TUI."""
+    docs = [("speckit", plugin_api._workflow_yaml("short")), ("speckit", plugin_api._workflow_yaml("full"))]
+    docs += [(pid, plugin_api._process_yaml(pid)) for pid in plugin_api.PROCESS_SPECS]
+
+    for name, text in docs:
+        doc = yaml.safe_load(text)
+        for step in doc["steps"]:
+            if step.get("type", "command") != "command":
+                continue
+            args = (step.get("input") or {}).get("args")
+            assert isinstance(args, str) and args.strip(), f"{name}:{step['id']} would dispatch with no prompt"
+
+
+def test_optional_inputs_carry_a_default_so_they_are_never_empty():
+    doc = yaml.safe_load(plugin_api._workflow_yaml("full", True))
+    for name, spec in doc["inputs"].items():
+        if spec.get("required") is True:
+            continue
+        if name.startswith("gate_") or name == "integration":
+            continue
+        assert spec.get("default"), f"{name} is optional but has no default"
 

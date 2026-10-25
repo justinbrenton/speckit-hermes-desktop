@@ -1065,6 +1065,25 @@ GATES = {
     "tasks": "Review the task breakdown before implementing.",
 }
 
+#: Optional inputs carry a default: the integration drops ``-q`` when a step's
+#: args are empty, and ``hermes chat -Q -s <skill>`` with no query opens an
+#: interactive UI that fails in a background process. A skipped field must still
+#: dispatch with text.
+STEP_DEFAULTS = {
+    "principles": "Derive principles from the conventions this project already uses.",
+    "focus": "Resolve the open questions in the current specification.",
+    "stack": "Use the stack and conventions this project already uses.",
+}
+
+#: Text for steps that take no input of their own.
+STEP_ARGS = {
+    "tasks": "Break the approved plan into ordered tasks.",
+    "checklist": "Review the specification and plan for gaps.",
+    "analyze": "Check the artifacts for consistency.",
+    "implement": "Implement the next uncompleted task.",
+    "converge": "Reconcile the implementation with the specification.",
+}
+
 SHORT_PATH = ["specify", "plan", "tasks", "implement", "converge"]
 FULL_PATH = ["specify", "clarify", "plan", "checklist", "tasks", "analyze", "implement", "converge"]
 
@@ -1119,6 +1138,8 @@ def _workflow_yaml(mode: str, with_constitution: bool = True) -> str:
             f"    required: {'true' if required else 'false'}",
             f'    prompt: "{prompt}"',
         ]
+        if not required and name in STEP_DEFAULTS:
+            lines.append(f'    default: "{STEP_DEFAULTS[name]}"')
     for verdict in verdicts:
         lines += [f"  {verdict}:", "    type: string", "    required: false"]
     lines += [
@@ -1130,44 +1151,19 @@ def _workflow_yaml(mode: str, with_constitution: bool = True) -> str:
     ]
 
     for name in steps:
-        if name == "constitution":
-            lines += [
-                "  - id: constitution",
-                "    command: speckit.constitution",
-                '    integration: "{{ inputs.integration }}"',
-                "    input:",
-                '      args: "{{ inputs.principles }}"',
-            ]
-        elif name == "specify":
-            lines += [
-                "  - id: specify",
-                "    command: speckit.specify",
-                '    integration: "{{ inputs.integration }}"',
-                "    input:",
-                '      args: "{{ inputs.spec }}"',
-            ]
-        elif name == "clarify":
-            lines += [
-                "  - id: clarify",
-                "    command: speckit.clarify",
-                '    integration: "{{ inputs.integration }}"',
-                "    input:",
-                '      args: "{{ inputs.focus }}"',
-            ]
-        elif name == "plan":
-            lines += [
-                "  - id: plan",
-                "    command: speckit.plan",
-                '    integration: "{{ inputs.integration }}"',
-                "    input:",
-                '      args: "{{ inputs.stack }}"',
-            ]
-        else:
-            lines += [
-                f"  - id: {name}",
-                f"    command: speckit.{name}",
-                '    integration: "{{ inputs.integration }}"',
-            ]
+        args_expr = {
+            "constitution": "{{ inputs.principles }}",
+            "specify": "{{ inputs.spec }}",
+            "clarify": "{{ inputs.focus }}",
+            "plan": "{{ inputs.stack }}",
+        }.get(name)
+        lines += [
+            f"  - id: {name}",
+            f"    command: speckit.{name}",
+            '    integration: "{{ inputs.integration }}"',
+            "    input:",
+            f'      args: "{args_expr or STEP_ARGS.get(name, "Continue.")}"',
+        ]
         gate_key = GATE_FOR.get(name)
         gate_name = GATES.get(gate_key) if gate_key else None
         if gate_name:
@@ -1191,9 +1187,12 @@ PROCESS_SPECS: dict[str, dict[str, Any]] = {
         "description": "Assess a report, apply the fix, verify it",
         "inputs": [("report", True, "Paste the bug report, or a URL to it")],
         "steps": [
-            ("assess", "speckit.bug.assess", "report"),
-            ("fix", "speckit.bug.fix", None),
-            ("test", "speckit.bug.test", None),
+            ("assess", "speckit.bug.assess", "report",
+             None),
+            ("fix", "speckit.bug.fix", None,
+             "Apply the approved assessment for the most recent bug under .specify/bugs/."),
+            ("test", "speckit.bug.test", None,
+             "Verify the fix recorded for the most recent bug under .specify/bugs/."),
         ],
         "gates": {
             "assess": "Review the assessment before applying a fix.",
@@ -1205,11 +1204,15 @@ PROCESS_SPECS: dict[str, dict[str, Any]] = {
         "description": "Intake, research, define, shape, then a go / clarify / kill decision",
         "inputs": [("idea", True, "Describe the idea")],
         "steps": [
-            ("intake", "speckit.assess.intake", "idea"),
-            ("research", "speckit.assess.research", None),
-            ("define", "speckit.assess.define", None),
-            ("shape", "speckit.assess.shape", None),
-            ("decide", "speckit.assess.decide", None),
+            ("intake", "speckit.assess.intake", "idea", None),
+            ("research", "speckit.assess.research", None,
+             "Research the idea in the most recent intake under .specify/assessments/."),
+            ("define", "speckit.assess.define", None,
+             "Define the problem from that intake."),
+            ("shape", "speckit.assess.shape", None,
+             "Shape the options for that assessment."),
+            ("decide", "speckit.assess.decide", None,
+             "Write the go, clarify or kill decision for that assessment."),
         ],
         "gates": {
             "define": "Review the problem definition before shaping options.",
@@ -1254,10 +1257,15 @@ def _process_yaml(process_id: str) -> str:
         lines += [f"  gate_review_{step_id}:", "    type: string", "    required: false"]
     lines += ["  integration:", "    type: string", '    default: "auto"', "", "steps:"]
 
-    for step_id, command, source in steps:
-        lines += [f"  - id: {step_id}", f"    command: {command}", '    integration: "{{ inputs.integration }}"']
-        if source:
-            lines += ["    input:", f'      args: "{{{{ inputs.{source} }}}}"']
+    for step_id, command, source, prompt in steps:
+        args = "{{ inputs." + source + " }}" if source else (prompt or "Continue.")
+        lines += [
+            f"  - id: {step_id}",
+            f"    command: {command}",
+            '    integration: "{{ inputs.integration }}"',
+            "    input:",
+            f'      args: "{args}"',
+        ]
         if step_id in gates:
             lines += [
                 f"  - id: review-{step_id}",

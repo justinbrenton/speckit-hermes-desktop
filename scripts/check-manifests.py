@@ -19,7 +19,7 @@ except ImportError:
     raise SystemExit(2)
 
 ROOT = Path(__file__).resolve().parents[1]
-MANIFESTS = ("plugin.yaml", "desktop/plugin.yaml")
+MANIFESTS = ("plugin.yaml",)
 PACKAGES = ("package.json", "dashboard/manifest.json")
 
 
@@ -40,15 +40,9 @@ def main() -> int:
         json.loads(path.read_text(encoding="utf-8"))
 
     root = parsed["plugin.yaml"]
-    desktop = parsed["desktop/plugin.yaml"]
     npm = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))
 
     problems = []
-    for field in ("name", "version"):
-        if root.get(field) != desktop.get(field):
-            problems.append(
-                f"plugin.yaml {field}={root.get(field)!r} but desktop/plugin.yaml {field}={desktop.get(field)!r}"
-            )
     if root.get("name") != npm.get("name"):
         problems.append(f"plugin.yaml name={root.get('name')!r} but package.json name={npm.get('name')!r}")
     if not root.get("requires_hermes"):

@@ -144,7 +144,8 @@ export async function install({ profile, home, dryRun = false } = {}) {
   }
   report.files.push(await writeIfChanged(existingPlugin, pluginSource, { dryRun }))
   report.files.push(
-    await writeIfChanged(join(desktopDir, 'plugin.yaml'), await readFile(join(ROOT, 'desktop/plugin.yaml'), 'utf8'), { dryRun })
+    // One manifest in the repo; the loader's copy beside plugin.js is derived.
+    await writeIfChanged(join(desktopDir, 'plugin.yaml'), await readFile(join(ROOT, 'plugin.yaml'), 'utf8'), { dryRun })
   )
 
   // 2. backend half
