@@ -58,7 +58,7 @@ logger = logging.getLogger(__name__)
 # ---------------------------------------------------------------------------
 
 
-def _allowed_roots() -> list[Path]:
+def _allowed_roots() -> Optional[list[Path]]:
     """Optional ceiling on where this plugin will work, from SPECKIT_ALLOWED_ROOTS.
 
     The pane is a local tool whose whole job is to open the project folder the
@@ -66,9 +66,11 @@ def _allowed_roots() -> list[Path]:
     backend fenced in sets this to a list of directories (``os.pathsep`` between
     them) and every project root must live under one of them.
     """
-    raw = os.environ.get("SPECKIT_ALLOWED_ROOTS", "").strip()
-    if not raw:
-        return []
+    raw = os.environ.get("SPECKIT_ALLOWED_ROOTS", "")
+    if not raw.strip():
+        # Unset means "no ceiling". Set to only separators means the operator
+        # tried to configure one: that returns an empty list, which denies.
+        return None
     roots: list[Path] = []
     for part in raw.split(os.pathsep):
         part = part.strip()
@@ -97,7 +99,12 @@ def _project_root(cwd: str) -> Path:
     if not root.is_dir():
         raise HTTPException(status_code=400, detail=f"cwd is not a directory: {root}")
     allowed = _allowed_roots()
-    if allowed and not _within_allowed(root, allowed):
+    if allowed is not None and not _within_allowed(root, allowed):
+        if not allowed:
+            raise HTTPException(
+                status_code=403,
+                detail="SPECKIT_ALLOWED_ROOTS is set but names no directory, so nothing is allowed",
+            )
         raise HTTPException(status_code=403, detail=f"cwd is outside SPECKIT_ALLOWED_ROOTS: {root}")
     return root
 
@@ -956,7 +963,10 @@ def workflow_resume(process: str, run_id: str, payload: WorkflowResumeRequest) -
         # run that parked quickly must be answerable at once, so the window does
         # not apply to it.
         just_answered = entry.get("kind") == "resume" and age <= GATE_TAKEOVER_GRACE
-        if _run_state_status(root, run_id) == "paused" and not just_answered:
+        # And the active job must be the run being answered: naming an older run
+        # must not kill whatever newer run is in flight.
+        same_run = str(entry.get("run_id") or "") == run_id
+        if _run_state_status(root, run_id) == "paused" and same_run and not just_answered:
             parked = ACTIVE_RUNS.pop(key, {})
             proc = parked.get("proc")
             if proc is not None and proc.poll() is None:
@@ -1982,13 +1992,20 @@ def _run_view(process: str, run: dict[str, Any], root: Path) -> dict[str, Any]:
         # Some steps produce no artifact, `analyze` above all: its findings are
         # the command's own output. Carry the reviewed step's output into the gate
         # so the reviewer can read what they are approving.
+        # Workflow order, not results order: a custom workflow can put a gate or a
+        # non-command step between the command and its review.
         reviewed_id = ""
         reviewed: dict[str, Any] = {}
-        for key, value in results.items():
-            if key == step_id:
-                continue
-            if value.get("type") == "command" and value.get("status") in {"completed", "failed"}:
-                reviewed_id, reviewed = key, value
+        try:
+            ordered = [str(step.get("id") or "") for step in (_process_data(root, process).get("steps") or [])]
+        except HTTPException:
+            ordered = []
+        if step_id in ordered:
+            position = ordered.index(step_id)
+            previous = ordered[position - 1] if position > 0 else ""
+            candidate = results.get(previous) or {}
+            if candidate.get("type") == "command":
+                reviewed_id, reviewed = previous, candidate
         if reviewed:
             output_block = reviewed.get("output") or {}
             gate["reviewed_step"] = reviewed_id

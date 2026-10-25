@@ -923,6 +923,9 @@ def test_a_fresh_run_can_be_answered_as_soon_as_it_parks(client, project, cli):
 
 def test_a_gate_carries_the_output_of_the_step_it_reviews(client, project, cli):
     """`analyze` writes no artifact; its findings are the command output."""
+    # The gate is matched against the workflow's own step order, so shape the
+    # full path first (it is the one that contains analyze).
+    client.post(f"{PREFIX}/workflow/shape", json={"cwd": str(project), "mode": "full"})
     run_dir = project / ".specify" / "workflows" / "runs" / "gate1"
     run_dir.mkdir(parents=True, exist_ok=True)
     state = {
@@ -997,4 +1000,72 @@ def test_answering_questions_replaces_only_the_answered_marker(client, project, 
     assert "SQLite" in body["content"]
     assert "Keep this." in body["content"]
     assert "[NEEDS CLARIFICATION: which host?]" in body["content"]
+
+
+def test_answering_an_old_gate_does_not_kill_a_newer_run(client, project, cli):
+    old = project / ".specify" / "workflows" / "runs" / "older1"
+    old.mkdir(parents=True, exist_ok=True)
+    (old / "state.json").write_text(json.dumps({"workflow_id": "speckit", "status": "paused"}), encoding="utf-8")
+
+    proc = ParkedProc()
+    plugin_api.ACTIVE_RUNS[(str(project).lower(), "speckit")] = {
+        "proc": proc, "run_id": "newer2", "kind": "run", "started_at": time.time() - 600
+    }
+    try:
+        response = client.post(
+            f"{PREFIX}/workflows/speckit/runs/older1/resume",
+            json={"cwd": str(project), "answers": {"gate_review_spec": "approve"}},
+        )
+        assert response.status_code == 409, response.text
+        assert proc.killed is False, "a different run must not be killed"
+    finally:
+        plugin_api.ACTIVE_RUNS.clear()
+
+
+def test_an_allowlist_that_names_nothing_denies_everything(client, project, cli, monkeypatch):
+    # Only separators: configured, with no usable entry.
+    monkeypatch.setenv("SPECKIT_ALLOWED_ROOTS", os.pathsep.join(["", "", ""]))
+    response = client.get(f"{PREFIX}/processes", params={"cwd": str(project)})
+    assert response.status_code == 403
+    assert "names no directory" in response.json()["detail"]
+
+
+def test_an_unset_allowlist_restricts_nothing(client, project, cli, monkeypatch):
+    monkeypatch.delenv("SPECKIT_ALLOWED_ROOTS", raising=False)
+    assert client.get(f"{PREFIX}/processes", params={"cwd": str(project)}).status_code == 200
+
+
+def test_the_reviewed_step_is_the_one_before_the_gate(client, project, cli):
+    """A gate after a non-command step must not borrow an earlier command's output."""
+    wf = project / ".specify" / "workflows" / "custom"
+    wf.mkdir(parents=True, exist_ok=True)
+    (wf / "workflow.yml").write_text(
+        'schema_version: "1.0"\n'
+        "workflow:\n  id: custom\n  name: Custom\n"
+        "steps:\n"
+        "  - id: analyze\n    command: speckit.analyze\n"
+        "  - id: wait\n    type: gate\n    message: intermediate\n    options: [approve, reject]\n"
+        "  - id: other\n    command: speckit.tasks\n"
+        "  - id: review-other\n    type: gate\n    message: Review tasks\n    options: [approve, reject]\n",
+        encoding="utf-8",
+    )
+    run_dir = project / ".specify" / "workflows" / "runs" / "order1"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    state = {
+        "workflow_id": "custom",
+        "status": "paused",
+        "current_step_id": "review-other",
+        "step_results": {
+            "analyze": {"type": "command", "status": "completed", "output": {"stdout": "analysis findings"}},
+            "wait": {"type": "gate", "status": "completed", "output": {"choice": "approve"}},
+            "other": {"type": "command", "status": "completed", "output": {"stdout": "task list"}},
+            "review-other": {"type": "gate", "status": "paused", "output": {"message": "Review tasks"}},
+        },
+    }
+    (run_dir / "state.json").write_text(json.dumps(state), encoding="utf-8")
+
+    view = client.get(f"{PREFIX}/workflows/custom/runs/order1", params={"cwd": str(project)}).json()
+    gate = view["gate"]
+    assert gate["reviewed_step"] == "other"
+    assert gate["reviewed_stdout"] == "task list"
 

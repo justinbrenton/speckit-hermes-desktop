@@ -383,9 +383,13 @@ function StartCard({ process, values, onChange, onStart, busy, error }) {
 }
 
 function GateCard({ run, busy, onDecide, error }) {
+  const [showOutput, setShowOutput] = useState(false)
   const gate = run.gate || {}
   const options = gate.options && gate.options.length ? gate.options : ['approve', 'reject']
-  const output = __str(gate.reviewed_stdout)
+  const stdout = __str(gate.reviewed_stdout)
+  const stderr = __str(gate.reviewed_stderr)
+  // A command can report only on stderr, so either stream opens the panel.
+  const output = [stdout, stderr].filter(Boolean).join('\n')
   return jsxs('div', { className: 'flex flex-col gap-2 rounded border sk-accent p-2', children: [
     jsx('p', { className: 'sk-small sk-medium', children: gate.message || 'Review before continuing' }),
     jsx('p', { className: 'sk-tiny sk-faint', children: 'Edit the file below if it needs work, then approve.' }),
