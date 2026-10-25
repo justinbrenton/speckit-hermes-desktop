@@ -1,0 +1,39 @@
+name: tests
+
+# The plugin's own suites. The backend suite needs a Hermes install on PYTHONPATH
+# to run, so CI checks its syntax and the manifests instead of pretending to run
+# tests it cannot. Run `python -m pytest tests/backend -q` locally for those.
+
+on:
+  push:
+    branches: [master]
+  pull_request:
+    branches: [master]
+
+permissions:
+  contents: read
+
+jobs:
+  node:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+      - run: npm install --no-audit --no-fund
+      - run: npm run build
+      - run: npm test
+
+  manifests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install pyyaml
+      - name: Compile the backend and its tests
+        run: python -m py_compile dashboard/plugin_api.py tests/backend/*.py
+      - name: Manifest parity
+        run: python scripts/check-manifests.py
