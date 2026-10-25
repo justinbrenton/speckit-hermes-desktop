@@ -80,3 +80,13 @@ test('artifactForGate finds the file a gate reviews', () => {
   assert.equal(artifactForGate([], 'review-spec'), null)
   assert.equal(artifactForGate(artifacts, ''), null)
 })
+
+test('the assessment gate opens decision.md, not verdict.md', () => {
+  const artifacts = [
+    { name: 'intake.md', path: '.specify/assessments/x/intake.md' },
+    { name: 'decision.md', path: '.specify/assessments/x/decision.md' }
+  ]
+  const found = artifactForGate(artifacts, 'review-verdict')
+  assert.equal(found && found.name, 'decision.md')
+})
+

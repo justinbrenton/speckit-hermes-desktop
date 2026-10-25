@@ -525,57 +525,37 @@ CONSTITUTION_STEPS = """  - id: constitution
 """
 
 
-def _ensure_workflow_shape(root: Path) -> list[str]:
-    """Add the stages the installed workflow leaves out.
+def _constitution_ready(root: Path) -> bool:
+    """True when the project already has a ratified constitution.
 
-    The workflow the CLI installs starts at ``specify``. The documented SDD
-    process opens with ``/speckit-constitution`` once per project, so without
-    this the pane can never ask for principles. Inserted as ordinary steps, so
-    the engine runs them and the gate is answerable like any other.
+    spec-kit's template ships placeholders; until they are replaced the file is
+    scaffolding, not a constitution, and the step should still run.
     """
-    patched: list[str] = []
-    workflows = root / ".specify" / "workflows"
-    if not workflows.is_dir():
-        return patched
-    for file in sorted(workflows.glob("*/workflow.yml")):
-        try:
-            text = file.read_text(encoding="utf-8")
-        except OSError:
-            continue
-        if "id: constitution" in text:
-            continue
-        if "\nsteps:" not in text:
-            continue
-        text = text.replace("\nsteps:\n", "\nsteps:\n" + CONSTITUTION_STEPS, 1)
-        if "\ninputs:\n" in text:
-            text = text.replace(
-                "\ninputs:\n",
-                "\ninputs:\n"
-                "  principles:\n"
-                "    type: string\n"
-                "    required: false\n"
-                "    prompt: \"Principles and constraints (optional)\"\n"
-                "  gate_review_constitution:\n"
-                "    type: string\n"
-                "    required: false\n",
-                1,
-            )
-        _write_text_atomic(file, text)
-        patched.append(str(file.relative_to(root).as_posix()))
-    return patched
+    target = root / ".specify" / "memory" / "constitution.md"
+    try:
+        text = target.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    if not text.strip():
+        return False
+    placeholders = ("[PROJECT_NAME]", "[PRINCIPLE_1_NAME]", "[PRINCIPLE_1_DESCRIPTION]")
+    return not any(marker in text for marker in placeholders)
 
 
 def _ensure_gate_verdicts(root: Path) -> list[str]:
     """Give every gate a ``verdict_input`` so it can be answered from the pane.
 
-    spec-kit's stock workflow omits it, and a gate without it can only be
-    answered at an interactive prompt: ``specify workflow resume -i x=y`` is
-    ignored and the run pauses forever. Patched in place, once per project.
+    A gate without one can only be answered at an interactive prompt: ``specify
+    workflow resume -i x=y`` is ignored and the run pauses forever. The engine
+    also rejects a gate whose ``verdict_input`` is not declared in ``inputs:``, so
+    both edits happen together and inputs are declared only for gates that were
+    actually patched.
     """
     patched: list[str] = []
     workflows = root / ".specify" / "workflows"
     if not workflows.is_dir():
         return patched
+
     for file in sorted(workflows.glob("*/workflow.yml")):
         try:
             text = file.read_text(encoding="utf-8")
@@ -583,13 +563,13 @@ def _ensure_gate_verdicts(root: Path) -> list[str]:
             continue
         if "verdict_input:" in text:
             continue
+
         lines = text.splitlines()
         out: list[str] = []
-        added: list[str] = []
+        keys: list[str] = []
         index = 0
         while index < len(lines):
             line = lines[index]
-            out.append(line)
             stripped = line.strip()
             if stripped.startswith("- id:"):
                 step_id = stripped.split(":", 1)[1].strip().strip('"').strip("'")
@@ -602,27 +582,33 @@ def _ensure_gate_verdicts(root: Path) -> list[str]:
                 has_verdict = any(item.strip().startswith("verdict_input:") for item in block)
                 if is_gate and not has_verdict:
                     key = "gate_" + step_id.replace("-", "_")
+                    emitted: list[str] = [line]
+                    done = False
                     for item in block:
-                        out.append(item)
-                        if item.strip().startswith("on_reject:"):
-                            out.append("    verdict_input: " + key)
-                    added.append(key)
+                        emitted.append(item)
+                        # after on_reject when present, else after options (inline or not)
+                        if not done and (item.strip().startswith("on_reject:") or item.strip().startswith("options:")):
+                            emitted.append("    verdict_input: " + key)
+                            done = True
+                    if not done:
+                        emitted.append("    verdict_input: " + key)
+                    out.extend(emitted)
+                    keys.append(key)
                     index = probe
                     continue
+            out.append(line)
             index += 1
-        if not added:
+
+        if not keys:
             continue
         merged = "\n".join(out) + "\n"
-        if "\ninputs:" in merged or merged.startswith("inputs:"):
-            addition = "".join(
-                "  " + key + ":\n    type: string\n    required: false\n" for key in added
-            )
+        addition = "".join("  " + key + ":\n    type: string\n    required: false\n" for key in keys)
+        if "\ninputs:\n" in merged:
             merged = merged.replace("\ninputs:\n", "\ninputs:\n" + addition, 1)
+        elif merged.startswith("inputs:\n"):
+            merged = merged.replace("inputs:\n", "inputs:\n" + addition, 1)
         else:
-            addition = "inputs:\n" + "".join(
-                "  " + key + ":\n    type: string\n    required: false\n" for key in added
-            )
-            merged = merged.replace("\nsteps:", "\n" + addition + "\nsteps:", 1)
+            merged = merged.replace("\nsteps:", "\ninputs:\n" + addition + "\nsteps:", 1)
         _write_text_atomic(file, merged)
         patched.append(str(file.relative_to(root).as_posix()))
     return patched
@@ -917,7 +903,6 @@ def init_project(payload: InitRequest) -> dict[str, Any]:
         ["init", "--here", "--force", "--non-interactive", "--integration", integration], root, 600
     )
     synced = _sync_legacy_skills()
-    _ensure_workflow_shape(root)
     patched = _ensure_gate_verdicts(root)
     return {
         "ok": result["ok"],
@@ -933,8 +918,7 @@ def init_project(payload: InitRequest) -> dict[str, Any]:
 def repair_workflows(payload: InitRequest) -> dict[str, Any]:
     """Add missing gate verdict inputs to an existing project's workflows."""
     root = _project_root(payload.cwd)
-    shaped = _ensure_workflow_shape(root)
-    return {"cwd": str(root), "patched": _ensure_gate_verdicts(root), "stages_added": shaped}
+    return {"cwd": str(root), "patched": _ensure_gate_verdicts(root)}
 
 
 class ArtifactWrite(BaseModel):
@@ -1014,7 +998,7 @@ def install_extension(payload: ExtensionRequest) -> dict[str, Any]:
     if ext_id not in {"bug", "assess"}:
         raise HTTPException(status_code=400, detail=f"unknown extension: {payload.id!r}")
     result = _run_specify(["extension", "add", ext_id], root, 300)
-    _ensure_workflow_shape(root)
+    # Only this extension's own workflows are touched; the SDD shape is its own.
     _ensure_gate_verdicts(root)
     return {
         "ok": result["ok"],
@@ -1038,14 +1022,33 @@ SHORT_PATH = ["specify", "plan", "tasks", "implement", "converge"]
 FULL_PATH = ["specify", "clarify", "plan", "checklist", "tasks", "analyze", "implement", "converge"]
 
 
-def _workflow_yaml(mode: str) -> str:
+def _workflow_yaml(mode: str, with_constitution: bool = True) -> str:
     """Render the documented SDD workflow for the chosen path.
 
-    The CLI installs a fixed six-step workflow with no constitution, clarify,
-    checklist, analyze or converge. The quickstart defines a short path and a
-    full path, so the pane asks which and this writes that shape.
+    Inputs are declared only for steps this path actually runs: the short path
+    has no clarify step, so it must not ask for a clarify focus. The
+    constitution is once per project, so it is omitted once a ratified
+    constitution exists.
     """
-    steps = FULL_PATH if mode == "full" else SHORT_PATH
+    steps = list(FULL_PATH if mode == "full" else SHORT_PATH)
+    if with_constitution:
+        steps = ["constitution"] + steps
+    if mode == "full" and "clarify" not in steps:
+        steps.insert(1, "clarify")
+
+    inputs: list[tuple[str, bool, str]] = []
+    if with_constitution:
+        inputs.append(("principles", False, "Constitution: principles and constraints"))
+    inputs.append(("spec", True, "Describe what you want to build"))
+    if "clarify" in steps:
+        inputs.append(("focus", False, "Clarify: focus area (optional)"))
+    if "plan" in steps:
+        inputs.append(("stack", False, "Plan: tech stack and architecture"))
+
+    # Every gate's verdict_input has to exist in inputs:, or the schema rejects
+    # the gate. Declare them from the same list that generates the gates.
+    verdicts = [f"gate_review_{GATE_FOR[name]}" for name in steps if GATE_FOR.get(name) in GATES]
+
     lines = [
         "# generated by spec-kit-hermes: choosing a path rewrites this file",
         "# a copy is kept as workflow.yml.bak-<timestamp> when it differs",
@@ -1053,49 +1056,50 @@ def _workflow_yaml(mode: str) -> str:
         "workflow:",
         '  id: "speckit"',
         '  name: "Spec-Driven Development"',
-        '  version: "1.1.0"',
+        '  version: "1.2.0"',
         '  author: "Hermes Desktop integration"',
-        '  description: "Documented ' + mode + ' path: ' + " -> ".join(["constitution"] + steps) + '"',
+        '  description: "Documented ' + mode + ' path: ' + " -> ".join(steps) + '"',
         "",
         "requires:",
         '  speckit_version: ">=0.8.5"',
         "",
         "inputs:",
-        "  principles:",
-        "    type: string",
-        "    required: false",
-        '    prompt: "Constitution: principles and constraints"',
-        "  spec:",
-        "    type: string",
-        "    required: true",
-        '    prompt: "Describe what you want to build"',
-        "  focus:",
-        "    type: string",
-        "    required: false",
-        '    prompt: "Clarify: focus area (optional)"',
-        "  stack:",
-        "    type: string",
-        "    required: false",
-        '    prompt: "Plan: tech stack and architecture"',
+    ]
+    for name, required, prompt in inputs:
+        lines += [
+            f"  {name}:",
+            "    type: string",
+            f"    required: {'true' if required else 'false'}",
+            f'    prompt: "{prompt}"',
+        ]
+    for verdict in verdicts:
+        lines += [f"  {verdict}:", "    type: string", "    required: false"]
+    lines += [
         "  integration:",
         "    type: string",
         '    default: "auto"',
         "",
         "steps:",
-        "  - id: constitution",
-        "    command: speckit.constitution",
-        '    integration: "{{ inputs.integration }}"',
-        "    input:",
-        '      args: "{{ inputs.principles }}"',
-        "  - id: review-constitution",
-        "    type: gate",
-        '    message: "Review the constitution before specifying."',
-        "    options: [approve, reject]",
-        "    verdict_input: gate_review_constitution",
-        "    on_reject: abort",
     ]
+
     for name in steps:
-        if name == "clarify":
+        if name == "constitution":
+            lines += [
+                "  - id: constitution",
+                "    command: speckit.constitution",
+                '    integration: "{{ inputs.integration }}"',
+                "    input:",
+                '      args: "{{ inputs.principles }}"',
+            ]
+        elif name == "specify":
+            lines += [
+                "  - id: specify",
+                "    command: speckit.specify",
+                '    integration: "{{ inputs.integration }}"',
+                "    input:",
+                '      args: "{{ inputs.spec }}"',
+            ]
+        elif name == "clarify":
             lines += [
                 "  - id: clarify",
                 "    command: speckit.clarify",
@@ -1110,14 +1114,6 @@ def _workflow_yaml(mode: str) -> str:
                 '    integration: "{{ inputs.integration }}"',
                 "    input:",
                 '      args: "{{ inputs.stack }}"',
-            ]
-        elif name == "specify":
-            lines += [
-                "  - id: specify",
-                "    command: speckit.specify",
-                '    integration: "{{ inputs.integration }}"',
-                "    input:",
-                '      args: "{{ inputs.spec }}"',
             ]
         else:
             lines += [
@@ -1142,6 +1138,8 @@ def _workflow_yaml(mode: str) -> str:
 class ShapeRequest(BaseModel):
     cwd: str
     mode: str = "full"
+    # None means "decide from the project": a ratified constitution is not re-run.
+    constitution: Optional[bool] = None
 
 
 @router.post("/workflow/shape")
@@ -1153,7 +1151,10 @@ def shape_workflow(payload: ShapeRequest) -> dict[str, Any]:
     if not target.parent.is_dir():
         raise HTTPException(status_code=404, detail="no speckit workflow installed here")
 
-    generated = _workflow_yaml(mode)
+    with_constitution = payload.constitution
+    if with_constitution is None:
+        with_constitution = not _constitution_ready(root)
+    generated = _workflow_yaml(mode, with_constitution)
     backup = None
     changed = True
     current = ""
@@ -1180,6 +1181,7 @@ def shape_workflow(payload: ShapeRequest) -> dict[str, Any]:
     return {
         "mode": mode,
         "path": str(target),
+        "constitution": with_constitution,
         "changed": changed,
         "backup": str(backup) if backup else None,
         "steps": [step["id"] for step in data.get("steps", [])],

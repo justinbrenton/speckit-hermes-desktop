@@ -96,7 +96,11 @@ export function artifactForGate(artifacts = [], gateStepId = '') {
   const kind = String(gateStepId || '').replace(/^review-/, '').replace(/_/g, '-')
   if (!kind) return null
   const list = artifacts || []
+  // Gates whose artifact is not named after the step. The assessment gate says
+  // "verdict" and writes decision.md.
+  const named = { verdict: 'decision.md' }[kind]
   return (
+    (named && list.find(item => item && item.name === named)) ||
     list.find(item => item && item.name === `${kind}.md`) ||
     list.find(item => item && item.name === kind) ||
     list.find(item => item && String(item.path || '').toLowerCase().includes(kind.toLowerCase())) ||

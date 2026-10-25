@@ -579,3 +579,84 @@ def test_artifact_write_succeeds_with_the_current_mtime(client, project):
     assert body["bytes"] == len("# mine\n")
     assert spec.read_text(encoding="utf-8") == "# mine\n"
 
+
+def test_short_path_does_not_ask_for_clarify(client, project):
+    body = client.post(f"{PREFIX}/workflow/shape", json={"cwd": str(project), "mode": "short"}).json()
+    assert "clarify" not in body["steps"]
+    workflow = (project / ".specify" / "workflows" / "speckit" / "workflow.yml").read_text(encoding="utf-8")
+    assert "  focus:" not in workflow, "a step that will not run must not ask a question"
+    assert "id: clarify" not in workflow
+
+
+def test_full_path_asks_for_clarify(client, project):
+    client.post(f"{PREFIX}/workflow/shape", json={"cwd": str(project), "mode": "full"})
+    workflow = (project / ".specify" / "workflows" / "speckit" / "workflow.yml").read_text(encoding="utf-8")
+    assert "  focus:" in workflow
+    assert "id: clarify" in workflow
+
+
+def test_every_gate_has_a_declared_verdict_input(client, project):
+    client.post(f"{PREFIX}/workflow/shape", json={"cwd": str(project), "mode": "full"})
+    workflow = (project / ".specify" / "workflows" / "speckit" / "workflow.yml").read_text(encoding="utf-8")
+    declared = {
+        line.split(":")[0].strip()
+        for line in workflow.splitlines()
+        if line.startswith("  ") and not line.startswith("    ") and line.rstrip().endswith(":")
+    }
+    gates = [
+        line.split("gate_review_")[1].strip()
+        for line in workflow.splitlines()
+        if "verdict_input: gate_review_" in line
+    ]
+    assert gates, "the shaped workflow should contain gates"
+    for key in gates:
+        assert f"gate_review_{key}" in declared, f"{key} is used by a gate but not declared as an input"
+
+
+def test_a_ratified_constitution_is_not_run_again(client, project):
+    memory = project / ".specify" / "memory"
+    memory.mkdir(parents=True, exist_ok=True)
+    (memory / "constitution.md").write_text(
+        "# Demo Constitution\n\n## Core Principles\n\n### I. Security First\nValidate input.\n",
+        encoding="utf-8",
+    )
+    body = client.post(f"{PREFIX}/workflow/shape", json={"cwd": str(project), "mode": "full"}).json()
+    assert body["constitution"] is False
+    assert "constitution" not in body["steps"], "once per project, not once per feature"
+    workflow = (project / ".specify" / "workflows" / "speckit" / "workflow.yml").read_text(encoding="utf-8")
+    assert "  principles:" not in workflow, "no constitution step, so no principles question"
+
+
+def test_an_unratified_constitution_still_runs(client, project):
+    memory = project / ".specify" / "memory"
+    memory.mkdir(parents=True, exist_ok=True)
+    (memory / "constitution.md").write_text(
+        "# [PROJECT_NAME] Constitution\n\n### [PRINCIPLE_1_NAME]\n[PRINCIPLE_1_DESCRIPTION]\n",
+        encoding="utf-8",
+    )
+    body = client.post(f"{PREFIX}/workflow/shape", json={"cwd": str(project), "mode": "short"}).json()
+    assert body["constitution"] is True
+    assert body["steps"][0] == "constitution"
+
+
+def test_repair_leaves_other_processes_alone(client, project):
+    """Adding the bug extension must not graft the SDD constitution onto bugfix."""
+    bugfix = project / ".specify" / "workflows" / "bugfix"
+    bugfix.mkdir(parents=True)
+    original = (
+        'schema_version: "1.0"\n'
+        "workflow:\n  id: bugfix\n"
+        "inputs:\n  report:\n    type: string\n"
+        "steps:\n"
+        "  - id: assess\n    command: speckit.bug.assess\n"
+        "  - id: review-assessment\n    type: gate\n    message: Review\n    options: [approve, reject]\n"
+    )
+    (bugfix / "workflow.yml").write_text(original, encoding="utf-8")
+
+    client.post(f"{PREFIX}/repair-workflows", json={"cwd": str(project)})
+
+    after = (bugfix / "workflow.yml").read_text(encoding="utf-8")
+    assert "id: constitution" not in after
+    assert "principles" not in after
+    assert "verdict_input: gate_review_assessment" in after, "the gate is still made answerable"
+
