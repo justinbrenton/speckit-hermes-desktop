@@ -54,12 +54,21 @@ platform-specific, but that is an untested claim elsewhere.
 
 ## Install
 
-There is no `hermes plugins install` path for this. That command installs agent
-plugins and portable packages from a catalog or repo, and this is a desktop plugin:
-a JavaScript file the app loads from its plugin folder, plus a Python router it
-mounts for file work. `hermes plugins list` does not show it, by design.
+```bash
+hermes plugins install justinbrenton/speckit-hermes-desktop --enable
+hermes gateway restart
+```
 
-### With the installer
+That clones the repo into your Hermes home under `plugins/spec-kit-hermes`, enables
+it, and the app loads the pane on next start. You will see a notice about Node
+dependencies being skipped; this plugin has none, so ignore it.
+
+Then quit every `Hermes.exe` and reopen. The pane appears as **Spec Kit** in the right
+sidebar, with a chip of the same name in the status bar.
+
+### From a clone
+
+If you would rather work from a local copy:
 
 ```bash
 git clone https://github.com/justinbrenton/speckit-hermes-desktop
@@ -68,40 +77,34 @@ npm run build
 node scripts/install.mjs
 ```
 
-The installer copies both halves into the Hermes home it finds, and adds the plugin
-name to `plugins.enabled` in the active profile's config after backing that file up.
-`--profile <name>` targets a specific profile, `--home <path>` a specific Hermes
-home, and `--dry-run` prints what it would change.
+The installer copies both halves into the Hermes home it finds and adds the plugin to
+`plugins.enabled` after backing the config up. `--profile <name>` targets a profile,
+`--home <path>` a Hermes home, `--dry-run` prints what would change.
 
 ### By hand
 
-Copy the built pane and the backend into place, then enable the backend half:
-
 ```
-desktop/plugin.js   ->  <hermes home>/desktop-plugins/spec-kit-hermes/plugin.js
-backend/plugin_api.py,
-backend/manifest.json ->  <hermes home>/plugins/spec-kit-hermes/dashboard/
+plugin.yaml, desktop/, dashboard/  ->  <hermes home>/plugins/spec-kit-hermes/
 ```
 
-Add `spec-kit-hermes` to the `plugins.enabled` list in
-`<hermes home>/profiles/<profile>/config.yaml`.
+Add `spec-kit-hermes` to `plugins.enabled` in
+`<hermes home>/profiles/<profile>/config.yaml`, then restart.
 
-Either way, quit every `Hermes.exe` and the gateway `python.exe` before reopening.
-The app discovers desktop plugins at startup, and the Python backend is imported once
-per gateway process, so a file change alone will not reload it.
+The app discovers desktop plugins once per start, and the Python half is imported once
+per gateway process, so editing a file does not reload it.
 
 ### When it does not appear
 
-Check the file landed where the app looks, then prove the backend is mounted:
+Prove the backend is mounted before assuming the UI is at fault:
 
 ```bash
 PYTHONPATH="$LOCALAPPDATA/hermes/hermes-agent" python scripts/verify-install.py --profile codie
 ```
 
 It re-runs the app's own plugin discovery, mounts the router, and calls the routes. A
-failure there is a real install problem; a pass means the pane is missing because the
-app has not restarted. A banner in the pane does the same check at runtime for the
-skill working directory, and offers to re-apply that fix.
+failure there is a real install problem; a pass means the app has not restarted. A
+banner in the pane does the same check at runtime for the skill working directory, and
+offers to re-apply that fix.
 
 ## Use
 
@@ -141,7 +144,7 @@ npm test
 
 `src/core.mjs` holds the decisions the pane makes about workflows it did not author:
 which inputs to ask for, where a run is, which file a gate reviews. `src/pane.js` is
-the UI. `backend/plugin_api.py` is the router: process discovery, run control,
+the UI. `dashboard/plugin_api.py` is the router: process discovery, run control,
 artifacts, clarification answers, and the integration health check.
 
 The integration health check exists because of a local fix. Upstream's Hermes adapter

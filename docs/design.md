@@ -373,7 +373,7 @@ scripts/config-enable.mjs surgical plugins.enabled edit
 scripts/verify-install.py re-runs Hermes' own discovery and mount, then drives the routes
 scripts/render-docs.mjs   docs/design.md → docs/design.html
 backend/plugin_api.py     FastAPI router
-backend/tests/            route tests plus a real mount through Hermes' dashboard loader
+tests/backend/            route tests plus a real mount through Hermes' dashboard loader
 test/                     node --test suites
 docs/design.md            this file
 docs/design.html          generated from this file, do not hand edit
@@ -525,8 +525,8 @@ SDK export. `Fragment` comes from React.
 | The deployed plugin matches the build | `cmp desktop/plugin.js ~/.hermes/desktop-plugins/spec-kit-hermes/plugin.js` | identical, 43,953 bytes |
 | The config edit adds one line, not a duplicate key | feed the live `config.yaml` through `config-enable.mjs` | 1 line added, `plugins.enabled` contains `spec-kit-hermes` once, file parses |
 | Backend half is installed | `ls ~/.hermes/plugins/spec-kit-hermes/dashboard/` | `plugin_api.py` (10,031 bytes), `manifest.json`, `index.js` |
-| Backend tests pass | `python -m pytest backend/tests -q` | 39 passed (routes, mount, file I/O, discovery, workflow bridge, artifacts, gates) |
-| Process discovery is data-driven | `backend/tests/test_processes.py` | a bugfix workflow becomes inputs + command steps + a gate; skills resolved and flagged |
+| Backend tests pass | `python -m pytest tests/backend -q` | 39 passed (routes, mount, file I/O, discovery, workflow bridge, artifacts, gates) |
+| Process discovery is data-driven | `tests/backend/test_processes.py` | a bugfix workflow becomes inputs + command steps + a gate; skills resolved and flagged |
 | A gate pauses and resumes | `POST /run` then `POST /runs/<id>/resume` with `gate_review_spec=approve` | paused at review-spec; `choice= approve`; engine ran `plan` and paused at review-plan |
 | Artifacts are listed and readable | `GET /artifacts`, `GET /artifact` | 7 artifacts in the demo project, `spec.md` read back at 1,829 chars |
 | The doc pair cannot drift | `npm run docs` | HTML regenerated from this file |

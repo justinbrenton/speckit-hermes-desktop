@@ -70,12 +70,12 @@ is no token to borrow. Hence the mount is proven in-process instead (section 6).
 
 ## 6. The mount works through Hermes' own pipeline
 
-`backend/tests/test_mount.py` lays the backend out as the installer does
+`tests/backend/test_mount.py` lays the backend out as the installer does
 (`<tmp home>/plugins/spec-kit-hermes/dashboard/`), then calls the real
 `_discover_dashboard_plugins` and `_mount_one_plugin_api`, then makes an HTTP request:
 
 ```
-$ PYTHONPATH="$LOCALAPPDATA/hermes/hermes-agent" python -m pytest backend/tests -q
+$ PYTHONPATH="$LOCALAPPDATA/hermes/hermes-agent" python -m pytest tests/backend -q
 3 passed in 1.37s
 ```
 
@@ -90,7 +90,7 @@ $ PYTHONPATH="$LOCALAPPDATA/hermes/hermes-agent" python -m pytest backend/tests 
 $ node --test test/*.test.mjs
 ℹ tests 36   ℹ pass 36   ℹ fail 0
 
-$ python -m pytest backend/tests -q
+$ python -m pytest tests/backend -q
 22 passed
 ```
 
@@ -101,8 +101,8 @@ What the suites cover:
 | `test/core.test.mjs` | spec/tasks/constitution parse → serialize round trip, unknown sections preserved, clarification budget, gate, `deriveTasksFromSpec`, `applyAcceptanceFromTasks`, `decideSync` matrix, debouncer, stepper, `parseRestError` |
 | `test/build.test.mjs` | built `plugin.js` imports only permitted specifiers, inlines the core, registers exactly one pane, keeps `ctx.rest` paths namespace-relative, is valid ESM (`node --check`), stays under the 512 KiB shell limit |
 | `test/config-enable.test.mjs` | `plugins.enabled` edit: block list, inline list, missing key, missing block, CRLF, comments, idempotency, bad names |
-| `backend/tests/test_plugin_api.py` | read/write, atomic write, mtime conflict (409 + winning copy), path allowlist refusals, relative/missing `cwd`, real Kanban create/dedupe/links in a throwaway `HERMES_HOME` |
-| `backend/tests/test_mount.py` | the mount itself, through Hermes' dashboard code |
+| `tests/backend/test_plugin_api.py` | read/write, atomic write, mtime conflict (409 + winning copy), path allowlist refusals, relative/missing `cwd`, real Kanban create/dedupe/links in a throwaway `HERMES_HOME` |
+| `tests/backend/test_mount.py` | the mount itself, through Hermes' dashboard code |
 
 ## 8. Live install
 
@@ -169,7 +169,7 @@ file's import specifiers to recorders, imports it, asserts `default.id`,
   no CDP port, and relaunching the user's app is off-limits). Everything up to
   "registered + serving" is verified; the pane's layout and feel are not.
 - **A Kanban sync against the user's real board.** The sync path is exercised against a
-  throwaway `HERMES_HOME` in `backend/tests/test_plugin_api.py`; creating cards on the
+  throwaway `HERMES_HOME` in `tests/backend/test_plugin_api.py`; creating cards on the
   live board without being asked would leave debris in the user's backlog.
 - **`pickOpenPath` / `revealPath` OS doors** — not used by this plugin.
 - **Constitution section preservation on hand-edited prose** — the wizard regenerates the
