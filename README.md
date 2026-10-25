@@ -4,6 +4,14 @@
 
 <h1 align="center">Spec Kit for Hermes Desktop</h1>
 
+<p align="center">
+  <a href="LICENSE"><img src="https://img.shields.io/github/license/justinbrenton/speckit-hermes-desktop" alt="MIT license"></a>
+  <img src="https://img.shields.io/github/last-commit/justinbrenton/speckit-hermes-desktop" alt="Last commit">
+  <img src="https://img.shields.io/badge/hermes-%3E%3D0.22.2-blue" alt="Requires Hermes 0.22.2 or newer">
+  <img src="https://img.shields.io/badge/tested%20on-windows-lightgrey" alt="Tested on Windows">
+  <img src="https://img.shields.io/github/issues/justinbrenton/speckit-hermes-desktop" alt="Open issues">
+</p>
+
 <p align="center">Run spec-kit processes from a pane in Hermes Desktop, with every review gate in front of you.</p>
 
 Spec Kit is GitHub's toolkit for specification-driven development. It ships skills for
