@@ -16,11 +16,9 @@
 <p align="center">Run spec-kit processes from a pane in Hermes Desktop, with every review gate in front of you.</p>
 
 
-> [!WARNING]
-> **Alpha.** This is early software. It has only been run on Windows against Hermes
-> Desktop 0.22.2, and it needs a local patch to spec-kit that an upgrade can undo.
-> The pane, the package layout and the workflow shapes can change without notice.
-> If you need stability, pin a commit.
+> [!NOTE]
+> **Alpha.** Expect rough edges. Behaviour and file layout may change between
+> releases.
 
 Spec Kit is GitHub's toolkit for specification-driven development. It ships skills for
 your coding agent: constitution, specify, clarify, plan, tasks, analyze, implement,
