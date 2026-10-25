@@ -511,3 +511,25 @@ def test_integration_repair_is_idempotent(client, tmp_path, monkeypatch):
     assert second["patched"] is True
     assert copy.read_text(encoding="utf-8").count("--in") == 1
 
+
+def test_shaping_twice_writes_once_and_keeps_no_backup(client, project):
+    first = client.post(f"{PREFIX}/workflow/shape", json={"cwd": str(project), "mode": "full"}).json()
+    assert first["changed"] is True
+    assert first["backup"] is not None, "the generated file it replaced is kept"
+    assert "constitution" in first["steps"]
+
+    second = client.post(f"{PREFIX}/workflow/shape", json={"cwd": str(project), "mode": "full"}).json()
+    assert second["changed"] is False
+    assert second["backup"] is None, "nothing written, so nothing to back up"
+
+
+def test_shaping_keeps_a_hand_edited_workflow_as_a_backup(client, project):
+    workflow = project / ".specify" / "workflows" / "speckit" / "workflow.yml"
+    workflow.write_text("# my own workflow\nsteps:\n  - id: mine\n", encoding="utf-8")
+
+    body = client.post(f"{PREFIX}/workflow/shape", json={"cwd": str(project), "mode": "short"}).json()
+    assert body["changed"] is True
+    backup = Path(body["backup"])
+    assert backup.is_file()
+    assert "# my own workflow" in backup.read_text(encoding="utf-8"), "the user's version survives"
+
