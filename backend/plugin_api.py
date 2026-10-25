@@ -430,6 +430,60 @@ def _await_new_run(root: Path, before: set[str], timeout: float = 25.0) -> Optio
     return None
 
 
+CONSTITUTION_STEPS = """  - id: constitution
+    command: speckit.constitution
+    integration: "{{ inputs.integration }}"
+    input:
+      args: "{{ inputs.principles }}"
+  - id: review-constitution
+    type: gate
+    message: "Review the constitution before specifying."
+    options: [approve, reject]
+    verdict_input: gate_review_constitution
+    on_reject: abort
+"""
+
+
+def _ensure_workflow_shape(root: Path) -> list[str]:
+    """Add the stages the installed workflow leaves out.
+
+    The workflow the CLI installs starts at ``specify``. The documented SDD
+    process opens with ``/speckit-constitution`` once per project, so without
+    this the pane can never ask for principles. Inserted as ordinary steps, so
+    the engine runs them and the gate is answerable like any other.
+    """
+    patched: list[str] = []
+    workflows = root / ".specify" / "workflows"
+    if not workflows.is_dir():
+        return patched
+    for file in sorted(workflows.glob("*/workflow.yml")):
+        try:
+            text = file.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        if "id: constitution" in text:
+            continue
+        if "\nsteps:" not in text:
+            continue
+        text = text.replace("\nsteps:\n", "\nsteps:\n" + CONSTITUTION_STEPS, 1)
+        if "\ninputs:\n" in text:
+            text = text.replace(
+                "\ninputs:\n",
+                "\ninputs:\n"
+                "  principles:\n"
+                "    type: string\n"
+                "    required: false\n"
+                "    prompt: \"Principles and constraints (optional)\"\n"
+                "  gate_review_constitution:\n"
+                "    type: string\n"
+                "    required: false\n",
+                1,
+            )
+        _write_text_atomic(file, text)
+        patched.append(str(file.relative_to(root).as_posix()))
+    return patched
+
+
 def _ensure_gate_verdicts(root: Path) -> list[str]:
     """Give every gate a ``verdict_input`` so it can be answered from the pane.
 
@@ -727,6 +781,7 @@ def init_project(payload: InitRequest) -> dict[str, Any]:
         ["init", "--here", "--force", "--non-interactive", "--integration", integration], root, 600
     )
     synced = _sync_legacy_skills()
+    _ensure_workflow_shape(root)
     patched = _ensure_gate_verdicts(root)
     return {
         "ok": result["ok"],
@@ -742,7 +797,8 @@ def init_project(payload: InitRequest) -> dict[str, Any]:
 def repair_workflows(payload: InitRequest) -> dict[str, Any]:
     """Add missing gate verdict inputs to an existing project's workflows."""
     root = _project_root(payload.cwd)
-    return {"cwd": str(root), "patched": _ensure_gate_verdicts(root)}
+    shaped = _ensure_workflow_shape(root)
+    return {"cwd": str(root), "patched": _ensure_gate_verdicts(root), "stages_added": shaped}
 
 
 class ArtifactWrite(BaseModel):
@@ -822,12 +878,145 @@ def install_extension(payload: ExtensionRequest) -> dict[str, Any]:
     if ext_id not in {"bug", "assess"}:
         raise HTTPException(status_code=400, detail=f"unknown extension: {payload.id!r}")
     result = _run_specify(["extension", "add", ext_id], root, 300)
+    _ensure_workflow_shape(root)
     _ensure_gate_verdicts(root)
     return {
         "ok": result["ok"],
         "extension": ext_id,
         "output": (result.get("output", "") + result.get("stderr", ""))[-4000:],
     }
+
+
+#: step id -> gate key, because the step is `specify` and its gate is `review-spec`
+GATE_FOR = {"constitution": "constitution", "specify": "spec", "clarify": "clarify", "plan": "plan", "tasks": "tasks"}
+
+GATES = {
+    "constitution": "Review the constitution before specifying.",
+    "spec": "Review the spec before planning.",
+    "clarify": "Review the clarifications folded into the spec.",
+    "plan": "Review the plan before generating tasks.",
+    "tasks": "Review the task breakdown before implementing.",
+}
+
+SHORT_PATH = ["specify", "plan", "tasks", "implement", "converge"]
+FULL_PATH = ["specify", "clarify", "plan", "checklist", "tasks", "analyze", "implement", "converge"]
+
+
+def _workflow_yaml(mode: str) -> str:
+    """Render the documented SDD workflow for the chosen path.
+
+    The CLI installs a fixed six-step workflow with no constitution, clarify,
+    checklist, analyze or converge. The quickstart defines a short path and a
+    full path, so the pane asks which and this writes that shape.
+    """
+    steps = FULL_PATH if mode == "full" else SHORT_PATH
+    lines = [
+        'schema_version: "1.0"',
+        "workflow:",
+        '  id: "speckit"',
+        '  name: "Spec-Driven Development"',
+        '  version: "1.1.0"',
+        '  author: "Hermes Desktop integration"',
+        '  description: "Documented ' + mode + ' path: ' + " -> ".join(["constitution"] + steps) + '"',
+        "",
+        "requires:",
+        '  speckit_version: ">=0.8.5"',
+        "",
+        "inputs:",
+        "  principles:",
+        "    type: string",
+        "    required: false",
+        '    prompt: "Constitution: principles and constraints"',
+        "  spec:",
+        "    type: string",
+        "    required: true",
+        '    prompt: "Describe what you want to build"',
+        "  focus:",
+        "    type: string",
+        "    required: false",
+        '    prompt: "Clarify: focus area (optional)"',
+        "  stack:",
+        "    type: string",
+        "    required: false",
+        '    prompt: "Plan: tech stack and architecture"',
+        "  integration:",
+        "    type: string",
+        '    default: "auto"',
+        "",
+        "steps:",
+        "  - id: constitution",
+        "    command: speckit.constitution",
+        '    integration: "{{ inputs.integration }}"',
+        "    input:",
+        '      args: "{{ inputs.principles }}"',
+        "  - id: review-constitution",
+        "    type: gate",
+        '    message: "Review the constitution before specifying."',
+        "    options: [approve, reject]",
+        "    verdict_input: gate_review_constitution",
+        "    on_reject: abort",
+    ]
+    for name in steps:
+        if name == "clarify":
+            lines += [
+                "  - id: clarify",
+                "    command: speckit.clarify",
+                '    integration: "{{ inputs.integration }}"',
+                "    input:",
+                '      args: "{{ inputs.focus }}"',
+            ]
+        elif name == "plan":
+            lines += [
+                "  - id: plan",
+                "    command: speckit.plan",
+                '    integration: "{{ inputs.integration }}"',
+                "    input:",
+                '      args: "{{ inputs.stack }}"',
+            ]
+        elif name == "specify":
+            lines += [
+                "  - id: specify",
+                "    command: speckit.specify",
+                '    integration: "{{ inputs.integration }}"',
+                "    input:",
+                '      args: "{{ inputs.spec }}"',
+            ]
+        else:
+            lines += [
+                f"  - id: {name}",
+                f"    command: speckit.{name}",
+                '    integration: "{{ inputs.integration }}"',
+            ]
+        gate_key = GATE_FOR.get(name)
+        gate_name = GATES.get(gate_key) if gate_key else None
+        if gate_name:
+            lines += [
+                f"  - id: review-{gate_key}",
+                "    type: gate",
+                f'    message: "{gate_name}"',
+                "    options: [approve, reject]",
+                f"    verdict_input: gate_review_{gate_key}",
+                "    on_reject: abort",
+            ]
+    return "\n".join(lines) + "\n"
+
+
+class ShapeRequest(BaseModel):
+    cwd: str
+    mode: str = "full"
+
+
+@router.post("/workflow/shape")
+def shape_workflow(payload: ShapeRequest) -> dict[str, Any]:
+    """Write the short or full documented SDD workflow into the project."""
+    root = _project_root(payload.cwd)
+    mode = "full" if str(payload.mode).lower() == "full" else "short"
+    target = root / ".specify" / "workflows" / "speckit" / "workflow.yml"
+    if not target.parent.is_dir():
+        raise HTTPException(status_code=404, detail="no speckit workflow installed here")
+    _write_text_atomic(target, _workflow_yaml(mode))
+    data = _process_data(root, "speckit")
+    return {"mode": mode, "path": str(target), "steps": [step["id"] for step in data.get("steps", [])]}
 
 
 @router.get("/browse")

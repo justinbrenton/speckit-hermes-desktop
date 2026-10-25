@@ -221,8 +221,37 @@ function ArtifactEditor({ artifact, draft, onDraft, onSave, onClose, busy, dirty
   ] })
 }
 
+function PathChoice({ mode, onChange, busy }) {
+  return jsxs('div', { className: 'flex flex-col gap-1', children: [
+    jsx('p', { className: 'text-[0.6875rem] font-medium', children: 'Path' }),
+    jsxs('div', { className: 'flex gap-2', children: [
+      jsx(Button, {
+        size: 'xs',
+        variant: mode === 'short' ? 'default' : 'outline',
+        disabled: busy,
+        onClick: () => onChange('short'),
+        children: 'Shorter'
+      }),
+      jsx(Button, {
+        size: 'xs',
+        variant: mode === 'full' ? 'default' : 'outline',
+        disabled: busy,
+        onClick: () => onChange('full'),
+        children: 'Full'
+      })
+    ] }),
+    jsx('p', { className: 'text-[0.625rem] text-(--ui-text-tertiary)', children: mode === 'full'
+      ? 'constitution, specify, clarify, plan, checklist, tasks, analyze, implement, converge'
+      : 'constitution, specify, plan, tasks, implement, converge' })
+  ] })
+}
+
 function StartCard({ process, values, onChange, onStart, busy, error }) {
-  const inputs = (process && process.inputs) || []
+  const inputs = ((process && process.inputs) || []).filter(
+    // gate_* carry verdicts to the engine; integration is project setup. Neither
+    // is a question for the person starting a feature.
+    input => !/^gate_/.test(input.name) && input.name !== 'integration'
+  )
   const fields = inputs.length ? inputs : [{ name: 'spec', prompt: 'Describe what you want to build', required: true }]
   const ready = fields.filter(field => field.required).every(field => __str(values[field.name]))
   return jsxs('div', { className: 'flex flex-col gap-2', children: [
@@ -295,6 +324,7 @@ function SpecKitPane() {
   const [error, setError] = useState('')
   const [editError, setEditError] = useState('')
   const [browseData, setBrowseData] = useState(null)
+  const [mode, setMode] = useState('full')
   const pollRef = useRef(null)
 
   const openBrowser = useCallback(async path => {
@@ -438,6 +468,9 @@ function SpecKitPane() {
     setBusy(true)
     setError('')
     try {
+      if (process.id === 'speckit') {
+        await rest('/workflow/shape', { method: 'POST', body: { cwd: folder, mode } })
+      }
       await rest(`/workflows/${encodeURIComponent(process.id)}/run`, {
         method: 'POST',
         body: { cwd: folder, inputs: values }
@@ -449,7 +482,7 @@ function SpecKitPane() {
     } finally {
       setBusy(false)
     }
-  }, [values, process, folder, refreshRun])
+  }, [values, process, folder, mode, refreshRun])
 
   const decide = useCallback(async choice => {
     if (!run || !run.run_id || !run.gate || !process) return
@@ -549,7 +582,10 @@ function SpecKitPane() {
     jsx(StepList, { steps: process.steps || [], run }),
     jsx('div', { className: 'h-px bg-(--ui-border)' }),
     status === 'none' || !run
-      ? jsx(StartCard, { process, values, onChange: (name, value) => setValues(prev => ({ ...prev, [name]: value })), onStart: start, busy, error })
+      ? jsxs('div', { className: 'flex flex-col gap-3', children: [
+          process.id === 'speckit' ? jsx(PathChoice, { mode, onChange: setMode, busy }) : null,
+          jsx(StartCard, { process, values, onChange: (name, value) => setValues(prev => ({ ...prev, [name]: value })), onStart: start, busy, error })
+        ] })
       : null,
     status === 'running'
       ? jsxs('div', { className: 'flex items-center gap-2', children: [
