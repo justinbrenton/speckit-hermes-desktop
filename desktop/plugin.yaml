@@ -1,9 +1,9 @@
 name: "spec-kit-hermes"
 version: "2.0.0"
-description: "Spec-Kit for Hermes Desktop: one pane, three steps (Spec -> Constitution -> Tasks) writing .specify/ and syncing tasks to Kanban"
+description: "Run spec-kit processes in Hermes Desktop: pick a process, describe the work, review each artifact at its gate, then approve."
 author: "Justin Brenton"
 license: "MIT"
-homepage: "https://github.com/justinbrenton/spec-kit"
+homepage: "https://github.com/justinbrenton/speckit-hermes-desktop"
 kind: "standalone"
 requires_hermes: ">=0.22.2"
 provides_tools: []
