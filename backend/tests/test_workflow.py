@@ -275,3 +275,103 @@ def test_legacy_skills_are_copied_where_hermes_reads(tmp_path, monkeypatch):
     assert plugin_api._sync_legacy_skills() == ["speckit-plan"]
     assert (profile_skills / "speckit-plan" / "SKILL.md").is_file()
     assert plugin_api._sync_legacy_skills() == [], "a second run must not recopy"
+
+
+def test_output_check_flags_a_step_that_wrote_nothing(project):
+    """A dispatch can exit 0 and write nothing; only mtimes can tell them apart."""
+    run_id = "abc123"
+    plugin_api._write_snapshot(project, run_id)
+    assert plugin_api._output_check(project, run_id)["unchanged"] is True
+
+    spec = project / ".specify" / "specs" / "001-demo" / "spec.md"
+    spec.write_text("# Spec, rewritten\n", encoding="utf-8")
+    after = plugin_api._output_check(project, run_id)
+    assert after["unchanged"] is False
+    assert ".specify/specs/001-demo/spec.md" in after["changed"]
+
+
+def test_output_check_reports_removed_artifacts(project):
+    run_id = "abc123"
+    spec = project / ".specify" / "specs" / "001-demo" / "spec.md"
+    plugin_api._write_snapshot(project, run_id)
+    spec.unlink()
+    result = plugin_api._output_check(project, run_id)
+    assert ".specify/specs/001-demo/spec.md" in result["removed"]
+    assert result["unchanged"] is False
+
+
+def test_a_second_run_is_refused_while_one_is_active(client, project, cli, monkeypatch):
+    class FakeProc:
+        pid = 4242
+
+        def poll(self):
+            return None
+
+    monkeypatch.setattr(plugin_api, "JOBS", {"j1": {"proc": FakeProc(), "argv": ["workflow", "run"], "cwd": str(project)}})
+    plugin_api.ACTIVE_RUNS.clear()
+    key = plugin_api._active_key(project, "speckit")
+    plugin_api.ACTIVE_RUNS[key] = {"proc": FakeProc(), "run_id": "abc123", "kind": "run"}
+
+    response = client.post(
+        f"{PREFIX}/workflows/speckit/run", json={"cwd": str(project), "inputs": {"spec": "x"}}
+    )
+    assert response.status_code == 409
+    assert "already in progress" in response.json()["detail"]
+    plugin_api.ACTIVE_RUNS.clear()
+
+
+def test_stop_kills_the_matching_job(client, project, monkeypatch):
+    """Stop must signal the process for this project and this run."""
+    ran = []
+
+    class FakeProc:
+        pid = 5150
+
+        def poll(self):
+            return None
+
+    monkeypatch.setattr(plugin_api, "JOBS", {
+        "j1": {"proc": FakeProc(), "argv": ["workflow", "resume", "abc123"], "cwd": str(project)}
+    })
+    monkeypatch.setattr(
+        plugin_api.subprocess, "run",
+        lambda argv, **kwargs: ran.append(argv) or type("R", (), {"returncode": 0})(),
+    )
+    plugin_api.ACTIVE_RUNS.clear()
+
+    response = client.post(
+        f"{PREFIX}/workflows/speckit/runs/abc123/stop", json={"cwd": str(project), "answers": {}}
+    )
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["stopped"] is True
+    assert ran and str(FakeProc.pid) in ran[0], "the pid must reach the kill command"
+
+
+def test_stop_ignores_another_projects_job(client, project, tmp_path, monkeypatch):
+    other = tmp_path / "other"
+    other.mkdir()
+
+    class FakeProc:
+        pid = 6001
+
+        def poll(self):
+            return None
+
+    killed = []
+    monkeypatch.setattr(plugin_api, "JOBS", {
+        "j1": {"proc": FakeProc(), "argv": ["workflow", "resume", "abc123"], "cwd": str(other)}
+    })
+    monkeypatch.setattr(
+        plugin_api.subprocess, "run",
+        lambda argv, **kwargs: killed.append(argv) or type("R", (), {"returncode": 0})(),
+    )
+    plugin_api.ACTIVE_RUNS.clear()
+
+    body = client.post(
+        f"{PREFIX}/workflows/speckit/runs/abc123/stop", json={"cwd": str(project), "answers": {}}
+    ).json()
+    assert body["stopped"] is False, "a run in another project must not be killed"
+    assert killed == []
+
+

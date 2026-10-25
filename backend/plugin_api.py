@@ -403,6 +403,86 @@ ARTIFACT_MAX_BYTES = 262_144
 JOBS: dict[str, dict[str, Any]] = {}
 
 
+# ---------------------------------------------------------------------------
+# step output verification + run control
+# ---------------------------------------------------------------------------
+
+#: Every artifact root spec-kit writes to, per process family.
+ARTIFACT_ROOTS = ("specs", ".specify/specs", ".specify/bugs", ".specify/assessments", ".specify/memory")
+
+
+def _artifact_index(root: Path) -> dict[str, int]:
+    """path -> mtime for every artifact the pane can show."""
+    index: dict[str, int] = {}
+    for rel in ARTIFACT_ROOTS:
+        base = root / rel
+        if not base.is_dir():
+            continue
+        for path in base.rglob("*"):
+            try:
+                if path.is_file():
+                    index[path.relative_to(root).as_posix()] = int(path.stat().st_mtime * 1000)
+            except OSError:
+                continue
+    return index
+
+
+def _snapshot_file(root: Path, run_id: str) -> Path:
+    return root / ".specify" / "workflows" / "runs" / run_id / "hermes-artifact-snapshot.json"
+
+
+def _write_snapshot(root: Path, run_id: str) -> None:
+    try:
+        target = _snapshot_file(root, run_id)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(json.dumps(_artifact_index(root)), encoding="utf-8")
+    except OSError:
+        pass
+
+
+def _read_snapshot(root: Path, run_id: str) -> dict[str, int]:
+    try:
+        return json.loads(_snapshot_file(root, run_id).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+
+
+def _output_check(root: Path, run_id: str) -> dict[str, Any]:
+    """Compare the artifact tree with the snapshot taken before the last step.
+
+    A command step that dispatches an agent can finish with exit_code 0 and an
+    empty stdout while writing nothing. The engine still reports success, so the
+    only honest signal is whether any artifact appeared or changed.
+    """
+    before = _read_snapshot(root, run_id)
+    if not before:
+        return {"checked": False}
+    after = _artifact_index(root)
+    changed = [path for path, mtime in after.items() if before.get(path) != mtime]
+    removed = [path for path in before if path not in after]
+    return {
+        "checked": True,
+        "changed": sorted(changed),
+        "removed": sorted(removed),
+        "unchanged": not changed and not removed,
+    }
+
+
+#: (cwd, process) currently holding a run, so two Starts cannot race.
+ACTIVE_RUNS: dict[tuple[str, str], dict[str, Any]] = {}
+
+
+def _active_key(root: Path, process: str) -> tuple[str, str]:
+    return (str(root).lower(), process)
+
+
+def _release_finished_jobs() -> None:
+    for key, entry in list(ACTIVE_RUNS.items()):
+        proc = entry.get("proc")
+        if proc is None or proc.poll() is not None:
+            ACTIVE_RUNS.pop(key, None)
+
+
 def _run_ids(root: Path) -> set[str]:
     runs = root / ".specify" / "workflows" / "runs"
     if not runs.is_dir():
@@ -721,9 +801,24 @@ def workflow_run(process: str, payload: WorkflowRunRequest) -> dict[str, Any]:
         if value is not None and str(value) != "":
             args += ["-i", f"{key}={value}"]
     args.append("--json")
+    _release_finished_jobs()
+    key = _active_key(root, process)
+    if key in ACTIVE_RUNS:
+        raise HTTPException(
+            status_code=409,
+            detail=f"a {process} run is already in progress in this project",
+        )
     before = _run_ids(root)
+    before_artifacts = _artifact_index(root)
     job = _start_job(args, root, max(30, min(payload.timeout, SPECIFY_TIMEOUT_MAX)))
     run_id = _await_new_run(root, before)
+    if run_id:
+        try:
+            _snapshot_file(root, run_id).parent.mkdir(parents=True, exist_ok=True)
+            _snapshot_file(root, run_id).write_text(json.dumps(before_artifacts), encoding="utf-8")
+        except OSError:
+            pass
+    ACTIVE_RUNS[key] = {"proc": JOBS.get(job["job_id"], {}).get("proc"), "run_id": run_id, "kind": "run"}
     return {
         "process": process,
         "run_id": run_id,
@@ -754,8 +849,48 @@ def workflow_resume(process: str, run_id: str, payload: WorkflowResumeRequest) -
         if value is not None and str(value) != "":
             args += ["-i", f"{key}={value}"]
     args.append("--json")
+    _release_finished_jobs()
+    key = _active_key(root, process)
+    if key in ACTIVE_RUNS:
+        raise HTTPException(
+            status_code=409,
+            detail=f"a {process} run is already in progress in this project",
+        )
+    _write_snapshot(root, run_id)
     job = _start_job(args, root, max(30, min(payload.timeout, SPECIFY_TIMEOUT_MAX)))
+    ACTIVE_RUNS[key] = {"proc": JOBS.get(job["job_id"], {}).get("proc"), "run_id": run_id, "kind": "resume"}
     return {"process": process, "run_id": run_id, "job_id": job["job_id"], "running": True}
+
+
+@router.post("/workflows/{process}/runs/{run_id}/stop")
+def stop_run(process: str, run_id: str, payload: WorkflowResumeRequest) -> dict[str, Any]:
+    """Kill the dispatched step. The engine's own state is left as it stands."""
+    root = _project_root(payload.cwd)
+    _process_data(root, process)
+    if not RUN_ID_RE.fullmatch(run_id or ""):
+        raise HTTPException(status_code=400, detail=f"invalid run id: {run_id!r}")
+    killed: list[int] = []
+    for job in list(JOBS.values()):
+        proc = job.get("proc")
+        if proc is None or proc.poll() is not None:
+            continue
+        argv = job.get("argv") or []
+        if str(job.get("cwd", "")).lower() != str(root).lower():
+            continue
+        if argv[:1] != ["workflow"] and run_id not in " ".join(argv):
+            continue
+        pid = proc.pid
+        try:
+            if os.name == "nt":
+                subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], capture_output=True, timeout=30)
+            else:
+                proc.kill()
+            killed.append(pid)
+        except (OSError, subprocess.SubprocessError):
+            continue
+    _release_finished_jobs()
+    ACTIVE_RUNS.pop(_active_key(root, process), None)
+    return {"run_id": run_id, "stopped": bool(killed), "pids": killed}
 
 
 # ---------------------------------------------------------------------------
@@ -1143,7 +1278,7 @@ def _latest_run(root: Path) -> Optional[dict[str, Any]]:
     return {"run_id": newest.name, "state": state}
 
 
-def _run_view(process: str, run: dict[str, Any]) -> dict[str, Any]:
+def _run_view(process: str, run: dict[str, Any], root: Path) -> dict[str, Any]:
     state = run["state"]
     nodes = ((state.get("execution") or {}).get("nodes") or [])
     step_id = state.get("current_step_id") or ""
@@ -1178,6 +1313,7 @@ def _run_view(process: str, run: dict[str, Any]) -> dict[str, Any]:
             for k, v in results.items()
         },
         "nodes": [{"phase": n.get("phase"), "outcome": n.get("outcome")} for n in nodes],
+        "output_check": _output_check(root, run["run_id"]),
         "updated_at": state.get("updated_at"),
     }
 
@@ -1190,7 +1326,7 @@ def workflow_latest(process: str, cwd: str = Query(..., description="Absolute pr
     run = _latest_run(root)
     if run is None:
         return {"process": process, "status": "none", "run_id": None, "gate": None, "nodes": []}
-    return _run_view(process, run)
+    return _run_view(process, run, root)
 
 
 @router.get("/workflows/{process}/runs/{run_id}")
@@ -1206,7 +1342,7 @@ def workflow_run_state(process: str, run_id: str, cwd: str = Query(...)) -> dict
         state = json.loads(state_file.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         raise HTTPException(status_code=500, detail="run state is not readable JSON")
-    return _run_view(process, {"run_id": run_id, "state": state})
+    return _run_view(process, {"run_id": run_id, "state": state}, root)
 
 
 # ---------------------------------------------------------------------------

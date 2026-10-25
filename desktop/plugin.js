@@ -1327,6 +1327,23 @@ function SpecKitPane() {
     }
   }, [draftFolder, loadFolder])
 
+  const stop = useCallback(async () => {
+    if (!run || !run.run_id || !process) return
+    setBusy(true)
+    setError('')
+    try {
+      await rest(`/workflows/${encodeURIComponent(process.id)}/runs/${encodeURIComponent(run.run_id)}/stop`, {
+        method: 'POST',
+        body: { cwd: folder, answers: {} }
+      })
+      setRun({ ...run, status: 'aborted', current_step_id: run.current_step_id })
+    } catch (err) {
+      setError(errorText(err))
+    } finally {
+      setBusy(false)
+    }
+  }, [run, process, folder])
+
   const restart = useCallback(() => {
     setRun(null)
     setValues({})
@@ -1407,12 +1424,25 @@ function SpecKitPane() {
             ] }))
       : null,
     status === 'running'
-      ? jsxs('div', { className: 'flex items-center gap-2', children: [
-          jsx(GlyphSpinner, { size: 'sm' }),
-          jsx('span', { className: 'text-[0.6875rem]', children: `Running: ${titleCase(run.current_step_id) || 'workflow'}` })
+      ? jsxs('div', { className: 'flex items-center justify-between gap-2', children: [
+          jsxs('div', { className: 'flex items-center gap-2', children: [
+            jsx(GlyphSpinner, { size: 'sm' }),
+            jsx('span', { className: 'text-[0.6875rem]', children: `Running: ${titleCase(run.current_step_id) || 'workflow'}` })
+          ] }),
+          jsx(Button, { size: 'xs', variant: 'outline', onClick: stop, disabled: busy || !run.run_id, children: 'Stop' })
         ] })
       : null,
-    status === 'paused' && run.gate ? jsx(GateCard, { run, busy, onDecide: decide, error }) : null,
+    status === 'paused' && run.gate
+      ? jsxs('div', { className: 'flex flex-col gap-2', children: [
+          run.output_check && run.output_check.checked && run.output_check.unchanged
+            ? jsx('p', {
+                className: 'rounded border border-(--ui-border) bg-(--ui-bg-tertiary) p-2 text-[0.625rem] text-(--ui-text-secondary)',
+                children: 'The step before this gate finished without changing any artifact. The agent may have failed without saying so — check the artifact list before approving.'
+              })
+            : null,
+          jsx(GateCard, { run, busy, onDecide: decide, error })
+        ] })
+      : null,
     status === 'completed' || status === 'aborted' || status === 'failed'
       ? jsx(DoneCard, { run, onRestart: restart })
       : null,
