@@ -759,6 +759,18 @@ function SpecKitPane() {
     }
   }, [folder, loadFolder])
 
+  const applyShape = useCallback(async chosen => {
+    if (!folder) return
+    try {
+      await rest('/workflow/shape', { method: 'POST', body: { cwd: folder, mode: chosen } })
+      const shaped = await rest(`/processes?cwd=${encodeURIComponent(folder)}`)
+      const updated = ((shaped && shaped.processes) || []).find(item => item.id === 'speckit')
+      if (updated) setProcess(updated)
+    } catch (err) {
+      setError(errorText(err))
+    }
+  }, [folder])
+
   const pickProcess = useCallback(async item => {
     setProcess(item)
     setPathChosen(item.id !== 'speckit')
@@ -912,7 +924,16 @@ function SpecKitPane() {
       ? (process.id === 'speckit' && !pathChosen
           ? jsx(PathChoice, {
               busy,
-              onPick: choice => { setMode(choice); setPathChosen(true) }
+              onPick: async choice => {
+              setMode(choice)
+              setPathChosen(true)
+              setBusy(true)
+              try {
+                await applyShape(choice)
+              } finally {
+                setBusy(false)
+              }
+            }
             })
           : jsxs('div', { className: 'flex flex-col gap-3', children: [
               process.id === 'speckit'
