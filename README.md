@@ -48,7 +48,7 @@ renders what the engine reports: current step, artifacts, gate options, run hist
 
 | | |
 |---|---|
-| Three processes | Spec-driven development, bug fixing and idea assessment, read from whatever is installed. The pane offers to install the bug and assess extensions when they are missing. |
+| Three processes | Spec-driven development, bug fixing and idea assessment, read from the project's workflows. The bug and assess extensions ship commands but no workflow, so the pane writes theirs the first time you press Start. |
 | Two paths | SDD asks first: the shorter path, or the full one with clarify, checklist and analyze as extra gates. |
 | Editable gates | Each gate opens the artifact it reviews in an editor, with Approve and Reject underneath. Saving is protected, so a file changed by another tool offers the disk version or your version rather than overwriting it. |
 | Open questions | `[NEEDS CLARIFICATION]` markers become a form. Answers are written back where the marker sat, and anything you leave blank stays a marker. |
