@@ -154,6 +154,25 @@ stock gate without it ignores every `-i` you pass and pauses forever. `init` now
 patches every installed workflow after scaffolding, and `POST
 /repair-workflows` does the same for projects created earlier.
 
+### A step that writes nothing is a failure, not a success
+
+The engine reports a command step `completed` when its dispatch exits 0, even if
+the agent wrote no artifact. `specify workflow run` gave exactly that during
+testing: `exit_code 0, stdout ""`, and the only reason the constitution stage was
+known to work was that the file changed.
+
+So the backend snapshots artifact mtimes (`specs/`, `.specify/specs`,
+`.specify/bugs`, `.specify/assessments`, `.specify/memory`) before each run and
+resume, and `GET /runs/...` compares. When a gate is reached and nothing changed,
+the pane says so before you approve. It is a warning, not a hard failure: some
+steps legitimately edit nothing (analysis is read-only).
+
+### One run at a time, and a way out
+
+`POST /workflows/{process}/runs/{id}/stop` kills the dispatched process tree for
+that project only, and a second Start while a run is active returns 409. Without
+the lock, two clicks produce two concurrent runs writing the same files.
+
 ## 4.1 Processes: what the pane renders
 
 Spec-kit is not one flow, and the pane must not pretend otherwise. It ships three

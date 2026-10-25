@@ -136,6 +136,11 @@ artifacts              read-only, from &lt;project&gt;/specs/ and .specify/memor
     verdict_input: gate_review_spec   # resume -i gate_review_spec=approve
     on_reject: abort</code></pre>
 <p>The engine checks <code>&quot;verdict_input&quot; in config</code> (see <code>workflows/step/gate/</code>), so a stock gate without it ignores every <code>-i</code> you pass and pauses forever. <code>init</code> now patches every installed workflow after scaffolding, and <code>POST /repair-workflows</code> does the same for projects created earlier.</p>
+<h3 id="a-step-that-writes-nothing-is-a-failure-not-a-success">A step that writes nothing is a failure, not a success</h3>
+<p>The engine reports a command step <code>completed</code> when its dispatch exits 0, even if the agent wrote no artifact. <code>specify workflow run</code> gave exactly that during testing: <code>exit_code 0, stdout &quot;&quot;</code>, and the only reason the constitution stage was known to work was that the file changed.</p>
+<p>So the backend snapshots artifact mtimes (<code>specs/</code>, <code>.specify/specs</code>, <code>.specify/bugs</code>, <code>.specify/assessments</code>, <code>.specify/memory</code>) before each run and resume, and <code>GET /runs/...</code> compares. When a gate is reached and nothing changed, the pane says so before you approve. It is a warning, not a hard failure: some steps legitimately edit nothing (analysis is read-only).</p>
+<h3 id="one-run-at-a-time-and-a-way-out">One run at a time, and a way out</h3>
+<p><code>POST /workflows/{process}/runs/{id}/stop</code> kills the dispatched process tree for that project only, and a second Start while a run is active returns 409. Without the lock, two clicks produce two concurrent runs writing the same files.</p>
 <h2 id="41-processes-what-the-pane-renders">4.1 Processes: what the pane renders</h2>
 <p>Spec-kit is not one flow, and the pane must not pretend otherwise. It ships three independent entry points and makes adding a fourth a configuration exercise:</p>
 <div class="table-wrap"><table>
