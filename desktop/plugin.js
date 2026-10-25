@@ -836,6 +836,46 @@ function __str(x) {
   return String(x).trim()
 }
 
+/** Own stylesheet: the app ships a prebuilt CSS bundle, so Tailwind arbitrary
+ *  values (`sk-small`, `bg-(--ui-x)`) only exist when the app's own
+ *  sources used them. These classes bind to the app's theme variables instead,
+ *  so the pane follows whatever theme is set in Settings. */
+const SK_CSS = `
+.sk-root { color: var(--ui-text-primary, var(--foreground)); font-size: 12px; }
+.sk-ink { color: var(--ui-text-primary, var(--foreground)); }
+.sk-dim { color: var(--ui-text-secondary, var(--muted-foreground)); }
+.sk-faint { color: var(--ui-text-tertiary, var(--muted-foreground)); opacity: .85; }
+.sk-err { color: var(--ui-danger, #e5484d); }
+.sk-ok { color: var(--ui-success, #30a46c); }
+.sk-body { font-size: 13px; }
+.sk-small { font-size: 11px; }
+.sk-tiny { font-size: 10px; }
+.sk-medium { font-weight: 500; }
+.sk-mono { font-family: var(--ui-sk-mono, ui-monospace, SFMono-Regular, Menlo, monospace); }
+.sk-panel { background: var(--ui-bg-tertiary, var(--card)); }
+.sk-card { background: var(--ui-bg-card, var(--card)); }
+.sk-border { border-color: var(--ui-border, var(--border)); }
+.sk-border-b { border-bottom: 1px solid var(--ui-border, var(--border)); }
+.sk-border-t { border-top: 1px solid var(--ui-border, var(--border)); }
+.sk-accent { border-color: var(--ui-accent, var(--primary)); }
+.sk-accent-bg { background: var(--ui-accent, var(--primary)); }
+.sk-hr { height: 1px; background: var(--ui-border, var(--border)); }
+.sk-sk-truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sk-bar { height: 4px; border-radius: 999px; overflow: hidden; background: var(--ui-bg-tertiary, var(--card)); }
+.sk-bar-fill { height: 100%; border-radius: 999px; background: var(--ui-accent, var(--primary)); transition: width .2s ease; }
+.sk-hover:hover { background: var(--ui-bg-tertiary, var(--card)); }
+.sk-click { cursor: pointer; }
+.sk-fade { opacity: .55; }
+`
+
+function ensureStyles() {
+  if (typeof document === 'undefined' || document.getElementById('spec-kit-styles')) return
+  const style = document.createElement('style')
+  style.id = 'spec-kit-styles'
+  style.textContent = SK_CSS
+  document.head.appendChild(style)
+}
+
 function rest(path, opts) {
   const call = ctxRef && ctxRef.rest
   if (!call) return Promise.reject(new Error('plugin backend unavailable'))
@@ -901,6 +941,15 @@ const STEP_TITLES = {
   decide: 'Make the decision'
 }
 
+function IntegrationBanner({ ok, busy, onRepair }) {
+  if (ok !== false) return null
+  return jsxs('div', { className: 'sk-panel rounded border sk-border p-2 flex flex-col gap-1', children: [
+    jsx('p', { className: 'sk-small sk-medium sk-err', children: 'Dispatched steps are not told which project they are in' }),
+    jsx('p', { className: 'sk-tiny sk-dim', children: 'spec-kit was reinstalled and the working-directory fix is gone, so generated files land beside your workspace instead of in the project.' }),
+    jsx(Button, { size: 'xs', variant: 'outline', onClick: onRepair, disabled: busy, children: 'Re-apply fix' })
+  ] })
+}
+
 function ProgressHeader({ steps, run }) {
   const flow = (steps || []).filter(step => step.type !== 'gate')
   if (!flow.length) return null
@@ -914,12 +963,12 @@ function ProgressHeader({ steps, run }) {
   const title = STEP_TITLES[step.id] || titleCase(step.id)
   return jsxs('div', { className: 'flex flex-col gap-1', children: [
     jsxs('div', { className: 'flex items-baseline justify-between gap-2', children: [
-      jsx('p', { className: 'text-[0.8125rem] font-medium', children: title }),
-      jsx('span', { className: 'shrink-0 text-[0.625rem] text-(--ui-text-tertiary)', children: done ? `${total} of ${total}` : `${index} of ${total}` })
+      jsx('p', { className: 'sk-body sk-medium', children: title }),
+      jsx('span', { className: 'shrink-0 sk-tiny sk-faint', children: done ? `${total} of ${total}` : `${index} of ${total}` })
     ] }),
-    jsx('div', { className: 'h-1 w-full overflow-hidden rounded bg-(--ui-bg-tertiary)', children:
+    jsx('div', { className: 'sk-bar w-full', children:
       jsx('div', {
-        className: 'h-full rounded bg-(--ui-accent) transition-all',
+        className: 'sk-bar-fill',
         style: { width: `${Math.round((index / total) * 100)}%` }
       })
     })
@@ -929,10 +978,10 @@ function ProgressHeader({ steps, run }) {
 function ProcessChoice({ processes, onPick, onInstall, error, busy }) {
   const byId = {}
   for (const item of processes || []) byId[item.id] = item
-  return jsxs('div', { className: 'flex h-full flex-col gap-3 p-3', children: [
-    jsx('h2', { className: 'text-sm font-medium', children: 'Choose your process' }),
-    jsx('p', { className: 'text-[0.6875rem] text-(--ui-text-secondary)', children: 'Each one is an installed spec-kit workflow. They are independent entry points, not phases.' }),
-    error ? jsx('p', { className: 'text-[0.6875rem] text-red-400', children: error }) : null,
+  return jsxs('div', { className: 'sk-root flex h-full flex-col gap-3 p-3', children: [
+    jsx('h2', { className: 'sk-body sk-medium', children: 'Choose your process' }),
+    jsx('p', { className: 'sk-small sk-dim', children: 'Each one is an installed spec-kit workflow. They are independent entry points, not phases.' }),
+    error ? jsx('p', { className: 'sk-small sk-err', children: error }) : null,
     jsx(ScrollArea, { className: 'min-h-0 flex-1', children:
       jsx('div', { className: 'flex flex-col gap-2', children: PROCESS_COPY.map(copy => {
         const installed = Boolean(byId[copy.id])
@@ -941,18 +990,18 @@ function ProcessChoice({ processes, onPick, onInstall, error, busy }) {
           tabIndex: installed ? 0 : -1,
           onClick: () => { if (installed && !busy) onPick(byId[copy.id]) },
           className: installed
-            ? 'flex flex-col gap-1 rounded border border-(--ui-border) p-2 text-left hover:border-(--ui-accent)'
-            : 'flex flex-col gap-1 rounded border border-(--ui-border) p-2 text-left opacity-50',
+            ? 'flex flex-col gap-1 rounded border sk-border p-2 text-left hover:sk-accent'
+            : 'flex flex-col gap-1 rounded border sk-border p-2 text-left opacity-50',
           children: [
             jsxs('span', { className: 'flex items-center gap-2', children: [
-              jsx('span', { className: 'text-[0.8125rem] font-medium', children: copy.title }),
+              jsx('span', { className: 'sk-body sk-medium', children: copy.title }),
               jsx(Badge, { variant: 'secondary', children: copy.banner })
             ] }),
-            jsx('span', { className: 'text-[0.6875rem] text-(--ui-text-secondary)', children: copy.need }),
-            jsx('span', { className: 'text-[0.625rem] text-(--ui-text-tertiary)', children: copy.get }),
+            jsx('span', { className: 'sk-small sk-dim', children: copy.need }),
+            jsx('span', { className: 'sk-tiny sk-faint', children: copy.get }),
             installed
               ? null
-              : jsxs('span', { className: 'flex items-center gap-2 text-[0.625rem] text-(--ui-text-tertiary)', children: [
+              : jsxs('span', { className: 'flex items-center gap-2 sk-tiny sk-faint', children: [
                   'Not installed.',
                   jsx(Button, {
                     size: 'xs',
@@ -970,9 +1019,9 @@ function ProcessChoice({ processes, onPick, onInstall, error, busy }) {
 }
 
 function Browser({ data, busy, onOpen, onUp, onUse, onClose }) {
-  return jsxs('div', { className: 'flex min-h-0 flex-col gap-1 rounded border border-(--ui-border)', children: [
-    jsxs('div', { className: 'flex items-center justify-between gap-2 border-b border-(--ui-border) px-2 py-1', children: [
-      jsx('span', { className: 'truncate font-mono text-[0.625rem]', children: data.path || 'This PC' }),
+  return jsxs('div', { className: 'flex min-h-0 flex-col gap-1 rounded border sk-border', children: [
+    jsxs('div', { className: 'flex items-center justify-between gap-2 border-b sk-border px-2 py-1', children: [
+      jsx('span', { className: 'sk-truncate sk-mono sk-tiny', children: data.path || 'This PC' }),
       jsx(Button, { size: 'xs', variant: 'ghost', onClick: onClose, children: 'Close' })
     ] }),
     jsx(ScrollArea, { className: 'max-h-56 min-h-0', children:
@@ -983,24 +1032,24 @@ function Browser({ data, busy, onOpen, onUp, onUse, onClose }) {
         ...((data.entries || []).map(entry => jsxs('button', {
           type: 'button',
           onClick: () => onOpen(entry.path),
-          className: 'flex items-center justify-between gap-2 rounded px-2 py-1 text-left text-[0.6875rem] hover:bg-(--ui-bg-tertiary)',
+          className: 'flex items-center justify-between gap-2 rounded px-2 py-1 text-left sk-small hover:sk-panel',
           children: [
-            jsx('span', { className: 'truncate', children: entry.name }),
+            jsx('span', { className: 'sk-truncate', children: entry.name }),
             entry.has_specify ? jsx(Badge, { variant: 'secondary', children: 'spec-kit' }) : null
           ]
         }, entry.path)))
       ] })
     }),
-    jsxs('div', { className: 'flex items-center justify-between gap-2 border-t border-(--ui-border) px-2 py-1', children: [
-      jsx('span', { className: 'text-[0.625rem] text-(--ui-text-tertiary)', children: 'Open a folder to look inside it.' }),
+    jsxs('div', { className: 'flex items-center justify-between gap-2 border-t sk-border px-2 py-1', children: [
+      jsx('span', { className: 'sk-tiny sk-faint', children: 'Open a folder to look inside it.' }),
       jsx(Button, { size: 'xs', onClick: onUse, disabled: busy || !data.path, children: 'Use this folder' })
     ] })
   ] })
 }
 
 function FolderRow({ draft, onDraft, onUse, onInit, hasSpecify, busy, onBrowse }) {
-  return jsxs('div', { className: 'flex flex-col gap-2 rounded border border-(--ui-border) p-2', children: [
-    jsx('span', { className: 'text-[0.625rem] font-medium text-(--ui-text-secondary)', children: 'Project folder' }),
+  return jsxs('div', { className: 'flex flex-col gap-2 rounded border sk-border p-2', children: [
+    jsx('span', { className: 'sk-tiny sk-medium sk-dim', children: 'Project folder' }),
     jsxs('div', { className: 'flex gap-2', children: [
       jsx(Input, { value: draft, onChange: event => onDraft(event.target.value), onKeyDown: event => { if (event.key === 'Enter') onUse() } }),
       jsx(Button, { size: 'sm', variant: 'outline', onClick: onBrowse, disabled: busy, children: 'Browse…' }),
@@ -1014,40 +1063,40 @@ function FolderRow({ draft, onDraft, onUse, onInit, hasSpecify, busy, onBrowse }
 
 function QuestionsPanel({ questions, answers, onChange, onApply, busy, error }) {
   if (!questions.length) return null
-  return jsxs('div', { className: 'flex flex-col gap-2 rounded border border-(--ui-accent) p-2', children: [
-    jsxs('p', { className: 'text-[0.6875rem] font-medium', children: [
+  return jsxs('div', { className: 'flex flex-col gap-2 rounded border sk-accent p-2', children: [
+    jsxs('p', { className: 'sk-small sk-medium', children: [
       questions.length === 1 ? '1 open question' : `${questions.length} open questions`
     ] }),
-    jsx('p', { className: 'text-[0.625rem] text-(--ui-text-tertiary)', children: 'These are the [NEEDS CLARIFICATION] markers in this file. Answers are written back in place.' }),
+    jsx('p', { className: 'sk-tiny sk-faint', children: 'These are the [NEEDS CLARIFICATION] markers in this file. Answers are written back in place.' }),
     ...questions.map(question => jsxs('div', { className: 'flex flex-col gap-1', children: [
-      jsx('span', { className: 'text-[0.625rem] text-(--ui-text-secondary)', children: question.text }),
+      jsx('span', { className: 'sk-tiny sk-dim', children: question.text }),
       jsx(Input, {
         value: answers[String(question.index)] || '',
         placeholder: 'Your answer',
         onChange: event => onChange(String(question.index), event.target.value)
       })
     ] }, question.index)),
-    error ? jsx('p', { className: 'text-[0.625rem] text-red-400', children: error }) : null,
+    error ? jsx('p', { className: 'sk-tiny sk-err', children: error }) : null,
     jsx(Button, { size: 'sm', onClick: onApply, disabled: busy, children: busy ? 'Writing…' : 'Apply answers' })
   ] })
 }
 
 function ArtifactEditor({ artifact, draft, onDraft, onSave, onClose, busy, dirty, error }) {
   if (!artifact) return null
-  return jsxs('div', { className: 'flex min-h-0 flex-1 flex-col gap-1 rounded border border-(--ui-border)', children: [
-    jsxs('div', { className: 'flex items-center justify-between gap-2 border-b border-(--ui-border) px-2 py-1', children: [
-      jsx('span', { className: 'truncate font-mono text-[0.625rem]', children: artifact.path }),
+  return jsxs('div', { className: 'flex min-h-0 flex-1 flex-col gap-1 rounded border sk-border', children: [
+    jsxs('div', { className: 'flex items-center justify-between gap-2 border-b sk-border px-2 py-1', children: [
+      jsx('span', { className: 'sk-truncate sk-mono sk-tiny', children: artifact.path }),
       jsxs('div', { className: 'flex items-center gap-1', children: [
         dirty ? jsx(Badge, { variant: 'secondary', children: 'edited' }) : null,
         jsx(Button, { size: 'xs', onClick: onSave, disabled: busy || !dirty, children: 'Save' }),
         jsx(Button, { size: 'xs', variant: 'ghost', onClick: onClose, children: 'Close' })
       ] })
     ] }),
-    error ? jsx('p', { className: 'px-2 text-[0.625rem] text-red-400', children: error }) : null,
+    error ? jsx('p', { className: 'px-2 sk-tiny sk-err', children: error }) : null,
     jsx(Textarea, {
       value: draft,
       onChange: event => onDraft(event.target.value),
-      className: 'min-h-0 flex-1 resize-none font-mono text-[0.625rem]',
+      className: 'min-h-0 flex-1 resize-none sk-mono sk-tiny',
       rows: 14
     })
   ] })
@@ -1070,20 +1119,20 @@ const PATHS = [
 
 function PathChoice({ onPick, busy }) {
   return jsxs('div', { className: 'flex flex-col gap-2', children: [
-    jsx('p', { className: 'text-[0.6875rem] font-medium', children: 'Which approach?' }),
-    jsx('p', { className: 'text-[0.625rem] text-(--ui-text-secondary)', children: 'Both run the same process. The full path adds clarify, checklist and analyze as review gates.' }),
+    jsx('p', { className: 'sk-small sk-medium', children: 'Which approach?' }),
+    jsx('p', { className: 'sk-tiny sk-dim', children: 'Both run the same process. The full path adds clarify, checklist and analyze as review gates.' }),
     ...PATHS.map(path => jsxs('div', {
       role: 'button',
       tabIndex: 0,
       onClick: () => { if (!busy) onPick(path.id) },
-      className: 'flex cursor-pointer flex-col gap-1 rounded border border-(--ui-border) p-2 hover:border-(--ui-accent)',
+      className: 'flex cursor-pointer flex-col gap-1 rounded border sk-border p-2 hover:sk-accent',
       children: [
         jsxs('span', { className: 'flex items-center gap-2', children: [
-          jsx('span', { className: 'text-[0.8125rem] font-medium', children: path.title }),
+          jsx('span', { className: 'sk-body sk-medium', children: path.title }),
           jsx(Badge, { variant: 'secondary', children: path.id })
         ] }),
-        jsx('span', { className: 'text-[0.6875rem] text-(--ui-text-tertiary)', children: path.for }),
-        jsx('span', { className: 'text-[0.625rem] text-(--ui-text-tertiary)', children: path.steps.join(' → ') })
+        jsx('span', { className: 'sk-small sk-faint', children: path.for }),
+        jsx('span', { className: 'sk-tiny sk-faint', children: path.steps.join(' → ') })
       ]
     }, path.id))
   ] })
@@ -1102,7 +1151,7 @@ function StartCard({ process, values, onChange, onStart, busy, error }) {
       const long = /slug/i.test(field.name) ? false : true
       const label = field.prompt || field.name
       return jsxs('div', { className: 'flex flex-col gap-1', children: [
-        jsx('p', { className: 'text-[0.6875rem] font-medium', children: `${label}${field.required ? '' : ' (optional)'}` }),
+        jsx('p', { className: 'sk-small sk-medium', children: `${label}${field.required ? '' : ' (optional)'}` }),
         long
           ? jsx(Textarea, {
               value: values[field.name] || '',
@@ -1117,7 +1166,7 @@ function StartCard({ process, values, onChange, onStart, busy, error }) {
             })
       ] })
     }),
-    error ? jsx('p', { className: 'text-[0.6875rem] text-red-400', children: error }) : null,
+    error ? jsx('p', { className: 'sk-small sk-err', children: error }) : null,
     jsx(Button, { size: 'sm', onClick: onStart, disabled: busy || !ready, children: busy ? 'Starting…' : 'Start' })
   ] })
 }
@@ -1125,10 +1174,10 @@ function StartCard({ process, values, onChange, onStart, busy, error }) {
 function GateCard({ run, busy, onDecide, error }) {
   const gate = run.gate || {}
   const options = gate.options && gate.options.length ? gate.options : ['approve', 'reject']
-  return jsxs('div', { className: 'flex flex-col gap-2 rounded border border-(--ui-accent) p-2', children: [
-    jsx('p', { className: 'text-[0.6875rem] font-medium', children: gate.message || 'Review before continuing' }),
-    jsx('p', { className: 'text-[0.625rem] text-(--ui-text-tertiary)', children: 'Edit the file below if it needs work, then approve.' }),
-    error ? jsx('p', { className: 'text-[0.6875rem] text-red-400', children: error }) : null,
+  return jsxs('div', { className: 'flex flex-col gap-2 rounded border sk-accent p-2', children: [
+    jsx('p', { className: 'sk-small sk-medium', children: gate.message || 'Review before continuing' }),
+    jsx('p', { className: 'sk-tiny sk-faint', children: 'Edit the file below if it needs work, then approve.' }),
+    error ? jsx('p', { className: 'sk-small sk-err', children: error }) : null,
     jsxs('div', { className: 'flex flex-wrap gap-2', children: options.map(option =>
       jsx(Button, {
         size: 'sm',
@@ -1143,9 +1192,9 @@ function GateCard({ run, busy, onDecide, error }) {
 
 function DoneCard({ run, onRestart }) {
   const failed = run.status === 'aborted' || run.status === 'failed' || Boolean(run.error)
-  return jsxs('div', { className: 'flex flex-col gap-2 rounded border border-(--ui-border) p-2', children: [
-    jsx('p', { className: 'text-[0.6875rem] font-medium', children: failed ? 'Workflow stopped' : 'Workflow complete' }),
-    run.error ? jsx('p', { className: 'text-[0.625rem] text-red-400', children: __str(run.error) }) : null,
+  return jsxs('div', { className: 'flex flex-col gap-2 rounded border sk-border p-2', children: [
+    jsx('p', { className: 'sk-small sk-medium', children: failed ? 'Workflow stopped' : 'Workflow complete' }),
+    run.error ? jsx('p', { className: 'sk-tiny sk-err', children: __str(run.error) }) : null,
     jsx(Button, { size: 'sm', variant: 'outline', onClick: onRestart, children: 'Start another' })
   ] })
 }
@@ -1174,7 +1223,31 @@ function SpecKitPane() {
   const [logText, setLogText] = useState('')
   const [showLog, setShowLog] = useState(false)
   const [runs, setRuns] = useState([])
+  const [integrationOk, setIntegrationOk] = useState(null)
   const pollRef = useRef(null)
+
+  const checkIntegration = useCallback(async () => {
+    try {
+      const health = await rest('/integration/health')
+      setIntegrationOk(Boolean(health && health.patched))
+    } catch (err) {
+      setIntegrationOk(null)
+    }
+  }, [])
+
+  const repairIntegration = useCallback(async () => {
+    setBusy(true)
+    try {
+      const result = await rest('/integration/repair', { method: 'POST' })
+      setIntegrationOk(Boolean(result && result.patched))
+    } catch (err) {
+      setError(errorText(err))
+    } finally {
+      setBusy(false)
+    }
+  }, [])
+
+  useEffect(() => { checkIntegration() }, [checkIntegration])
 
   const openBrowser = useCallback(async path => {
     setBusy(true)
@@ -1447,8 +1520,8 @@ function SpecKitPane() {
   }, [])
 
   if (!folder || hasSpecify === false) {
-    return jsxs('div', { className: 'flex h-full flex-col gap-3 p-3', children: [
-      jsx('h2', { className: 'text-sm font-medium', children: 'Spec Kit' }),
+    return jsxs('div', { className: 'sk-root flex h-full flex-col gap-3 p-3', children: [
+      jsx('h2', { className: 'sk-body sk-medium', children: 'Spec Kit' }),
       jsx(FolderRow, {
         draft: draftFolder,
         onDraft: setDraftFolder,
@@ -1468,18 +1541,19 @@ function SpecKitPane() {
             onClose: () => setBrowseData(null)
           })
         : null,
-      error ? jsx('p', { className: 'text-[0.6875rem] text-red-400', children: error }) : null,
+      error ? jsx('p', { className: 'sk-small sk-err', children: error }) : null,
       hasSpecify === false
-        ? jsx('p', { className: 'text-[0.6875rem] text-(--ui-text-tertiary)', children: 'That folder has no .specify directory yet. Initialise it above.' })
+        ? jsx('p', { className: 'sk-small sk-faint', children: 'That folder has no .specify directory yet. Initialise it above.' })
         : null
     ] })
   }
 
   if (!process) {
-    return jsxs('div', { className: 'flex h-full min-h-0 flex-col gap-2 p-3', children: [
+    return jsxs('div', { className: 'sk-root flex h-full min-h-0 flex-col gap-2 p-3', children: [
+      jsx(IntegrationBanner, { ok: integrationOk, busy, onRepair: repairIntegration }),
       jsx(ProcessChoice, { processes, onPick: pickProcess, onInstall: installExtension, error, busy }),
       jsxs('div', { className: 'flex items-center justify-between gap-2', children: [
-        jsx('span', { className: 'truncate text-[0.625rem] text-(--ui-text-tertiary)', children: folder }),
+        jsx('span', { className: 'sk-truncate sk-tiny sk-faint', children: folder }),
         jsx(Button, { size: 'xs', variant: 'ghost', onClick: () => setFolder(''), children: 'Change folder' })
       ] })
     ] })
@@ -1488,19 +1562,20 @@ function SpecKitPane() {
   const status = (run && run.status) || 'none'
   const dirty = draft !== savedContent
 
-  return jsxs('div', { className: 'flex h-full min-h-0 flex-col gap-2 p-3', children: [
+  return jsxs('div', { className: 'sk-root flex h-full min-h-0 flex-col gap-2 p-3', children: [
     jsxs('div', { className: 'flex items-center justify-between gap-2', children: [
       jsx('div', { className: 'min-w-0', children: [
-        jsx('p', { className: 'text-sm font-medium', children: process.name || titleCase(process.id) }),
-        jsx('p', { className: 'truncate text-[0.625rem] text-(--ui-text-tertiary)', children: folder })
+        jsx('p', { className: 'sk-body sk-medium', children: process.name || titleCase(process.id) }),
+        jsx('p', { className: 'sk-truncate sk-tiny sk-faint', children: folder })
       ] }),
       jsxs('div', { className: 'flex shrink-0 items-center gap-1', children: [
         jsx(Button, { size: 'xs', variant: 'ghost', onClick: () => { setFolder(''); setProcess(null); setRun(null) }, children: 'Change folder' }),
         jsx(Button, { size: 'xs', variant: 'ghost', onClick: () => { setProcess(null); setRun(null) }, children: 'Change process' })
       ] })
     ] }),
+    jsx(IntegrationBanner, { ok: integrationOk, busy, onRepair: repairIntegration }),
     jsx(ProgressHeader, { steps: process.steps || [], run }),
-    jsx('div', { className: 'h-px bg-(--ui-border)' }),
+    jsx('div', { className: 'h-px sk-hr' }),
     status === 'none' || !run
       ? (process.id === 'speckit' && !pathChosen
           ? jsx(PathChoice, {
@@ -1510,7 +1585,7 @@ function SpecKitPane() {
           : jsxs('div', { className: 'flex flex-col gap-3', children: [
               process.id === 'speckit'
                 ? jsxs('div', { className: 'flex items-center justify-between gap-2', children: [
-                    jsx('span', { className: 'text-[0.625rem] text-(--ui-text-tertiary)', children: mode === 'full' ? 'Full path' : 'Shorter path' }),
+                    jsx('span', { className: 'sk-tiny sk-faint', children: mode === 'full' ? 'Full path' : 'Shorter path' }),
                     jsx(Button, { size: 'xs', variant: 'ghost', onClick: () => setPathChosen(false), disabled: busy, children: 'Change' })
                   ] })
                 : null,
@@ -1521,7 +1596,7 @@ function SpecKitPane() {
       ? jsxs('div', { className: 'flex items-center justify-between gap-2', children: [
           jsxs('div', { className: 'flex items-center gap-2', children: [
             jsx(GlyphSpinner, { size: 'sm' }),
-            jsx('span', { className: 'text-[0.6875rem]', children: `Running: ${titleCase(run.current_step_id) || 'workflow'}` })
+            jsx('span', { className: 'sk-small', children: `Running: ${titleCase(run.current_step_id) || 'workflow'}` })
           ] }),
           jsx(Button, { size: 'xs', variant: 'outline', onClick: stop, disabled: busy || !run.run_id, children: 'Stop' })
         ] })
@@ -1529,12 +1604,12 @@ function SpecKitPane() {
     status === 'running' || (status === 'paused' && logText)
       ? jsxs('div', { className: 'flex flex-col gap-1', children: [
           jsxs('div', { className: 'flex items-center justify-between', children: [
-            jsx('span', { className: 'text-[0.625rem] font-medium text-(--ui-text-secondary)', children: 'Step output' }),
+            jsx('span', { className: 'sk-tiny sk-medium sk-dim', children: 'Step output' }),
             jsx(Button, { size: 'xs', variant: 'ghost', onClick: () => setShowLog(v => !v), children: showLog ? 'Hide' : 'Show log' })
           ] }),
           showLog
             ? jsx(ScrollArea, { className: 'max-h-40', children:
-                jsx('pre', { className: 'whitespace-pre-wrap p-2 text-[0.625rem] leading-relaxed text-(--ui-text-secondary)', children: logText || 'No output yet.' })
+                jsx('pre', { className: 'whitespace-pre-wrap p-2 sk-tiny leading-relaxed sk-dim', children: logText || 'No output yet.' })
               })
             : null
         ] })
@@ -1565,15 +1640,15 @@ function SpecKitPane() {
         })
       : jsx(ScrollArea, { className: 'min-h-0 flex-1', children:
           jsxs('div', { className: 'flex flex-col gap-1', children: [
-            jsx('p', { className: 'text-[0.625rem] font-medium text-(--ui-text-secondary)', children: 'Artifacts' }),
+            jsx('p', { className: 'sk-tiny sk-medium sk-dim', children: 'Artifacts' }),
             runs.length > 1
               ? jsxs('div', { className: 'mt-2 flex flex-col gap-1', children: [
-                  jsx('p', { className: 'text-[0.625rem] font-medium text-(--ui-text-secondary)', children: 'Previous runs' }),
+                  jsx('p', { className: 'sk-tiny sk-medium sk-dim', children: 'Previous runs' }),
                   ...runs.slice(1, 6).map(item => jsxs('div', {
-                    className: 'flex items-center justify-between gap-2 rounded border border-(--ui-border) px-2 py-1 text-[0.625rem]',
+                    className: 'flex items-center justify-between gap-2 rounded border sk-border px-2 py-1 sk-tiny',
                     children: [
-                      jsx('span', { className: 'truncate', children: item.summary || item.run_id }),
-                      jsx('span', { className: 'shrink-0 text-(--ui-text-tertiary)', children: item.status })
+                      jsx('span', { className: 'sk-truncate', children: item.summary || item.run_id }),
+                      jsx('span', { className: 'shrink-0 sk-faint', children: item.status })
                     ]
                   }, item.run_id))
                 ] })
@@ -1582,20 +1657,20 @@ function SpecKitPane() {
               ? artifacts.map(item => jsxs('button', {
                   type: 'button',
                   onClick: () => openArtifact(item.path),
-                  className: 'flex items-center justify-between gap-2 rounded border border-(--ui-border) px-2 py-1 text-left text-[0.6875rem] hover:bg-(--ui-bg-tertiary)',
+                  className: 'flex items-center justify-between gap-2 rounded border sk-border px-2 py-1 text-left sk-small hover:sk-panel',
                   children: [
-                    jsx('span', { className: 'truncate', children: item.path.replace(/^specs\//, '') }),
-                    jsx('span', { className: 'shrink-0 font-mono text-[0.625rem] text-(--ui-text-tertiary)', children: item.feature })
+                    jsx('span', { className: 'sk-truncate', children: item.path.replace(/^specs\//, '') }),
+                    jsx('span', { className: 'shrink-0 sk-mono sk-tiny sk-faint', children: item.feature })
                   ]
                 }, item.path))
-              : jsx('p', { className: 'text-[0.6875rem] text-(--ui-text-tertiary)', children: 'Nothing written yet.' })
+              : jsx('p', { className: 'sk-small sk-faint', children: 'Nothing written yet.' })
           ] })
         }),
     status === 'paused' && run.gate
-      ? jsxs('div', { className: 'flex flex-col gap-2 border-t border-(--ui-border) pt-2', children: [
+      ? jsxs('div', { className: 'flex flex-col gap-2 border-t sk-border pt-2', children: [
           run.output_check && run.output_check.checked && run.output_check.unchanged
             ? jsx('p', {
-                className: 'rounded border border-(--ui-border) bg-(--ui-bg-tertiary) p-2 text-[0.625rem] text-(--ui-text-secondary)',
+                className: 'rounded border sk-border sk-panel p-2 sk-tiny sk-dim',
                 children: 'The step before this gate finished without changing any artifact. The agent may have failed without saying so — check the artifact list before approving.'
               })
             : null,
@@ -1628,6 +1703,7 @@ export default {
   defaultEnabled: true,
   register(ctx) {
     ctxRef = ctx
+    ensureStyles()
     ctx.register({
       id: 'spec-kit',
       area: PANES_AREA,

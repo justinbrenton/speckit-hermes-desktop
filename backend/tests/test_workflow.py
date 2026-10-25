@@ -465,3 +465,49 @@ def test_runs_are_listed_newest_first(client, project):
     assert body["runs"][0]["summary"] in {"first feature", "second feature"}
     assert {run["status"] for run in body["runs"]} >= {"completed", "paused"}
 
+
+INTEGRATION_SRC = (
+    "    def build_exec_args(self, prompt, *, model=None, output_json=True,\n"
+    "                        integration_args=None, integration_options=None, project_root=None):\n"
+    '        args = [self._resolve_executable(), "chat", "-Q"]\n'
+    "        return args\n"
+)
+
+
+def test_integration_health_reports_an_unpatched_copy(tmp_path, monkeypatch):
+    copy = tmp_path / "hermes" / "__init__.py"
+    copy.parent.mkdir(parents=True)
+    copy.write_text(INTEGRATION_SRC, encoding="utf-8")
+    monkeypatch.setattr(plugin_api, "_integration_files", lambda: [copy])
+
+    health = plugin_api._integration_health()
+    assert health["checked"] == 1
+    assert health["patched"] is False
+
+
+def test_integration_repair_adds_the_working_directory(client, tmp_path, monkeypatch):
+    copy = tmp_path / "hermes" / "__init__.py"
+    copy.parent.mkdir(parents=True)
+    copy.write_text(INTEGRATION_SRC, encoding="utf-8")
+    monkeypatch.setattr(plugin_api, "_integration_files", lambda: [copy])
+
+    body = client.post(f"{PREFIX}/integration/repair").json()
+    assert body["patched"] is True
+    assert str(copy) in body["repaired"]
+    text = copy.read_text(encoding="utf-8")
+    assert 'args.extend(["--in", str(Path(project_root).resolve())])' in text
+    assert 'args = [self._resolve_executable(), "chat", "-Q"]' in text, "the anchor must survive"
+
+
+def test_integration_repair_is_idempotent(client, tmp_path, monkeypatch):
+    copy = tmp_path / "hermes" / "__init__.py"
+    copy.parent.mkdir(parents=True)
+    copy.write_text(INTEGRATION_SRC, encoding="utf-8")
+    monkeypatch.setattr(plugin_api, "_integration_files", lambda: [copy])
+
+    client.post(f"{PREFIX}/integration/repair")
+    second = client.post(f"{PREFIX}/integration/repair").json()
+    assert second["repaired"] == []
+    assert second["patched"] is True
+    assert copy.read_text(encoding="utf-8").count("--in") == 1
+

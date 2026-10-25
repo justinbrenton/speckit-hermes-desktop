@@ -1154,6 +1154,106 @@ def shape_workflow(payload: ShapeRequest) -> dict[str, Any]:
     return {"mode": mode, "path": str(target), "steps": [step["id"] for step in data.get("steps", [])]}
 
 
+# ---------------------------------------------------------------------------
+# dispatched-skill working directory: detect and repair
+# ---------------------------------------------------------------------------
+
+#: Marks the local fix in spec-kit's Hermes integration.
+INTEGRATION_MARKER = "Run the agent inside the project"
+
+#: The line the fix is anchored to, verbatim from the integration.
+INTEGRATION_ANCHOR = '        args = [self._resolve_executable(), "chat", "-Q"]\n'
+
+INTEGRATION_ADDITION = INTEGRATION_ANCHOR + '''
+        # Run the agent inside the project. Without this the skill executes in
+        # whatever workspace the gateway sits in, so specs/ and code land
+        # somewhere other than the project being worked on.
+        if project_root is not None:
+            args.extend(["--in", str(Path(project_root).resolve())])
+'''
+
+
+def _integration_files() -> list[Path]:
+    """Every installed copy of spec-kit's Hermes integration on this machine."""
+    found: list[Path] = []
+    local = Path(os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData" / "Local")))
+    cache = local / "uv" / "cache" / "archive-v0"
+    if cache.is_dir():
+        found.extend(cache.glob("*/specify_cli/integrations/hermes/__init__.py"))
+    checkout = local / "spec-kit" / "src" / "specify_cli" / "integrations" / "hermes" / "__init__.py"
+    if checkout.is_file():
+        found.append(checkout)
+    try:
+        import importlib.util as _ilu
+
+        spec = _ilu.find_spec("specify_cli")
+        if spec and spec.origin:
+            candidate = Path(spec.origin).parent / "integrations" / "hermes" / "__init__.py"
+            if candidate.is_file():
+                found.append(candidate)
+    except (ImportError, ValueError):
+        pass
+    return sorted(set(found))
+
+
+def _integration_copies() -> list[dict[str, Any]]:
+    copies: list[dict[str, Any]] = []
+    for file in _integration_files():
+        try:
+            text = file.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        copies.append({"path": str(file), "patched": INTEGRATION_MARKER in text})
+    return copies
+
+
+def _integration_health() -> dict[str, Any]:
+    copies = _integration_copies()
+    return {
+        "checked": len(copies),
+        "patched": bool(copies) and all(copy["patched"] for copy in copies),
+        "copies": copies,
+    }
+
+
+def _patch_integration_file(file: Path) -> bool:
+    try:
+        text = file.read_text(encoding="utf-8")
+    except OSError:
+        return False
+    if INTEGRATION_MARKER in text or INTEGRATION_ANCHOR not in text:
+        return False
+    file.write_text(text.replace(INTEGRATION_ANCHOR, INTEGRATION_ADDITION, 1), encoding="utf-8")
+    return True
+
+
+@router.get("/integration/health")
+def integration_health() -> dict[str, Any]:
+    """Is a dispatched skill told which project it is working in?
+
+    Upstream's ``build_exec_args`` accepts ``project_root`` and ignores it, so
+    without this patch every skill runs in the gateway's workspace and writes
+    files outside the project. The fix is a file edit, and ``uv tool upgrade``
+    replaces that file.
+    """
+    return _integration_health()
+
+
+@router.post("/integration/repair")
+def integration_repair() -> dict[str, Any]:
+    repaired: list[str] = []
+    failed: list[str] = []
+    for copy in _integration_copies():
+        if copy["patched"]:
+            continue
+        file = Path(copy["path"])
+        if _patch_integration_file(file):
+            repaired.append(str(file))
+        else:
+            failed.append(str(file))
+    return {"repaired": repaired, "failed": failed, **_integration_health()}
+
+
 @router.get("/log")
 def tail_log(
     cwd: str = Query(..., description="Absolute project directory"),
