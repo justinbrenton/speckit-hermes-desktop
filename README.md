@@ -1,119 +1,105 @@
-# Spec-Kit for Hermes Desktop (v2)
+# Spec-Kit for Hermes Desktop
 
-One pane in the right sidebar, three steps, real files:
+A guided pane in Hermes Desktop that runs [spec-kit](https://github.com/github/spec-kit)
+processes — Spec-Driven Development, bug fixing, idea assessment — without leaving the app.
 
-```
-Spec  ──▶  Constitution  ──▶  Tasks
- │            │                 │
- ▼            ▼                 ▼
-.specify/spec.md   .specify/memory/constitution.md   .specify/tasks.md
-                                                 │
-                                                 ▼
-                                        Kanban cards (hermes_cli.kanban_db)
-```
-
-v1 registered three separate panes that rendered hard-coded placeholder content and
-never touched the disk. v2 replaces them with a single wizard that reads and writes
-the project's `.specify/` directory and syncs tasks to the Kanban board.
-
-## What actually runs
-
-Two halves, because that is the only supported way for a desktop plugin to touch files:
-
-| Half | Path in the Hermes home | What it does |
-|------|------------------------|--------------|
-| Desktop | `desktop-plugins/spec-kit-hermes/plugin.js` | One pane, stepper, editors, debounced saves, poll-based file watcher |
-| Backend | `plugins/spec-kit-hermes/dashboard/plugin_api.py` | FastAPI router mounted at `/api/plugins/spec-kit-hermes`: allowlisted file I/O with optimistic concurrency, Kanban sync |
-
-The pane reaches the backend through `ctx.rest('/files')`, which is scoped to
-`/api/plugins/<plugin id>` by construction. There is no filesystem in the renderer
-and no read/write method on the gateway JSON-RPC surface — see
-[docs/VERIFICATION.md](docs/VERIFICATION.md) for the checks behind that claim.
-
-## Repo layout
+The pane holds no workflow logic. spec-kit's own engine runs the steps
+(`specify workflow run|resume`); the pane renders the run, the artifact each step
+produced, and the review gate that follows it.
 
 ```
-src/core.mjs              pure model layer, unit-tested (parsers, gate, stepper, sync state)
-src/pane.js               pane UI + registration; imports only @hermes/plugin-sdk + react
-scripts/build.mjs         inlines core into desktop/plugin.js (single ESM file)
-scripts/install.mjs       copies both halves into a Hermes home and enables the plugin
+choose process  ──▶  describe the work  ──▶  step runs  ──▶  artifact opens, editable
+      │                                                              │
+      └── SDD / bug fixing / idea assessment                        approve
+                                                                     ▼
+                                                              next step runs
+```
+
+## What it does
+
+| | |
+|---|---|
+| **Processes** | The three spec-kit entry points, read from whatever is installed. Bug fixing and idea assessment are opt-in extensions, and the pane offers to install them. |
+| **Paths** | SDD asks up front: the shorter path (`constitution → specify → plan → tasks → implement → converge`) or the full one (adds `clarify`, `checklist`, `analyze`). |
+| **Gates** | Each review gate stops the run and opens the file it reviews — `spec.md`, `plan.md`, `assessment.md` — in an editor with **Approve / Reject** underneath. Edits are mtime-guarded, so a file changed on disk offers *Load the disk version* or *Keep mine* instead of clobbering. |
+| **Questions** | `[NEEDS CLARIFICATION: …]` markers become a form; answers are written back in place and unanswered markers survive. |
+| **Honesty** | Artifact mtimes are snapshotted before each step. A gate tells you when the step before it produced nothing — the engine reports success either way. |
+| **Control** | Live step log, Stop, one run per project at a time, and history of previous runs. |
+
+## How it is built
+
+Two halves, because a desktop plugin's renderer has no filesystem:
+
+| Half | Installed at | Stack |
+|---|---|---|
+| Desktop | `~/.hermes/desktop-plugins/spec-kit-hermes/plugin.js` | one ESM file, `@hermes/plugin-sdk` + React |
+| Backend | `~/.hermes/plugins/spec-kit-hermes/dashboard/plugin_api.py` | FastAPI router at `/api/plugins/spec-kit-hermes` |
+
+The pane reaches the backend through `ctx.rest`. Everything the pane shows comes
+from those routes; nothing about a workflow is hard-coded in the UI.
+
+```
+src/core.mjs              pure model: parsers, and the wizard's decisions
+                          (visibleInputs, flowSteps, progressFor, artifactForGate)
+src/pane.js               the pane and its registration
+scripts/build.mjs         inlines core into desktop/plugin.js, and fails the build
+                          if a referenced component is undefined
+scripts/install.mjs       copies both halves into a Hermes home
 scripts/config-enable.mjs surgical `plugins.enabled` edit for config.yaml
-backend/plugin_api.py     FastAPI router (paths are allowlisted to three files)
-backend/tests/            HTTP behaviour tests + a REAL mount through Hermes' dashboard pipeline
-test/                     node --test suites for the core, the build artifact, config edit
-docs/VERIFICATION.md      every claim with the command and the observed result
+backend/plugin_api.py     FastAPI router
+backend/tests/            route behaviour, plus a real mount through Hermes' loader
+test/                     node --test suites
+docs/design.md            what exists, how it runs, what is missing
+docs/VERIFICATION.md      the checks behind the claims
 ```
 
 ## Install
 
 ```bash
-npm run build            # src -> desktop/plugin.js
+npm run build
 node scripts/install.mjs --profile codie
 ```
 
-The desktop loader fs-watches `desktop-plugins/*/plugin.js` and hot-reloads, so a running
-app picks the file up on save (verified — see docs/VERIFICATION.md §9). If the pane does
-not appear, fully quit every `Hermes.exe` and start the app again. It shows up as
-**Spec Kit** in the right sidebar; the `Spec Kit` chip in the status bar focuses it.
+The desktop loader discovers `desktop-plugins/*/plugin.js` at startup. Editing the
+file does not hot-reload reliably — quit every `Hermes.exe` (and the gateway
+`python.exe`) and reopen. The pane appears as **Spec Kit** in the right sidebar.
 
-Prove the backend half is live on your machine:
+The backend half needs the plugin enabled in the Hermes home it runs under; the
+installer adds the entry and backs the config up first.
 
-```bash
-PYTHONPATH="$LOCALAPPDATA/hermes/hermes-agent" python scripts/verify-install.py --profile codie
-```
+## Requirements
 
-It re-runs Hermes' own discovery + mount against the installed files and then drives the
-routes (200 on `/status`, write, 409 on a stale mtime, 400 on `../escape.md`).
+- Hermes Desktop, with the Hermes CLI on `PATH` (the workflow engine dispatches
+  `/speckit-*` skills through `hermes chat`).
+- spec-kit's CLI: `uv tool install specify-cli`.
+- The `speckit-*` skills in the profile's skill directory — `specify init
+  --integration hermes` installs them.
 
-`--dry-run` prints what would change. The installer backs up an existing
-`plugin.js` to `plugin.js.backup` and the profile's `config.yaml` to
-`config.yaml.speckit-backup`.
-
-## Use
-
-1. **Spec** — add requirements, descriptions, priorities and acceptance criteria.
-   Live constitution gate: a spec is "planning ready" only when the constitution is
-   ratified, requirements exist, and at most three clarifications are open.
-2. **Constitution** — five steps (purpose → principles → architecture → governance →
-   ratify). Answers are written to `.specify/memory/constitution.md` on ratify and are
-   re-hydrated from that file when the pane reopens.
-3. **Tasks** — `From spec` derives one task per requirement that has no task yet,
-   `To Kanban` creates the cards (idempotent per requirement), `From Kanban` pulls card
-   status back and ticks the matching acceptance criteria in `spec.md`.
-
-Edits save 700 ms after you stop typing. Every 3 s the pane re-reads the three files:
-an external edit reloads the editor, and if you have unsaved local edits at the same
-time it shows a conflict banner — *Keep mine* overwrites with a fresh mtime,
-*Take theirs* discards the local edit.
+**One local fix matters.** Upstream's `build_exec_args` accepts `project_root` and
+ignores it, so a dispatched skill runs in the gateway's workspace and writes files
+outside the project. The pane's `GET /integration/health` detects that and offers a
+one-click re-apply, because a `uv tool upgrade` replaces the patched file.
 
 ## Tests
 
 ```bash
-npm test                                        # 36 node tests
-python -m pytest backend/tests -q               # 22 python tests (needs fastapi/httpx/pytest)
-```
-
-The Python suite that matters is `backend/tests/test_mount.py`: it copies the backend
-into a temp `<home>/plugins/` tree, runs Hermes' own
-`_discover_dashboard_plugins` + `_mount_one_plugin_api`, and asserts
-`GET /api/plugins/spec-kit-hermes/status` returns 200 — i.e. the gateway will serve
-these routes, without hand-waving.
-
-`PYTHONPATH` must include the Hermes install for that test:
-
-```bash
-PYTHONPATH="$LOCALAPPDATA/hermes/hermes-agent" python -m pytest backend/tests -q
+npm test                                            # 62 node tests
+PYTHONPATH="$LOCALAPPDATA/hermes/hermes-agent" \
+  python -m pytest backend/tests -q                 # 57 python tests
 ```
 
 ## Known limits
 
-- **File watching is polling, not inotify/chokidar.** A desktop plugin has no Node
-  filesystem access (verified), and the backend router has no push channel wired here.
-  3 s polling is the honest implementation; add a WebSocket route if that latency hurts.
-- **No SDK `Stepper` component exists.** The stepper is built from `Button` + `Badge`.
-- **Constitution writes are whole-file.** The wizard owns that file; hand-edited prose
-  outside the sections it generates is not preserved. `spec.md` and `tasks.md` are
-  surgically rewritten — every other section survives byte-for-byte.
-- **Kanban sync creates cards only.** Cards are tagged with an idempotency key
-  (`speckit:<project hash>:<FR-n>`) so re-syncing never duplicates; the pane reads their
-  status back but does not delete or rename cards.
+- **Windows specifics.** Gates pause only when stdin is a closed pipe; `NUL` reports
+  itself as a TTY, so a gate then prompts, reads EOF, and records a rejection.
+- **The API is spec-kit's, not ours.** Processes, steps, inputs and gates come from
+  `workflow.yml`. Rules the engine does not express (like a declared `verdict_input`
+  on a gate, without which no headless approval is possible) are patched into the
+  installed file at init and repair time.
+- **No folder dialog.** The plugin SDK exposes none, so the pane browses directories
+  through the backend instead.
+- **Dead code.** `src/core.mjs` still carries parsers and models from the abandoned
+  three-editor design (`parseSpec`, `serializeTasks`, `constitutionGate`, …). The
+  wizard does not call them.
+
+MIT.
