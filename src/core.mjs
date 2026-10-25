@@ -43,6 +43,20 @@ export function visibleInputs(inputs = []) {
   )
 }
 
+/**
+ * Field label for a declared workflow input.
+ *
+ * The workflow's own prompt is used as written, with "(optional)" appended once.
+ * Some prompts already carry it, which produced "(optional) (optional)".
+ */
+export function fieldLabel(field) {
+  const raw = String((field && (field.prompt || field.name)) || '')
+    .replace(/\s*\(optional\)\s*$/i, '')
+    .trim()
+  if (!raw) return ''
+  return field && field.required ? raw : `${raw} (optional)`
+}
+
 /** Steps a person progresses through: gates are checkpoints, not work items. */
 export function flowSteps(steps = []) {
   return (steps || []).filter(step => step && step.type !== 'gate')

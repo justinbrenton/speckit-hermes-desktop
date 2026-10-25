@@ -12,6 +12,7 @@ import importlib.util
 import json
 import os
 import sys
+import time
 from pathlib import Path
 
 import pytest
@@ -285,6 +286,8 @@ def test_output_check_flags_a_step_that_wrote_nothing(project):
 
     spec = project / ".specify" / "specs" / "001-demo" / "spec.md"
     spec.write_text("# Spec, rewritten\n", encoding="utf-8")
+    # mtime has millisecond resolution and the write can land in the same one
+    os.utime(spec, (time.time() + 2, time.time() + 2))
     after = plugin_api._output_check(project, run_id)
     assert after["unchanged"] is False
     assert ".specify/specs/001-demo/spec.md" in after["changed"]

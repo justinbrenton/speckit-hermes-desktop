@@ -74,6 +74,20 @@ function visibleInputs(inputs = []) {
   )
 }
 
+/**
+ * Field label for a declared workflow input.
+ *
+ * The workflow's own prompt is used as written, with "(optional)" appended once.
+ * Some prompts already carry it, which produced "(optional) (optional)".
+ */
+function fieldLabel(field) {
+  const raw = String((field && (field.prompt || field.name)) || '')
+    .replace(/\s*\(optional\)\s*$/i, '')
+    .trim()
+  if (!raw) return ''
+  return field && field.required ? raw : `${raw} (optional)`
+}
+
 /** Steps a person progresses through: gates are checkpoints, not work items. */
 function flowSteps(steps = []) {
   return (steps || []).filter(step => step && step.type !== 'gate')
@@ -288,6 +302,13 @@ function ProcessChoice({ processes, onPick, onInstall, error, busy }) {
           role: 'button',
           tabIndex: installed ? 0 : -1,
           onClick: () => { if (installed && !busy) onPick(byId[copy.id]) },
+          onKeyDown: event => {
+            if (!installed || busy) return
+            if (event.key === 'Enter' || event.key === ' ') {
+              event.preventDefault()
+              onPick(byId[copy.id])
+            }
+          },
           className: installed
             ? 'flex flex-col gap-1 rounded border sk-border p-2 text-left hover:sk-accent'
             : 'flex flex-col gap-1 rounded border sk-border p-2 text-left opacity-50',
@@ -331,7 +352,7 @@ function Browser({ data, busy, onOpen, onUp, onUse, onClose }) {
         ...((data.entries || []).map(entry => jsxs('button', {
           type: 'button',
           onClick: () => onOpen(entry.path),
-          className: 'flex items-center justify-between gap-2 rounded px-2 py-1 text-left sk-small hover:sk-panel',
+          className: 'flex items-center justify-between gap-2 rounded px-2 py-1 text-left sk-small sk-hover',
           children: [
             jsx('span', { className: 'sk-truncate', children: entry.name }),
             entry.has_specify ? jsx(Badge, { variant: 'secondary', children: 'spec-kit' }) : null
@@ -431,7 +452,7 @@ const PATHS = [
 function PathChoice({ onPick, busy }) {
   return jsxs('div', { className: 'flex flex-col gap-2', children: [
     jsx('p', { className: 'sk-small sk-medium', children: 'Which approach?' }),
-    jsx('p', { className: 'sk-tiny sk-dim', children: 'Both run the same process. The full path adds clarify, checklist and analyze as review gates.' }),
+    jsx('p', { className: 'sk-tiny sk-dim', children: 'Both run the same process. The full path adds clarify, checklist and analyze.' }),
     ...PATHS.map(path => jsxs('div', {
       role: 'button',
       tabIndex: 0,
@@ -455,10 +476,9 @@ function StartCard({ process, values, onChange, onStart, busy, error }) {
   const ready = fields.filter(field => field.required).every(field => __str(values[field.name]))
   return jsxs('div', { className: 'flex flex-col gap-2', children: [
     ...fields.map(field => {
-      const long = /slug/i.test(field.name) ? false : true
-      const label = field.prompt || field.name
+      const long = !/slug/i.test(field.name)
       return jsxs('div', { className: 'flex flex-col gap-1', children: [
-        jsx('p', { className: 'sk-small sk-medium', children: `${label}${field.required ? '' : ' (optional)'}` }),
+        jsx('p', { className: 'sk-small sk-medium', children: fieldLabel(field) }),
         long
           ? jsx(Textarea, {
               value: values[field.name] || '',
@@ -500,8 +520,11 @@ function GateCard({ run, busy, onDecide, error }) {
 function DoneCard({ run, onRestart }) {
   const failed = run.status === 'aborted' || run.status === 'failed' || Boolean(run.error)
   return jsxs('div', { className: 'flex flex-col gap-2 rounded border sk-border p-2', children: [
-    jsx('p', { className: 'sk-small sk-medium', children: failed ? 'Workflow stopped' : 'Workflow complete' }),
+    jsx('p', { className: 'sk-small sk-medium', children: failed ? 'Run stopped' : 'Run finished' }),
     run.error ? jsx('p', { className: 'sk-tiny sk-err', children: __str(run.error) }) : null,
+    failed
+      ? null
+      : jsx('p', { className: 'sk-tiny sk-dim', children: 'Convergence appends tasks when it finds gaps. Run it again if the last step reported any.' }),
     jsx(Button, { size: 'sm', variant: 'outline', onClick: onRestart, children: 'Start another' })
   ] })
 }
@@ -939,7 +962,7 @@ function SpecKitPane() {
               process.id === 'speckit'
                 ? jsxs('div', { className: 'flex items-center justify-between gap-2', children: [
                     jsx('span', { className: 'sk-tiny sk-faint', children: mode === 'full' ? 'Full path' : 'Shorter path' }),
-                    jsx(Button, { size: 'xs', variant: 'ghost', onClick: () => setPathChosen(false), disabled: busy, children: 'Change' })
+                    jsx(Button, { size: 'xs', variant: 'ghost', onClick: () => setPathChosen(false), disabled: busy, children: 'Change path' })
                   ] })
                 : null,
               jsx(StartCard, { process, values, onChange: (name, value) => setValues(prev => ({ ...prev, [name]: value })), onStart: start, busy, error })
@@ -949,7 +972,7 @@ function SpecKitPane() {
       ? jsxs('div', { className: 'flex items-center justify-between gap-2', children: [
           jsxs('div', { className: 'flex items-center gap-2', children: [
             jsx(GlyphSpinner, { size: 'sm' }),
-            jsx('span', { className: 'sk-small', children: `Running: ${titleCase(run.current_step_id) || 'workflow'}` })
+            jsx('span', { className: 'sk-small', children: `Running: ${STEP_TITLES[run.current_step_id] || titleCase(run.current_step_id) || 'workflow'}` })
           ] }),
           jsx(Button, { size: 'xs', variant: 'outline', onClick: stop, disabled: busy || !run.run_id, children: 'Stop' })
         ] })
@@ -995,6 +1018,17 @@ function SpecKitPane() {
       : jsx(ScrollArea, { className: 'min-h-0 flex-1', children:
           jsxs('div', { className: 'flex flex-col gap-1', children: [
             jsx('p', { className: 'sk-tiny sk-medium sk-dim', children: 'Artifacts' }),
+            artifacts.length
+              ? artifacts.map(item => jsxs('button', {
+                  type: 'button',
+                  onClick: () => openArtifact(item.path),
+                  className: 'flex items-center justify-between gap-2 rounded border sk-border px-2 py-1 text-left sk-small sk-hover',
+                  children: [
+                    jsx('span', { className: 'sk-truncate', children: item.path.replace(/^specs\//, '') }),
+                    jsx('span', { className: 'shrink-0 sk-mono sk-tiny sk-faint', children: item.feature })
+                  ]
+                }, item.path))
+              : jsx('p', { className: 'sk-small sk-faint', children: 'Nothing written yet.' }),
             runs.length > 1
               ? jsxs('div', { className: 'mt-2 flex flex-col gap-1', children: [
                   jsx('p', { className: 'sk-tiny sk-medium sk-dim', children: 'Previous runs' }),
@@ -1006,18 +1040,7 @@ function SpecKitPane() {
                     ]
                   }, item.run_id))
                 ] })
-              : null,
-            artifacts.length
-              ? artifacts.map(item => jsxs('button', {
-                  type: 'button',
-                  onClick: () => openArtifact(item.path),
-                  className: 'flex items-center justify-between gap-2 rounded border sk-border px-2 py-1 text-left sk-small hover:sk-panel',
-                  children: [
-                    jsx('span', { className: 'sk-truncate', children: item.path.replace(/^specs\//, '') }),
-                    jsx('span', { className: 'shrink-0 sk-mono sk-tiny sk-faint', children: item.feature })
-                  ]
-                }, item.path))
-              : jsx('p', { className: 'sk-small sk-faint', children: 'Nothing written yet.' })
+              : null
           ] })
         }),
     status === 'paused' && run.gate
@@ -1025,7 +1048,7 @@ function SpecKitPane() {
           run.output_check && run.output_check.checked && run.output_check.unchanged
             ? jsx('p', {
                 className: 'rounded border sk-border sk-panel p-2 sk-tiny sk-dim',
-                children: 'The step before this gate finished without changing any artifact. The agent may have failed without saying so — check the artifact list before approving.'
+                children: 'The step before this gate changed no artifact. The agent may have failed silently, so check the files before approving.'
               })
             : null,
           jsx(GateCard, { run, busy, onDecide: decide, error })

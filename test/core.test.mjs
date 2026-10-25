@@ -4,6 +4,7 @@ import { test } from 'node:test'
 import {
   STEP_TITLES,
   artifactForGate,
+  fieldLabel,
   flowSteps,
   progressFor,
   visibleInputs
@@ -88,5 +89,13 @@ test('the assessment gate opens decision.md, not verdict.md', () => {
   ]
   const found = artifactForGate(artifacts, 'review-verdict')
   assert.equal(found && found.name, 'decision.md')
+})
+
+test('a field label says optional once, whatever the prompt says', () => {
+  assert.equal(fieldLabel({ name: 'focus', prompt: 'Clarify: focus area (optional)' }), 'Clarify: focus area (optional)')
+  assert.equal(fieldLabel({ name: 'focus', prompt: 'Clarify: focus area' }), 'Clarify: focus area (optional)')
+  assert.equal(fieldLabel({ name: 'spec', prompt: 'Describe what you want to build', required: true }), 'Describe what you want to build')
+  assert.equal(fieldLabel({ name: 'stack' }), 'stack (optional)')
+  assert.equal(fieldLabel(null), '')
 })
 

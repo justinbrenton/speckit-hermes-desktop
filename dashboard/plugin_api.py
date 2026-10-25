@@ -1041,7 +1041,7 @@ def _workflow_yaml(mode: str, with_constitution: bool = True) -> str:
         inputs.append(("principles", False, "Constitution: principles and constraints"))
     inputs.append(("spec", True, "Describe what you want to build"))
     if "clarify" in steps:
-        inputs.append(("focus", False, "Clarify: focus area (optional)"))
+        inputs.append(("focus", False, "Clarify: focus area"))
     if "plan" in steps:
         inputs.append(("stack", False, "Plan: tech stack and architecture"))
 
