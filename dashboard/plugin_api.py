@@ -1085,14 +1085,24 @@ def install_extension(payload: ExtensionRequest) -> dict[str, Any]:
 
 
 #: step id -> gate key, because the step is `specify` and its gate is `review-spec`
-GATE_FOR = {"constitution": "constitution", "specify": "spec", "clarify": "clarify", "plan": "plan", "tasks": "tasks"}
+GATE_FOR = {
+    "constitution": "constitution",
+    "specify": "spec",
+    "clarify": "clarify",
+    "plan": "plan",
+    "checklist": "checklist",
+    "tasks": "tasks",
+    "analyze": "analyze",
+}
 
 GATES = {
     "constitution": "Review the constitution before specifying.",
     "spec": "Review the spec before planning.",
     "clarify": "Review the clarifications folded into the spec.",
     "plan": "Review the plan before generating tasks.",
+    "checklist": "Review the checklist gaps before breaking down tasks.",
     "tasks": "Review the task breakdown before implementing.",
+    "analyze": "Review the cross-artifact findings before implementing.",
 }
 
 #: Optional inputs carry a default: the integration drops ``-q`` when a step's

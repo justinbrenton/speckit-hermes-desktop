@@ -860,3 +860,22 @@ def test_an_unknown_process_is_still_a_404(client, project, cli):
     assert response.status_code == 404
     assert "no such process" in response.json()["detail"]
 
+
+def test_the_full_path_reviews_the_checklist_and_the_analysis(client, project):
+    """Both steps produce findings nobody reads unless a gate stops the run."""
+    body = client.post(f"{PREFIX}/workflow/shape", json={"cwd": str(project), "mode": "full"}).json()
+    assert "review-checklist" in body["steps"]
+    assert "review-analyze" in body["steps"]
+
+    workflow = (project / ".specify" / "workflows" / "speckit" / "workflow.yml").read_text(encoding="utf-8")
+    assert "verdict_input: gate_review_checklist" in workflow
+    assert "verdict_input: gate_review_analyze" in workflow
+    assert "  gate_review_checklist:" in workflow
+    assert "  gate_review_analyze:" in workflow
+
+
+def test_the_short_path_has_no_checklist_or_analyze_gate(client, project):
+    body = client.post(f"{PREFIX}/workflow/shape", json={"cwd": str(project), "mode": "short"}).json()
+    assert "review-checklist" not in body["steps"]
+    assert "review-analyze" not in body["steps"]
+
