@@ -154,6 +154,15 @@ stock gate without it ignores every `-i` you pass and pauses forever. `init` now
 patches every installed workflow after scaffolding, and `POST
 /repair-workflows` does the same for projects created earlier.
 
+### What was removed
+
+`src/core.mjs` used to carry the parsers and models of the abandoned three-editor
+design: `parseSpec`/`serializeSpec`, `parseTasks`/`serializeTasks`, the constitution
+builder and validator, the Kanban derivation helpers, the stepper state machine and
+`dispatchMessage`. The wizard calls none of them — the skills write those files now.
+They were deleted with their tests; `core.mjs` is 105 lines of wizard model, and
+`plugin.js` dropped from 70,675 to 43,734 bytes.
+
 ### The wizard's decisions are testable
 
 The pane's judgement calls — which inputs to ask for, where the run is, which file

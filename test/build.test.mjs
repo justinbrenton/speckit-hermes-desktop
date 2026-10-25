@@ -38,7 +38,7 @@ test('build inlines the core and leaves a single import surface', async () => {
   }
 
   // core symbols really are present in the bundle
-  for (const symbol of ['parseSpec', 'serializeSpec', 'parseTasks', 'serializeConstitution', 'decideSync', 'STEPS']) {
+  for (const symbol of ['visibleInputs', 'flowSteps', 'progressFor', 'artifactForGate']) {
     assert.ok(code.includes(symbol), `missing ${symbol}`)
   }
 })
