@@ -17,7 +17,7 @@ from pathlib import Path
 
 import pytest
 
-BACKEND_DIR = Path(__file__).resolve().parents[1]
+BACKEND_DIR = Path(__file__).resolve().parents[2] / "dashboard"
 
 dashboard = pytest.importorskip(
     "hermes_cli.web_server_dashboard",

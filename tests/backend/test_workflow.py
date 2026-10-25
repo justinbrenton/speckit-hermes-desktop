@@ -18,7 +18,7 @@ import pytest
 from fastapi import FastAPI
 from starlette.testclient import TestClient
 
-BACKEND_DIR = Path(__file__).resolve().parents[1]
+BACKEND_DIR = Path(__file__).resolve().parents[2] / "dashboard"
 if str(BACKEND_DIR) not in sys.path:
     sys.path.insert(0, str(BACKEND_DIR))
 
@@ -234,7 +234,7 @@ def test_artifact_reads_a_file_and_refuses_escapes(client, project):
     assert ok["content"] == "# Spec\n"
 
     outside = client.get(
-        f"{PREFIX}/artifact", params={"cwd": str(project), "path": "backend/plugin_api.py"}
+        f"{PREFIX}/artifact", params={"cwd": str(project), "path": "scripts/build.mjs"}
     )
     assert outside.status_code == 400
     assert "inside .specify" in outside.json()["detail"]

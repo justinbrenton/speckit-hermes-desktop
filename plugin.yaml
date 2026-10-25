@@ -1,0 +1,20 @@
+name: "spec-kit-hermes"
+version: "2.0.0"
+description: "Run spec-kit processes in Hermes Desktop: pick a process, describe the work, review each artifact at its gate, then approve."
+author: "Justin Brenton"
+license: "MIT"
+homepage: "https://github.com/justinbrenton/speckit-hermes-desktop"
+# the dashboard half lives in dashboard/ and mounts at /api/plugins/spec-kit-hermes
+kind: "standalone"
+requires_hermes: ">=0.22.2"
+provides_tools: []
+provides_hooks: []
+
+panes:
+  - id: spec-kit
+    title: "Spec Kit"
+    data:
+      placement: "right"
+      width: "460px"
+
+commands: []

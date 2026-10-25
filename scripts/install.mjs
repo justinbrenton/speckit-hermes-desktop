@@ -148,7 +148,7 @@ export async function install({ profile, home, dryRun = false } = {}) {
   // 2. backend half
   for (const name of ['plugin_api.py', 'manifest.json', 'index.js']) {
     report.files.push(
-      await writeIfChanged(join(dashboardDir, name), await readFile(join(ROOT, 'backend', name), 'utf8'), { dryRun })
+      await writeIfChanged(join(dashboardDir, name), await readFile(join(ROOT, 'dashboard', name), 'utf8'), { dryRun })
     )
   }
 

@@ -11,7 +11,7 @@
     "build": "node scripts/build.mjs",
     "docs": "node scripts/render-docs.mjs",
     "test": "node --test test/*.test.mjs",
-    "test:py": "python -m pytest backend/tests -q",
+    "test:py": "python -m pytest tests/backend -q",
     "install:plugin": "node scripts/install.mjs",
     "verify:install": "node scripts/verify-install.py"
   }
