@@ -37,6 +37,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
+import yaml
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
 
@@ -296,30 +297,19 @@ def _skill_for(command: str) -> str:
 
 @router.get("/processes")
 def list_processes(cwd: str = Query(..., description="Absolute project directory")) -> dict[str, Any]:
-    """Installed processes, shaped the way the pane renders them.
+    """Every process this project can run, shaped the way the pane renders it.
 
-    Nothing here is hard-coded. Every workflow under ``<cwd>/.specify/workflows``
-    becomes a process, its ``inputs`` become a form and its ``steps`` become the
-    runner: command steps dispatch a skill, gate steps pause for a human. Install
-    a bundle or an extension and a new process appears with no pane change.
+    Workflows on disk are the source of truth: their ``inputs`` become a form and
+    their ``steps`` become the runner. The bundled extensions (bug, assess) ship
+    commands but no workflow, so those processes are also listed with
+    ``installed: false`` and their documented shape, and the pane sets one up on
+    demand (``POST /workflow/shape`` with a ``process``).
     """
     root = _project_root(cwd)
     workflows_dir = root / ".specify" / "workflows"
     installed, skill_dirs = _installed_skills()
 
-    processes: list[dict[str, Any]] = []
-    errors: list[dict[str, str]] = []
-
-    for wf_file in sorted(workflows_dir.glob("*/workflow.yml")):
-        try:
-            data = _load_yaml(wf_file) or {}
-        except Exception as exc:  # a broken workflow must not take the pane down
-            errors.append({"file": str(wf_file), "error": str(exc)})
-            continue
-        if not isinstance(data, dict):
-            errors.append({"file": str(wf_file), "error": "not a mapping"})
-            continue
-
+    def build_entry(data: dict[str, Any], source: str, installed_process: bool) -> dict[str, Any] | None:
         wf = data.get("workflow") or {}
         inputs = []
         for name, spec in (data.get("inputs") or {}).items():
@@ -368,18 +358,50 @@ def list_processes(cwd: str = Query(..., description="Absolute project directory
             steps.append(step)
 
         command_steps = [step for step in steps if step["type"] == "command"]
-        processes.append(
-            {
-                "id": wf.get("id") or wf_file.parent.name,
-                "name": wf.get("name", ""),
-                "version": wf.get("version", ""),
-                "description": wf.get("description", ""),
-                "source": str(wf_file),
-                "inputs": inputs,
-                "steps": steps,
-                "ready": bool(command_steps) and all(s["skill_installed"] for s in command_steps),
-            }
-        )
+        if not wf and not steps:
+            return None
+        return {
+            "id": wf.get("id") or "",
+            "name": wf.get("name", ""),
+            "version": wf.get("version", ""),
+            "description": wf.get("description", ""),
+            "source": source,
+            "installed": installed_process,
+            "inputs": inputs,
+            "steps": steps,
+            "ready": bool(command_steps) and all(s["skill_installed"] for s in command_steps),
+        }
+
+    processes: list[dict[str, Any]] = []
+    errors: list[dict[str, str]] = []
+
+    for wf_file in sorted(workflows_dir.glob("*/workflow.yml")):
+        try:
+            data = _load_yaml(wf_file) or {}
+        except Exception as exc:  # a broken workflow must not take the pane down
+            errors.append({"file": str(wf_file), "error": str(exc)})
+            continue
+        if not isinstance(data, dict):
+            errors.append({"file": str(wf_file), "error": "not a mapping"})
+            continue
+        entry = build_entry(data, str(wf_file), True)
+        if entry:
+            entry["id"] = entry["id"] or wf_file.parent.name
+            processes.append(entry)
+
+    known = {entry["id"] for entry in processes}
+    has_specify = (root / ".specify").is_dir()
+    for process_id in PROCESS_SPECS if has_specify else ():
+        if process_id in known:
+            continue
+        try:
+            data = yaml.safe_load(_process_yaml(process_id))
+        except Exception as exc:
+            errors.append({"file": process_id, "error": str(exc)})
+            continue
+        entry = build_entry(data, "", False)
+        if entry:
+            processes.append(entry)
 
     return {
         "cwd": str(root),
@@ -1135,9 +1157,98 @@ def _workflow_yaml(mode: str, with_constitution: bool = True) -> str:
     return "\n".join(lines) + "\n"
 
 
+#: Processes the pane offers that no shipped workflow covers. The bug and assess
+#: extensions provide commands only, so their workflow is generated from the
+#: documented step order the first time the process is used.
+PROCESS_SPECS: dict[str, dict[str, Any]] = {
+    "bug": {
+        "name": "Bug fixing",
+        "description": "Assess a report, apply the fix, verify it",
+        "inputs": [("report", True, "Paste the bug report, or a URL to it")],
+        "steps": [
+            ("assess", "speckit.bug.assess", "report"),
+            ("fix", "speckit.bug.fix", None),
+            ("test", "speckit.bug.test", None),
+        ],
+        "gates": {
+            "assess": "Review the assessment before applying a fix.",
+            "test": "Review the verification before closing the bug.",
+        },
+    },
+    "assess": {
+        "name": "Idea assessment",
+        "description": "Intake, research, define, shape, then a go / clarify / kill decision",
+        "inputs": [("idea", True, "Describe the idea")],
+        "steps": [
+            ("intake", "speckit.assess.intake", "idea"),
+            ("research", "speckit.assess.research", None),
+            ("define", "speckit.assess.define", None),
+            ("shape", "speckit.assess.shape", None),
+            ("decide", "speckit.assess.decide", None),
+        ],
+        "gates": {
+            "define": "Review the problem definition before shaping options.",
+            "decide": "Review the go / clarify / kill decision.",
+        },
+    },
+}
+
+
+def _process_yaml(process_id: str) -> str:
+    """Render the documented workflow for a process that ships commands only."""
+    if process_id == "speckit":
+        return _workflow_yaml("full")
+    spec = PROCESS_SPECS[process_id]
+    steps = list(spec["steps"])
+    gates: dict[str, str] = dict(spec["gates"])
+
+    lines = [
+        "# generated by spec-kit-hermes: this process ships commands, not a workflow",
+        "# a copy is kept as workflow.yml.bak-<timestamp> when it differs",
+        'schema_version: "1.0"',
+        "workflow:",
+        f'  id: "{process_id}"',
+        f'  name: "{spec["name"]}"',
+        '  version: "1.0.0"',
+        '  author: "Hermes Desktop integration"',
+        f'  description: "{spec["description"]}"',
+        "",
+        "requires:",
+        '  speckit_version: ">=0.8.5"',
+        "",
+        "inputs:",
+    ]
+    for name, required, prompt in spec["inputs"]:
+        lines += [
+            f"  {name}:",
+            "    type: string",
+            f"    required: {'true' if required else 'false'}",
+            f'    prompt: "{prompt}"',
+        ]
+    for step_id in gates:
+        lines += [f"  gate_review_{step_id}:", "    type: string", "    required: false"]
+    lines += ["  integration:", "    type: string", '    default: "auto"', "", "steps:"]
+
+    for step_id, command, source in steps:
+        lines += [f"  - id: {step_id}", f"    command: {command}", '    integration: "{{ inputs.integration }}"']
+        if source:
+            lines += ["    input:", f'      args: "{{{{ inputs.{source} }}}}"']
+        if step_id in gates:
+            lines += [
+                f"  - id: review-{step_id}",
+                "    type: gate",
+                f'    message: "{gates[step_id]}"',
+                "    options: [approve, reject]",
+                f"    verdict_input: gate_review_{step_id}",
+                "    on_reject: abort",
+            ]
+    return "\n".join(lines) + "\n"
+
+
 class ShapeRequest(BaseModel):
     cwd: str
     mode: str = "full"
+    process: str = "speckit"
     # None means "decide from the project": a ratified constitution is not re-run.
     constitution: Optional[bool] = None
 
@@ -1147,14 +1258,27 @@ def shape_workflow(payload: ShapeRequest) -> dict[str, Any]:
     """Write the short or full documented SDD workflow into the project."""
     root = _project_root(payload.cwd)
     mode = "full" if str(payload.mode).lower() == "full" else "short"
-    target = root / ".specify" / "workflows" / "speckit" / "workflow.yml"
-    if not target.parent.is_dir():
-        raise HTTPException(status_code=404, detail="no speckit workflow installed here")
+    process_id = str(payload.process or "speckit").strip()
 
-    with_constitution = payload.constitution
-    if with_constitution is None:
-        with_constitution = not _constitution_ready(root)
-    generated = _workflow_yaml(mode, with_constitution)
+    if process_id != "speckit":
+        # A process whose extension ships commands only: the workflow is ours to
+        # write, and writing it is what makes the process runnable at all.
+        if process_id not in PROCESS_SPECS:
+            raise HTTPException(status_code=400, detail=f"unknown process: {process_id}")
+        target = root / ".specify" / "workflows" / process_id / "workflow.yml"
+        if not (root / ".specify").is_dir():
+            raise HTTPException(status_code=404, detail="no .specify directory here")
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with_constitution = False
+        generated = _process_yaml(process_id)
+    else:
+        target = root / ".specify" / "workflows" / "speckit" / "workflow.yml"
+        if not target.parent.is_dir():
+            raise HTTPException(status_code=404, detail="no speckit workflow installed here")
+        with_constitution = payload.constitution
+        if with_constitution is None:
+            with_constitution = not _constitution_ready(root)
+        generated = _workflow_yaml(mode, with_constitution)
     backup = None
     changed = True
     current = ""
@@ -1179,6 +1303,7 @@ def shape_workflow(payload: ShapeRequest) -> dict[str, Any]:
 
     data = _process_data(root, "speckit")
     return {
+        "process": process_id,
         "mode": mode,
         "path": str(target),
         "constitution": with_constitution,

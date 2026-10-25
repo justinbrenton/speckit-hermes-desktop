@@ -173,16 +173,22 @@ function ProcessChoice({ processes, onPick, onInstall, error, busy }) {
     error ? jsx('p', { className: 'sk-small sk-err', children: error }) : null,
     jsx(ScrollArea, { className: 'min-h-0 flex-1', children:
       jsx('div', { className: 'flex flex-col gap-2', children: PROCESS_COPY.map(copy => {
-        const installed = Boolean(byId[copy.id])
+        const entry = byId[copy.id]
+        const available = Boolean(entry)
+        const commands = ((entry && entry.steps) || []).filter(step => step.type === 'command')
+        // The extension's commands must be installed before the process can run;
+        // the workflow file is written for us on Start.
+        const installed = available && commands.length > 0 && commands.every(step => step.skill_installed)
+        const needsSetup = installed && entry.installed === false
         return jsxs('div', {
           role: 'button',
           tabIndex: installed ? 0 : -1,
-          onClick: () => { if (installed && !busy) onPick(byId[copy.id]) },
+          onClick: () => { if (installed && !busy) onPick(entry) },
           onKeyDown: event => {
             if (!installed || busy) return
             if (event.key === 'Enter' || event.key === ' ') {
               event.preventDefault()
-              onPick(byId[copy.id])
+              onPick(entry)
             }
           },
           className: installed
@@ -196,9 +202,11 @@ function ProcessChoice({ processes, onPick, onInstall, error, busy }) {
             jsx('span', { className: 'sk-small sk-dim', children: copy.need }),
             jsx('span', { className: 'sk-tiny sk-faint', children: copy.get }),
             installed
-              ? null
+              ? (needsSetup
+                  ? jsx('span', { className: 'sk-tiny sk-faint', children: 'Its workflow is written when you press Start.' })
+                  : null)
               : jsxs('span', { className: 'flex items-center gap-2 sk-tiny sk-faint', children: [
-                  'Not installed.',
+                  commands.length ? 'Commands not installed.' : 'Not installed.',
                   jsx(Button, {
                     size: 'xs',
                     variant: 'outline',
@@ -683,12 +691,12 @@ function SpecKitPane() {
     setBusy(true)
     setError('')
     try {
-      if (process.id === 'speckit') {
-        await rest('/workflow/shape', { method: 'POST', body: { cwd: folder, mode } })
-        const shaped = await rest(`/processes?cwd=${encodeURIComponent(folder)}`)
-        const updated = ((shaped && shaped.processes) || []).find(item => item.id === 'speckit')
-        if (updated) setProcess(updated)
-      }
+      // Every process runs from a workflow file. speckit's needs the chosen path;
+      // bug and assess ship commands only, so their workflow is written here.
+      await rest('/workflow/shape', { method: 'POST', body: { cwd: folder, mode, process: process.id } })
+      const shaped = await rest(`/processes?cwd=${encodeURIComponent(folder)}`)
+      const updated = ((shaped && shaped.processes) || []).find(item => item.id === process.id)
+      if (updated) setProcess(updated)
       await rest(`/workflows/${encodeURIComponent(process.id)}/run`, {
         method: 'POST',
         body: { cwd: folder, inputs: values }

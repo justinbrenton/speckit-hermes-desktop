@@ -92,10 +92,17 @@ def test_requires_an_absolute_cwd(client):
     assert client.get(f"{PREFIX}/processes", params={"cwd": "relative/path"}).status_code == 400
 
 
-def test_empty_project_reports_no_processes(client, tmp_path):
+def test_empty_project_installs_nothing(client, tmp_path):
     body = client.get(f"{PREFIX}/processes", params={"cwd": str(_project(tmp_path))}).json()
-    assert body["processes"] == []
+    assert [item for item in body["processes"] if item["installed"]] == []
     assert body["errors"] == []
+
+
+def test_a_directory_that_is_not_a_project_offers_nothing(client, tmp_path):
+    plain = tmp_path / "plain"
+    plain.mkdir()
+    body = client.get(f"{PREFIX}/processes", params={"cwd": str(plain)}).json()
+    assert body["processes"] == []
 
 
 def test_workflow_becomes_a_process_with_inputs_and_steps(client, tmp_path, monkeypatch):
@@ -103,8 +110,8 @@ def test_workflow_becomes_a_process_with_inputs_and_steps(client, tmp_path, monk
     root = _project(tmp_path, {"bugfix": BUGFIX})
 
     body = client.get(f"{PREFIX}/processes", params={"cwd": str(root)}).json()
-    assert len(body["processes"]) == 1
-    process = body["processes"][0]
+    process = next(item for item in body["processes"] if item["id"] == "bugfix")
+    assert process["installed"] is True
 
     assert process["id"] == "bugfix"
     assert process["name"] == "Guided Bug Fix"
@@ -129,23 +136,67 @@ def test_ready_false_until_the_skills_exist(client, tmp_path, monkeypatch):
     home = tmp_path / "hermes-home"
     (home / "skills").mkdir(parents=True)
     monkeypatch.setenv("HERMES_HOME", str(home))
+    # This machine has the skills installed; the test must not read them.
+    monkeypatch.setattr(plugin_api, "_hermes_skills_dirs", lambda: [home / "skills"])
     root = _project(tmp_path, {"bugfix": BUGFIX})
 
     body = client.get(f"{PREFIX}/processes", params={"cwd": str(root)}).json()
-    assert body["processes"][0]["ready"] is False
+    assert next(item for item in body["processes"] if item["id"] == "bugfix")["ready"] is False
     assert str(home / "skills") in body["skills_dirs"]
 
     for name in ("speckit-bug-assess", "speckit-bug-fix"):
         (home / "skills" / name).mkdir()
 
     body = client.get(f"{PREFIX}/processes", params={"cwd": str(root)}).json()
-    assert body["processes"][0]["ready"] is True
+    assert next(item for item in body["processes"] if item["id"] == "bugfix")["ready"] is True
 
 
 def test_a_broken_workflow_is_reported_not_fatal(client, tmp_path):
     root = _project(tmp_path, {"bugfix": BUGFIX, "broken": "workflow: [unclosed\n"})
 
     body = client.get(f"{PREFIX}/processes", params={"cwd": str(root)}).json()
-    assert [item["id"] for item in body["processes"]] == ["bugfix"]
+    assert "bugfix" in [item["id"] for item in body["processes"]]
     assert len(body["errors"]) == 1
     assert "broken" in body["errors"][0]["file"]
+
+
+def test_processes_without_a_workflow_are_offered_with_their_shape(client, tmp_path):
+    """The bug and assess extensions ship commands only, so their workflow is ours."""
+    root = _project(tmp_path, {"speckit": "schema_version: \"1.0\"\nworkflow:\n  id: speckit\n"})
+
+    body = client.get(f"{PREFIX}/processes", params={"cwd": str(root)}).json()
+    by_id = {item["id"]: item for item in body["processes"]}
+
+    assert by_id["bug"]["installed"] is False
+    assert [step["id"] for step in by_id["bug"]["steps"]] == [
+        "assess", "review-assess", "fix", "test", "review-test"
+    ]
+    gates = [step for step in by_id["bug"]["steps"] if step["type"] == "gate"]
+    assert all(gate["verdict_input"] for gate in gates), "a pane cannot answer a gate without one"
+    assert by_id["bug"]["inputs"][0]["name"] == "report"
+    assert by_id["bug"]["inputs"][0]["required"] is True
+
+    assert [step["id"] for step in by_id["assess"]["steps"]][0] == "intake"
+    assert "implementation" not in [step["id"] for step in by_id["assess"]["steps"]]
+
+
+def test_shaping_writes_the_workflow_a_bare_extension_does_not_ship(client, tmp_path):
+    root = _project(tmp_path, {"speckit": "schema_version: \"1.0\"\nworkflow:\n  id: speckit\n"})
+
+    body = client.post(f"{PREFIX}/workflow/shape", json={"cwd": str(root), "process": "bug"}).json()
+    assert body["changed"] is True
+    workflow = (root / ".specify" / "workflows" / "bug" / "workflow.yml").read_text(encoding="utf-8")
+    assert "id: \"bug\"" in workflow
+    assert "verdict_input: gate_review_assess" in workflow
+    assert "gate_review_assess:" in workflow
+
+    # Shaping again changes nothing and writes no second backup.
+    again = client.post(f"{PREFIX}/workflow/shape", json={"cwd": str(root), "process": "bug"}).json()
+    assert again["changed"] is False
+
+
+def test_an_unknown_process_is_rejected(client, tmp_path):
+    root = _project(tmp_path, {"speckit": "schema_version: \"1.0\"\nworkflow:\n  id: speckit\n"})
+    response = client.post(f"{PREFIX}/workflow/shape", json={"cwd": str(root), "process": "nope"})
+    assert response.status_code == 400
+

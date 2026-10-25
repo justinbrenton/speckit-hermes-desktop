@@ -99,3 +99,20 @@ test('a field label says optional once, whatever the prompt says', () => {
   assert.equal(fieldLabel(null), '')
 })
 
+test('each gate finds the artifact its step wrote, not a same-named guess', () => {
+  const bug = [
+    { name: 'assessment.md', path: '.specify/bugs/x/assessment.md' },
+    { name: 'fix.md', path: '.specify/bugs/x/fix.md' },
+    { name: 'test.md', path: '.specify/bugs/x/test.md' }
+  ]
+  assert.equal(artifactForGate(bug, 'review-assess').name, 'assessment.md')
+  assert.equal(artifactForGate(bug, 'review-test').name, 'test.md')
+
+  const assess = [
+    { name: 'problem.md', path: '.specify/assessments/x/problem.md' },
+    { name: 'decision.md', path: '.specify/assessments/x/decision.md' }
+  ]
+  assert.equal(artifactForGate(assess, 'review-define').name, 'problem.md')
+  assert.equal(artifactForGate(assess, 'review-decide').name, 'decision.md')
+})
+

@@ -112,7 +112,13 @@ export function artifactForGate(artifacts = [], gateStepId = '') {
   const list = artifacts || []
   // Gates whose artifact is not named after the step. The assessment gate says
   // "verdict" and writes decision.md.
-  const named = { verdict: 'decision.md' }[kind]
+  const named = {
+    verdict: 'decision.md',
+    decide: 'decision.md',
+    define: 'problem.md',
+    assess: 'assessment.md',
+    test: 'test.md'
+  }[kind]
   return (
     (named && list.find(item => item && item.name === named)) ||
     list.find(item => item && item.name === `${kind}.md`) ||
