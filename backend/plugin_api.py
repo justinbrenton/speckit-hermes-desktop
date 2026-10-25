@@ -830,6 +830,58 @@ def install_extension(payload: ExtensionRequest) -> dict[str, Any]:
     }
 
 
+@router.get("/browse")
+def browse(path: str = Query("", description="Directory to list; empty lists filesystem roots")) -> dict[str, Any]:
+    """Directory listing for the pane's folder browser.
+
+    The plugin SDK exposes no folder dialog (checked: no showOpenDialog, no
+    showDirectoryPicker), so the pane walks the filesystem through this route.
+    """
+    if not path.strip():
+        roots: list[dict[str, Any]] = []
+        if os.name == "nt":
+            for letter in "CDEFGHIJKLMNOPQRSTUVWXYZ":
+                candidate = Path(f"{letter}:/")
+                try:
+                    if candidate.exists():
+                        roots.append({
+                            "name": f"{letter}:\\",
+                            "path": str(candidate),
+                            "has_specify": (candidate / ".specify").is_dir(),
+                        })
+                except OSError:
+                    continue
+        home = Path.home()
+        roots.insert(0, {
+            "name": f"Home ({home.name})",
+            "path": str(home),
+            "has_specify": (home / ".specify").is_dir(),
+        })
+        return {"path": "", "parent": None, "entries": roots}
+
+    base = Path(path).expanduser()
+    if not base.is_dir():
+        raise HTTPException(status_code=400, detail=f"not a directory: {path}")
+    try:
+        children = sorted(base.iterdir(), key=lambda item: item.name.lower())
+    except OSError as exc:
+        raise HTTPException(status_code=400, detail=f"cannot read {path}: {exc}")
+    entries: list[dict[str, Any]] = []
+    for child in children:
+        try:
+            if not child.is_dir():
+                continue
+            entries.append({
+                "name": child.name,
+                "path": str(child),
+                "has_specify": (child / ".specify").is_dir(),
+            })
+        except OSError:
+            continue
+    parent = str(base.parent) if base.parent != base else None
+    return {"path": str(base), "parent": parent, "entries": entries[:500]}
+
+
 @router.get("/artifacts")
 def list_artifacts(cwd: str = Query(..., description="Absolute project directory")) -> dict[str, Any]:
     """Every spec-kit artifact under .specify, newest feature first."""

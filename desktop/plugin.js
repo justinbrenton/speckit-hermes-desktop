@@ -952,11 +952,41 @@ function ProcessChoice({ processes, onPick, onInstall, error, busy }) {
   ] })
 }
 
-function FolderRow({ draft, onDraft, onUse, onInit, hasSpecify, busy }) {
+function Browser({ data, busy, onOpen, onUp, onUse, onClose }) {
+  return jsxs('div', { className: 'flex min-h-0 flex-col gap-1 rounded border border-(--ui-border)', children: [
+    jsxs('div', { className: 'flex items-center justify-between gap-2 border-b border-(--ui-border) px-2 py-1', children: [
+      jsx('span', { className: 'truncate font-mono text-[0.625rem]', children: data.path || 'This PC' }),
+      jsx(Button, { size: 'xs', variant: 'ghost', onClick: onClose, children: 'Close' })
+    ] }),
+    jsx(ScrollArea, { className: 'max-h-56 min-h-0', children:
+      jsxs('div', { className: 'flex flex-col gap-0.5 p-1', children: [
+        data.parent
+          ? jsx(Button, { size: 'xs', variant: 'ghost', onClick: () => onOpen(data.parent), disabled: busy, children: '.. up' })
+          : null,
+        ...((data.entries || []).map(entry => jsxs('button', {
+          type: 'button',
+          onClick: () => onOpen(entry.path),
+          className: 'flex items-center justify-between gap-2 rounded px-2 py-1 text-left text-[0.6875rem] hover:bg-(--ui-bg-tertiary)',
+          children: [
+            jsx('span', { className: 'truncate', children: entry.name }),
+            entry.has_specify ? jsx(Badge, { variant: 'secondary', children: 'spec-kit' }) : null
+          ]
+        }, entry.path)))
+      ] })
+    }),
+    jsxs('div', { className: 'flex items-center justify-between gap-2 border-t border-(--ui-border) px-2 py-1', children: [
+      jsx('span', { className: 'text-[0.625rem] text-(--ui-text-tertiary)', children: 'Open a folder to look inside it.' }),
+      jsx(Button, { size: 'xs', onClick: onUse, disabled: busy || !data.path, children: 'Use this folder' })
+    ] })
+  ] })
+}
+
+function FolderRow({ draft, onDraft, onUse, onInit, hasSpecify, busy, onBrowse }) {
   return jsxs('div', { className: 'flex flex-col gap-2 rounded border border-(--ui-border) p-2', children: [
     jsx('span', { className: 'text-[0.625rem] font-medium text-(--ui-text-secondary)', children: 'Project folder' }),
     jsxs('div', { className: 'flex gap-2', children: [
       jsx(Input, { value: draft, onChange: event => onDraft(event.target.value), onKeyDown: event => { if (event.key === 'Enter') onUse() } }),
+      jsx(Button, { size: 'sm', variant: 'outline', onClick: onBrowse, disabled: busy, children: 'Browse…' }),
       jsx(Button, { size: 'sm', onClick: onUse, disabled: busy || !__str(draft), children: 'Use' })
     ] }),
     hasSpecify === false
@@ -1059,7 +1089,21 @@ function SpecKitPane() {
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState('')
   const [editError, setEditError] = useState('')
+  const [browseData, setBrowseData] = useState(null)
   const pollRef = useRef(null)
+
+  const openBrowser = useCallback(async path => {
+    setBusy(true)
+    setError('')
+    try {
+      const data = await rest(`/browse?path=${encodeURIComponent(__str(path))}`)
+      setBrowseData(data)
+    } catch (err) {
+      setError(errorText(err))
+    } finally {
+      setBusy(false)
+    }
+  }, [])
 
   const loadFolder = useCallback(async target => {
     const path = __str(target)
@@ -1247,7 +1291,25 @@ function SpecKitPane() {
   if (!folder || hasSpecify === false) {
     return jsxs('div', { className: 'flex h-full flex-col gap-3 p-3', children: [
       jsx('h2', { className: 'text-sm font-medium', children: 'Spec Kit' }),
-      jsx(FolderRow, { draft: draftFolder, onDraft: setDraftFolder, onUse: () => loadFolder(draftFolder), onInit: initFolder, hasSpecify, busy }),
+      jsx(FolderRow, {
+        draft: draftFolder,
+        onDraft: setDraftFolder,
+        onUse: () => loadFolder(draftFolder),
+        onInit: initFolder,
+        hasSpecify,
+        busy,
+        onBrowse: () => openBrowser(browseData && browseData.path ? browseData.path : draftFolder)
+      }),
+      browseData
+        ? jsx(Browser, {
+            data: browseData,
+            busy,
+            onOpen: openBrowser,
+            onUp: () => browseData.parent && openBrowser(browseData.parent),
+            onUse: () => { const chosen = browseData.path; setBrowseData(null); setDraftFolder(chosen); loadFolder(chosen) },
+            onClose: () => setBrowseData(null)
+          })
+        : null,
       error ? jsx('p', { className: 'text-[0.6875rem] text-red-400', children: error }) : null,
       hasSpecify === false
         ? jsx('p', { className: 'text-[0.6875rem] text-(--ui-text-tertiary)', children: 'That folder has no .specify directory yet. Initialise it above.' })
