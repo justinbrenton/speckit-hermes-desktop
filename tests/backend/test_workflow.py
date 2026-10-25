@@ -461,7 +461,8 @@ def test_runs_are_listed_newest_first(client, project):
         folder = runs / name
         folder.mkdir(parents=True, exist_ok=True)
         (folder / "state.json").write_text(
-            json.dumps({"status": status, "current_step_id": "plan", "inputs": {"spec": spec}}),
+            json.dumps({"workflow_id": "speckit", "status": status, "current_step_id": "plan",
+                        "inputs": {"spec": spec}}),
             encoding="utf-8",
         )
     body = client.get(f"{PREFIX}/workflows/speckit/runs", params={"cwd": str(project)}).json()
@@ -827,7 +828,27 @@ def test_history_is_scoped_to_the_process(client, project, cli):
     assert latest["run_id"] != "bugrun1", "the newest run of a different workflow must be ignored"
 
 
-def test_a_state_without_a_workflow_id_is_kept(client, project, cli):
-    _write_run(project, "legacy1", None)
+def test_a_state_without_a_workflow_id_is_not_attributed_to_a_process(client, project, cli):
+    _write_run(project, "orphan1", None)
     body = client.get(f"{PREFIX}/workflows/speckit/runs", params={"cwd": str(project)}).json()
-    assert "legacy1" in [item["run_id"] for item in body["runs"]], "an older state with no id is not hidden"
+    assert "orphan1" not in [item["run_id"] for item in body["runs"]]
+
+
+def test_asking_about_a_known_process_before_it_is_used_does_not_404(client, project, cli):
+    """Picking a process reads its latest run before Start ever shapes it."""
+    latest = client.get(f"{PREFIX}/workflows/assess/runs/latest", params={"cwd": str(project)})
+    assert latest.status_code == 200, latest.text
+    assert latest.json()["status"] == "none"
+
+    history = client.get(f"{PREFIX}/workflows/assess/runs", params={"cwd": str(project)})
+    assert history.status_code == 200
+    assert history.json()["runs"] == []
+
+    assert (project / ".specify" / "workflows" / "assess" / "workflow.yml").is_file()
+
+
+def test_an_unknown_process_is_still_a_404(client, project, cli):
+    response = client.get(f"{PREFIX}/workflows/nope/runs/latest", params={"cwd": str(project)})
+    assert response.status_code == 404
+    assert "no such process" in response.json()["detail"]
+

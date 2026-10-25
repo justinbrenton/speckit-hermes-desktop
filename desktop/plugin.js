@@ -333,7 +333,7 @@ function ProcessChoice({ processes, onPick, onInstall, error, busy }) {
             jsx('span', { className: 'sk-tiny sk-faint', children: copy.get }),
             installed
               ? (needsSetup
-                  ? jsx('span', { className: 'sk-tiny sk-faint', children: 'Its workflow is written when you press Start.' })
+                  ? jsx('span', { className: 'sk-tiny sk-faint', children: 'Its workflow is written on first use.' })
                   : null)
               : jsxs('span', { className: 'flex items-center gap-2 sk-tiny sk-faint', children: [
                   commands.length ? 'Commands not installed.' : 'Not installed.',

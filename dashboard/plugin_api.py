@@ -769,12 +769,42 @@ def _run_specify(args: list[str], cwd: Path, timeout: int) -> dict[str, Any]:
     }
 
 
+def _process_workflow_file(root: Path, process_id: str) -> Path:
+    return root / ".specify" / "workflows" / process_id / "workflow.yml"
+
+
+def _ensure_process_workflow(root: Path, process_id: str) -> bool:
+    """Write the workflow for a process that ships commands only.
+
+    The bug and assess extensions provide no workflow, so the file exists only
+    after someone shapes the process. Reads must not depend on that ordering:
+    picking a process in the pane asks for its latest run before Start is pressed.
+    """
+    if process_id not in PROCESS_SPECS:
+        return False
+    target = _process_workflow_file(root, process_id)
+    if target.is_file():
+        return True
+    if not (root / ".specify").is_dir():
+        return False
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        _write_text_atomic(target, _process_yaml(process_id))
+    except OSError:
+        return False
+    return True
+
+
 def _process_data(root: Path, process_id: str) -> dict[str, Any]:
-    """The installed workflow's YAML, or 404. Presence here is the install check."""
+    """The process's workflow YAML, or 404 for an unknown one.
+
+    ``known`` processes are generated on demand, so asking about a process the
+    project has not used yet is not an error.
+    """
     if not re.fullmatch(r"[A-Za-z0-9._-]{1,64}", process_id or ""):
         raise HTTPException(status_code=400, detail=f"invalid process id: {process_id!r}")
-    wf_file = root / ".specify" / "workflows" / process_id / "workflow.yml"
-    if not wf_file.is_file():
+    wf_file = _process_workflow_file(root, process_id)
+    if not wf_file.is_file() and not _ensure_process_workflow(root, process_id):
         raise HTTPException(status_code=404, detail=f"no such process: {process_id}")
     return _load_yaml(wf_file) or {}
 
@@ -1334,7 +1364,7 @@ def shape_workflow(payload: ShapeRequest) -> dict[str, Any]:
     else:
         _write_text_atomic(target, generated)
 
-    data = _process_data(root, "speckit")
+    data = _process_data(root, process_id)
     return {
         "process": process_id,
         "mode": mode,
@@ -1810,15 +1840,15 @@ def _run_belongs(state: dict[str, Any], process: str) -> bool:
     """Is this run's workflow the process being asked about?
 
     Every process keeps its runs in one shared directory, so a list or a "latest"
-    that ignores the workflow id shows another process's run. States written by
-    older builds carry no id; those are kept rather than hidden.
+    that ignores the workflow id shows another process's run. A state with no id
+    cannot be attributed to a process, so it is not shown under any of them.
     """
     ids = {
         str(state.get("workflow_id") or "").strip(),
         str(state.get("installed_workflow_id") or "").strip(),
     }
     ids.discard("")
-    return not ids or process in ids
+    return process in ids
 
 
 def _latest_run(root: Path, process: Optional[str] = None) -> Optional[dict[str, Any]]:
