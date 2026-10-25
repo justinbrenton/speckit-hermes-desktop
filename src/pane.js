@@ -221,28 +221,39 @@ function ArtifactEditor({ artifact, draft, onDraft, onSave, onClose, busy, dirty
   ] })
 }
 
-function PathChoice({ mode, onChange, busy }) {
-  return jsxs('div', { className: 'flex flex-col gap-1', children: [
-    jsx('p', { className: 'text-[0.6875rem] font-medium', children: 'Path' }),
-    jsxs('div', { className: 'flex gap-2', children: [
-      jsx(Button, {
-        size: 'xs',
-        variant: mode === 'short' ? 'default' : 'outline',
-        disabled: busy,
-        onClick: () => onChange('short'),
-        children: 'Shorter'
-      }),
-      jsx(Button, {
-        size: 'xs',
-        variant: mode === 'full' ? 'default' : 'outline',
-        disabled: busy,
-        onClick: () => onChange('full'),
-        children: 'Full'
-      })
-    ] }),
-    jsx('p', { className: 'text-[0.625rem] text-(--ui-text-tertiary)', children: mode === 'full'
-      ? 'constitution, specify, clarify, plan, checklist, tasks, analyze, implement, converge'
-      : 'constitution, specify, plan, tasks, implement, converge' })
+const PATHS = [
+  {
+    id: 'short',
+    title: 'Shorter path',
+    for: 'Smaller features',
+    steps: ['constitution', 'specify', 'plan', 'tasks', 'implement', 'converge']
+  },
+  {
+    id: 'full',
+    title: 'Full path',
+    for: 'Production features, with quality gates',
+    steps: ['constitution', 'specify', 'clarify', 'plan', 'checklist', 'tasks', 'analyze', 'implement', 'converge']
+  }
+]
+
+function PathChoice({ onPick, busy }) {
+  return jsxs('div', { className: 'flex flex-col gap-2', children: [
+    jsx('p', { className: 'text-[0.6875rem] font-medium', children: 'Which approach?' }),
+    jsx('p', { className: 'text-[0.625rem] text-(--ui-text-secondary)', children: 'Both run the same process. The full path adds clarify, checklist and analyze as review gates.' }),
+    ...PATHS.map(path => jsxs('div', {
+      role: 'button',
+      tabIndex: 0,
+      onClick: () => { if (!busy) onPick(path.id) },
+      className: 'flex cursor-pointer flex-col gap-1 rounded border border-(--ui-border) p-2 hover:border-(--ui-accent)',
+      children: [
+        jsxs('span', { className: 'flex items-center gap-2', children: [
+          jsx('span', { className: 'text-[0.8125rem] font-medium', children: path.title }),
+          jsx(Badge, { variant: 'secondary', children: path.id })
+        ] }),
+        jsx('span', { className: 'text-[0.6875rem] text-(--ui-text-tertiary)', children: path.for }),
+        jsx('span', { className: 'text-[0.625rem] text-(--ui-text-tertiary)', children: path.steps.join(' → ') })
+      ]
+    }, path.id))
   ] })
 }
 
@@ -325,6 +336,7 @@ function SpecKitPane() {
   const [editError, setEditError] = useState('')
   const [browseData, setBrowseData] = useState(null)
   const [mode, setMode] = useState('full')
+  const [pathChosen, setPathChosen] = useState(false)
   const pollRef = useRef(null)
 
   const openBrowser = useCallback(async path => {
@@ -458,6 +470,7 @@ function SpecKitPane() {
 
   const pickProcess = useCallback(async item => {
     setProcess(item)
+    setPathChosen(item.id !== 'speckit')
     setError('')
     await refreshRun(folder, item.id)
   }, [folder, refreshRun])
@@ -522,6 +535,7 @@ function SpecKitPane() {
   const restart = useCallback(() => {
     setRun(null)
     setValues({})
+    setPathChosen(process ? process.id !== 'speckit' : false)
     setOpen(null)
     setError('')
   }, [])
@@ -582,10 +596,20 @@ function SpecKitPane() {
     jsx(StepList, { steps: process.steps || [], run }),
     jsx('div', { className: 'h-px bg-(--ui-border)' }),
     status === 'none' || !run
-      ? jsxs('div', { className: 'flex flex-col gap-3', children: [
-          process.id === 'speckit' ? jsx(PathChoice, { mode, onChange: setMode, busy }) : null,
-          jsx(StartCard, { process, values, onChange: (name, value) => setValues(prev => ({ ...prev, [name]: value })), onStart: start, busy, error })
-        ] })
+      ? (process.id === 'speckit' && !pathChosen
+          ? jsx(PathChoice, {
+              busy,
+              onPick: choice => { setMode(choice); setPathChosen(true) }
+            })
+          : jsxs('div', { className: 'flex flex-col gap-3', children: [
+              process.id === 'speckit'
+                ? jsxs('div', { className: 'flex items-center justify-between gap-2', children: [
+                    jsx('span', { className: 'text-[0.625rem] text-(--ui-text-tertiary)', children: mode === 'full' ? 'Full path' : 'Shorter path' }),
+                    jsx(Button, { size: 'xs', variant: 'ghost', onClick: () => setPathChosen(false), disabled: busy, children: 'Change' })
+                  ] })
+                : null,
+              jsx(StartCard, { process, values, onChange: (name, value) => setValues(prev => ({ ...prev, [name]: value })), onStart: start, busy, error })
+            ] }))
       : null,
     status === 'running'
       ? jsxs('div', { className: 'flex items-center gap-2', children: [
