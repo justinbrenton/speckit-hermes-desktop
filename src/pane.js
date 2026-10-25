@@ -95,6 +95,21 @@ function errorText(err) {
   return raw
 }
 
+/** A 409 from /artifact carries the winning copy; surface it, don't just report it. */
+function conflictOf(err) {
+  const raw = err && err.message ? err.message : String(err || '')
+  const start = raw.indexOf('{')
+  if (start < 0) return null
+  try {
+    const parsed = JSON.parse(raw.slice(start))
+    const detail = parsed && parsed.detail ? parsed.detail : parsed
+    if (detail && detail.conflict) return detail
+  } catch (err2) {
+    return null
+  }
+  return null
+}
+
 function titleCase(id) {
   return __str(id).replace(/[-_]+/g, ' ').trim().replace(/^./, c => c.toUpperCase())
 }
@@ -255,6 +270,18 @@ function QuestionsPanel({ questions, answers, onChange, onApply, busy, error }) 
   ] })
 }
 
+function ConflictPanel({ conflict, busy, onReload, onKeep }) {
+  if (!conflict) return null
+  return jsxs('div', { className: 'sk-panel flex flex-col gap-1 rounded border p-2 sk-border', children: [
+    jsx('p', { className: 'sk-small sk-medium', children: 'This file changed on disk' }),
+    jsx('p', { className: 'sk-tiny sk-dim', children: conflict.reason || 'Someone else saved it after you opened it.' }),
+    jsxs('div', { className: 'flex gap-2', children: [
+      jsx(Button, { size: 'xs', variant: 'outline', onClick: onReload, disabled: busy, children: 'Load the disk version' }),
+      jsx(Button, { size: 'xs', onClick: onKeep, disabled: busy, children: 'Keep mine' })
+    ] })
+  ] })
+}
+
 function ArtifactEditor({ artifact, draft, onDraft, onSave, onClose, busy, dirty, error }) {
   if (!artifact) return null
   return jsxs('div', { className: 'flex min-h-0 flex-1 flex-col gap-1 rounded border sk-border', children: [
@@ -394,6 +421,7 @@ function SpecKitPane() {
   const [showLog, setShowLog] = useState(false)
   const [runs, setRuns] = useState([])
   const [integrationOk, setIntegrationOk] = useState(null)
+  const [conflict, setConflict] = useState(null)
   const pollRef = useRef(null)
 
   const checkIntegration = useCallback(async () => {
@@ -508,6 +536,7 @@ function SpecKitPane() {
 
   const openArtifact = useCallback(async path => {
     setOpen(path)
+    setConflict(null)
     setEditError('')
     try {
       const file = await rest(`/artifact?cwd=${encodeURIComponent(folder)}&path=${encodeURIComponent(path)}`)
@@ -567,9 +596,10 @@ function SpecKitPane() {
       setOpen({ path: open.path, mtime: result && result.mtime })
       setSavedContent(draft)
     } catch (err) {
-      const raw = err && err.message ? err.message : String(err)
-      if (/409/.test(raw)) {
-        setEditError('The file changed on disk since you opened it. Reopen it to see the current text.')
+      const clash = conflictOf(err)
+      if (clash) {
+        setConflict(clash)
+        setEditError('')
       } else {
         setEditError(errorText(err))
       }
@@ -577,6 +607,33 @@ function SpecKitPane() {
       setBusy(false)
     }
   }, [open, draft, folder])
+
+  const loadTheirs = useCallback(() => {
+    if (!conflict) return
+    setDraft(__str(conflict.content))
+    setSavedContent(__str(conflict.content))
+    setOpen(prev => ({ path: prev ? prev.path : '', mtime: conflict.mtime }))
+    setConflict(null)
+  }, [conflict])
+
+  const keepMine = useCallback(async () => {
+    if (!open || !conflict) return
+    setBusy(true)
+    try {
+      const result = await rest('/artifact', {
+        method: 'PUT',
+        body: { cwd: folder, path: open.path, content: draft, base_mtime: conflict.mtime }
+      })
+      setOpen({ path: open.path, mtime: result && result.mtime })
+      setSavedContent(draft)
+      setConflict(null)
+      setEditError('')
+    } catch (err) {
+      setEditError(errorText(err))
+    } finally {
+      setBusy(false)
+    }
+  }, [open, conflict, draft, folder])
 
   const installExtension = useCallback(async id => {
     setBusy(true)
@@ -792,6 +849,7 @@ function SpecKitPane() {
           error: editError
         })
       : null,
+    open ? jsx(ConflictPanel, { conflict, busy, onReload: loadTheirs, onKeep: keepMine }) : null,
     open
       ? jsx(ArtifactEditor, {
           artifact: open,

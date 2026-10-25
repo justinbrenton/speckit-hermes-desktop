@@ -533,3 +533,49 @@ def test_shaping_keeps_a_hand_edited_workflow_as_a_backup(client, project):
     assert backup.is_file()
     assert "# my own workflow" in backup.read_text(encoding="utf-8"), "the user's version survives"
 
+
+def test_artifact_write_conflict_returns_the_winning_copy(client, project):
+    spec = project / ".specify" / "specs" / "001-demo" / "spec.md"
+    spec.write_text("# theirs\n", encoding="utf-8")
+
+    # no base_mtime for a file that exists: the pane never loaded it
+    first = client.put(
+        f"{PREFIX}/artifact",
+        json={"cwd": str(project), "path": ".specify/specs/001-demo/spec.md", "content": "# mine\n"},
+    )
+    assert first.status_code == 409
+    detail = first.json()["detail"]
+    assert detail["conflict"] is True
+    assert detail["content"] == "# theirs\n", "the pane needs the current text to offer a choice"
+    assert isinstance(detail["mtime"], int)
+
+    stale = client.put(
+        f"{PREFIX}/artifact",
+        json={
+            "cwd": str(project),
+            "path": ".specify/specs/001-demo/spec.md",
+            "content": "# mine\n",
+            "base_mtime": 1,
+        },
+    )
+    assert stale.status_code == 409
+    assert stale.json()["detail"]["conflict"] is True
+
+
+def test_artifact_write_succeeds_with_the_current_mtime(client, project):
+    spec = project / ".specify" / "specs" / "001-demo" / "spec.md"
+    spec.write_text("# theirs\n", encoding="utf-8")
+    current = int(spec.stat().st_mtime * 1000)
+
+    body = client.put(
+        f"{PREFIX}/artifact",
+        json={
+            "cwd": str(project),
+            "path": ".specify/specs/001-demo/spec.md",
+            "content": "# mine\n",
+            "base_mtime": current,
+        },
+    ).json()
+    assert body["bytes"] == len("# mine\n")
+    assert spec.read_text(encoding="utf-8") == "# mine\n"
+
