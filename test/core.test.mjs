@@ -6,17 +6,21 @@ import {
   CONSTITUTION_STEPS,
   FILE_PATHS,
   STEPS,
+  STEP_TITLES,
   addTask,
   applyAcceptanceFromTasks,
+  artifactForGate,
   constitutionGate,
   createDebouncer,
   decideSync,
   deriveTasksFromSpec,
   dispatchMessage,
+  flowSteps,
   parseConstitution,
   parseRestError,
   parseSpec,
   parseTasks,
+  progressFor,
   serializeConstitution,
   serializeSpec,
   serializeTasks,
@@ -25,7 +29,8 @@ import {
   stepStates,
   suggestStep,
   toggleTask,
-  validateConstitutionStep
+  validateConstitutionStep,
+  visibleInputs
 } from '../src/core.mjs'
 
 const SPEC = `# Feature Specification: Login
@@ -460,4 +465,68 @@ test('dispatch output is deterministic', () => {
   const a = dispatchMessage('implement', { project: PROJECT, spec: DISPATCH_SPEC, tasks: DISPATCH_TASKS })
   const b = dispatchMessage('implement', { project: PROJECT, spec: DISPATCH_SPEC, tasks: DISPATCH_TASKS })
   assert.equal(a.prompt, b.prompt)
+})
+
+
+// ---------------------------------------------------------------------------
+// wizard model
+// ---------------------------------------------------------------------------
+
+test('visibleInputs hides gate verdicts and project setup', () => {
+  const inputs = [
+    { name: 'principles', prompt: 'Constitution' },
+    { name: 'spec', prompt: 'Describe', required: true },
+    { name: 'gate_review_spec' },
+    { name: 'gate_review_plan' },
+    { name: 'integration', default: 'auto' }
+  ]
+  assert.deepEqual(visibleInputs(inputs).map(i => i.name), ['principles', 'spec'])
+})
+
+test('flowSteps drops gates but keeps order', () => {
+  const steps = [
+    { id: 'constitution', type: 'command' },
+    { id: 'review-constitution', type: 'gate' },
+    { id: 'specify', type: 'command' },
+    { id: 'review-spec', type: 'gate' }
+  ]
+  assert.deepEqual(flowSteps(steps).map(s => s.id), ['constitution', 'specify'])
+})
+
+test('progressFor counts the work, not the gates', () => {
+  const steps = [
+    { id: 'constitution' }, { id: 'review-constitution', type: 'gate' },
+    { id: 'specify' }, { id: 'review-spec', type: 'gate' },
+    { id: 'plan' }
+  ]
+  // a paused gate points at the step it reviews
+  const atGate = progressFor(steps, { status: 'paused', current_step_id: 'review-spec' })
+  assert.equal(atGate.total, 3)
+  assert.equal(atGate.index, 2)
+  assert.equal(atGate.title, 'Describe what to build')
+
+  const done = progressFor(steps, { status: 'completed', current_step_id: 'plan' })
+  assert.equal(done.index, 3)
+  assert.equal(done.percent, 100)
+
+  assert.equal(progressFor([], null).total, 0)
+})
+
+test('progressFor survives an unknown step id', () => {
+  const progress = progressFor([{ id: 'specify' }], { status: 'running', current_step_id: 'mystery' })
+  assert.equal(progress.index, 1)
+  assert.equal(progress.title, 'Describe what to build')
+})
+
+test('artifactForGate finds the file a gate reviews', () => {
+  const artifacts = [
+    { name: 'spec.md', path: 'specs/001-x/spec.md' },
+    { name: 'plan.md', path: 'specs/001-x/plan.md' },
+    { name: 'assessment.md', path: '.specify/bugs/login-crash/assessment.md' }
+  ]
+  assert.equal(artifactForGate(artifacts, 'review-spec').name, 'spec.md')
+  assert.equal(artifactForGate(artifacts, 'review-plan').name, 'plan.md')
+  assert.equal(artifactForGate(artifacts, 'review-assessment').name, 'assessment.md')
+  assert.equal(artifactForGate(artifacts, 'review-unknown'), null)
+  assert.equal(artifactForGate([], 'review-spec'), null)
 })

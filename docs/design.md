@@ -154,6 +154,15 @@ stock gate without it ignores every `-i` you pass and pauses forever. `init` now
 patches every installed workflow after scaffolding, and `POST
 /repair-workflows` does the same for projects created earlier.
 
+### The wizard's decisions are testable
+
+The pane's judgement calls — which inputs to ask for, where the run is, which file
+a gate reviews — live in `src/core.mjs` as pure functions (`visibleInputs`,
+`flowSteps`, `progressFor`, `artifactForGate`) and are covered by `npm test`. That
+is where both reported defects came from: a gate whose id (`review-spec`) does not
+follow its step's name (`specify`), and verdict carriers rendering as questions.
+Matching gates by position, not by name, is the fix the test forced.
+
 ### The clarification interview
 
 spec-kit marks ambiguity inline as `[NEEDS CLARIFICATION: ...]`, and its own

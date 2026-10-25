@@ -823,6 +823,103 @@ function dispatchMessage(action, { project, feature, spec, constitution, tasks }
   ].join('\n')
   return { action, title: `Implement ${label}`, prompt, files }
 }
+
+
+// ---------------------------------------------------------------------------
+// wizard model — pure, so the pane's decisions are testable without a DOM
+// ---------------------------------------------------------------------------
+
+/** Human titles for spec-kit steps; falls back to the id when unknown. */
+const STEP_TITLES = Object.freeze({
+  constitution: 'Set the ground rules',
+  specify: 'Describe what to build',
+  clarify: 'Resolve ambiguity',
+  plan: 'Choose the tech stack',
+  checklist: 'Validate the spec',
+  tasks: 'Break the work down',
+  analyze: 'Check consistency',
+  implement: 'Build it',
+  converge: 'Verify completeness',
+  assess: 'Assess the bug',
+  fix: 'Fix the assessed cause',
+  test: 'Test the fix',
+  intake: 'Capture the idea',
+  research: 'Research the evidence',
+  define: 'Define the problem',
+  shape: 'Shape the options',
+  decide: 'Make the decision'
+})
+
+/**
+ * Inputs worth asking a person about.
+ *
+ * `gate_*` carry gate verdicts to the engine and `integration` is project setup;
+ * rendering them as questions was a visible defect.
+ */
+function visibleInputs(inputs = []) {
+  return (inputs || []).filter(input => input && input.name && !/^gate_/.test(input.name) && input.name !== 'integration')
+}
+
+/** Steps a person progresses through: gates are checkpoints, not work items. */
+function flowSteps(steps = []) {
+  return (steps || []).filter(step => step && step.type !== 'gate')
+}
+
+/**
+ * Where the run is, in the flow, for the progress header.
+ *
+ * Gates sit directly after the step they review, so a gate's position is the
+ * last command step before it. Matching gate ids by name is wrong in practice:
+ * `specify`'s gate is `review-spec`, not `review-specify`.
+ */
+function progressFor(steps = [], run = null) {
+  const list = steps || []
+  const flow = flowSteps(list)
+  if (!flow.length) return { index: 0, total: 0, title: '', id: '', percent: 0 }
+
+  const currentId = run && run.current_step_id ? String(run.current_step_id) : ''
+  let lastCommand = 0
+  let position = 0
+  for (const step of list) {
+    if (step.type === 'gate') {
+      if (step.id === currentId) position = lastCommand
+      continue
+    }
+    const index = flow.findIndex(item => item.id === step.id)
+    if (index >= 0) lastCommand = index
+    if (step.id === currentId && index >= 0) position = index
+  }
+
+  const done = run && run.status === 'completed'
+  const index = done ? flow.length : position + 1
+  const id = (flow[position] || {}).id || ''
+  return {
+    index,
+    total: flow.length,
+    id,
+    title: STEP_TITLES[id] || id,
+    percent: Math.round((index / flow.length) * 100)
+  }
+}
+
+/**
+ * The artifact a gate is reviewing.
+ *
+ * Gate ids are `review-<step>`; artifact names follow the step (`spec.md`,
+ * `plan.md`, `assessment.md`). Falls back to a path containing the step name,
+ * then to nothing rather than guessing wrong.
+ */
+function artifactForGate(artifacts = [], gateStepId = '') {
+  const kind = String(gateStepId || '').replace(/^review-/, '').replace(/_/g, '-')
+  if (!kind) return null
+  const list = artifacts || []
+  return (
+    list.find(item => item && item.name === `${kind}.md`) ||
+    list.find(item => item && item.name === kind) ||
+    list.find(item => item && String(item.path || '').toLowerCase().includes(kind.toLowerCase())) ||
+    null
+  )
+}
 // ---- end inlined core ----
 
 const ID = 'spec-kit-hermes'
@@ -921,56 +1018,16 @@ const PROCESS_COPY = [
   }
 ]
 
-const STEP_TITLES = {
-  constitution: 'Set the ground rules',
-  specify: 'Describe what to build',
-  clarify: 'Resolve ambiguity',
-  plan: 'Choose the tech stack',
-  checklist: 'Validate the spec',
-  tasks: 'Break the work down',
-  analyze: 'Check consistency',
-  implement: 'Build it',
-  converge: 'Verify completeness',
-  assess: 'Assess the bug',
-  fix: 'Fix the assessed cause',
-  test: 'Test the fix',
-  intake: 'Capture the idea',
-  research: 'Research the evidence',
-  define: 'Define the problem',
-  shape: 'Shape the options',
-  decide: 'Make the decision'
-}
-
-function IntegrationBanner({ ok, busy, onRepair }) {
-  if (ok !== false) return null
-  return jsxs('div', { className: 'sk-panel rounded border sk-border p-2 flex flex-col gap-1', children: [
-    jsx('p', { className: 'sk-small sk-medium sk-err', children: 'Dispatched steps are not told which project they are in' }),
-    jsx('p', { className: 'sk-tiny sk-dim', children: 'spec-kit was reinstalled and the working-directory fix is gone, so generated files land beside your workspace instead of in the project.' }),
-    jsx(Button, { size: 'xs', variant: 'outline', onClick: onRepair, disabled: busy, children: 'Re-apply fix' })
-  ] })
-}
-
 function ProgressHeader({ steps, run }) {
-  const flow = (steps || []).filter(step => step.type !== 'gate')
-  if (!flow.length) return null
-  const currentId = __str(run && run.current_step_id)
-  // a gate reports its own id; the work it reviews is the step before it
-  const position = Math.max(0, flow.findIndex(step => step.id === currentId || `review-${step.id}` === currentId))
-  const total = flow.length
-  const done = run && run.status === 'completed'
-  const index = done ? total : position + 1
-  const step = flow[position] || {}
-  const title = STEP_TITLES[step.id] || titleCase(step.id)
+  const progress = progressFor(steps, run)
+  if (!progress.total) return null
   return jsxs('div', { className: 'flex flex-col gap-1', children: [
     jsxs('div', { className: 'flex items-baseline justify-between gap-2', children: [
-      jsx('p', { className: 'sk-body sk-medium', children: title }),
-      jsx('span', { className: 'shrink-0 sk-tiny sk-faint', children: done ? `${total} of ${total}` : `${index} of ${total}` })
+      jsx('p', { className: 'sk-body sk-medium', children: progress.title }),
+      jsx('span', { className: 'shrink-0 sk-tiny sk-faint', children: `${progress.index} of ${progress.total}` })
     ] }),
     jsx('div', { className: 'sk-bar w-full', children:
-      jsx('div', {
-        className: 'sk-bar-fill',
-        style: { width: `${Math.round((index / total) * 100)}%` }
-      })
+      jsx('div', { className: 'sk-bar-fill', style: { width: `${progress.percent}%` } })
     })
   ] })
 }
@@ -1139,11 +1196,7 @@ function PathChoice({ onPick, busy }) {
 }
 
 function StartCard({ process, values, onChange, onStart, busy, error }) {
-  const inputs = ((process && process.inputs) || []).filter(
-    // gate_* carry verdicts to the engine; integration is project setup. Neither
-    // is a question for the person starting a feature.
-    input => !/^gate_/.test(input.name) && input.name !== 'integration'
-  )
+  const inputs = visibleInputs((process && process.inputs) || [])
   const fields = inputs.length ? inputs : [{ name: 'spec', prompt: 'Describe what you want to build', required: true }]
   const ready = fields.filter(field => field.required).every(field => __str(values[field.name]))
   return jsxs('div', { className: 'flex flex-col gap-2', children: [
@@ -1359,12 +1412,7 @@ function SpecKitPane() {
   // A gate opens the artifact it is reviewing, so you edit before approving.
   useEffect(() => {
     if (!run || run.status !== 'paused' || !run.gate || open) return
-    const stepId = __str(run.gate.step_id)
-    const kind = stepId.replace(/^review-/, '').replace(/_/g, '-')
-    const match =
-      artifacts.find(item => item.name === `${kind}.md`) ||
-      artifacts.find(item => item.name === kind) ||
-      artifacts.find(item => item.path.toLowerCase().includes(kind.toLowerCase()))
+    const match = artifactForGate(artifacts, run.gate.step_id)
     if (match) openArtifact(match.path)
   }, [run, artifacts, open, openArtifact])
 
