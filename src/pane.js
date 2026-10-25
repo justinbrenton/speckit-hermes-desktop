@@ -200,6 +200,26 @@ function FolderRow({ draft, onDraft, onUse, onInit, hasSpecify, busy, onBrowse }
   ] })
 }
 
+function QuestionsPanel({ questions, answers, onChange, onApply, busy, error }) {
+  if (!questions.length) return null
+  return jsxs('div', { className: 'flex flex-col gap-2 rounded border border-(--ui-accent) p-2', children: [
+    jsxs('p', { className: 'text-[0.6875rem] font-medium', children: [
+      questions.length === 1 ? '1 open question' : `${questions.length} open questions`
+    ] }),
+    jsx('p', { className: 'text-[0.625rem] text-(--ui-text-tertiary)', children: 'These are the [NEEDS CLARIFICATION] markers in this file. Answers are written back in place.' }),
+    ...questions.map(question => jsxs('div', { className: 'flex flex-col gap-1', children: [
+      jsx('span', { className: 'text-[0.625rem] text-(--ui-text-secondary)', children: question.text }),
+      jsx(Input, {
+        value: answers[String(question.index)] || '',
+        placeholder: 'Your answer',
+        onChange: event => onChange(String(question.index), event.target.value)
+      })
+    ] }, question.index)),
+    error ? jsx('p', { className: 'text-[0.625rem] text-red-400', children: error }) : null,
+    jsx(Button, { size: 'sm', onClick: onApply, disabled: busy, children: busy ? 'Writing…' : 'Apply answers' })
+  ] })
+}
+
 function ArtifactEditor({ artifact, draft, onDraft, onSave, onClose, busy, dirty, error }) {
   if (!artifact) return null
   return jsxs('div', { className: 'flex min-h-0 flex-1 flex-col gap-1 rounded border border-(--ui-border)', children: [
@@ -337,6 +357,8 @@ function SpecKitPane() {
   const [browseData, setBrowseData] = useState(null)
   const [mode, setMode] = useState('full')
   const [pathChosen, setPathChosen] = useState(false)
+  const [questions, setQuestions] = useState([])
+  const [answers, setAnswers] = useState({})
   const pollRef = useRef(null)
 
   const openBrowser = useCallback(async path => {
@@ -414,6 +436,13 @@ function SpecKitPane() {
       setDraft(__str(file && file.content))
       setSavedContent(__str(file && file.content))
       setOpen({ path, mtime: file && file.mtime })
+      setAnswers({})
+      try {
+        const asked = await rest(`/questions?cwd=${encodeURIComponent(folder)}&path=${encodeURIComponent(path)}`)
+        setQuestions((asked && asked.questions) || [])
+      } catch (err) {
+        setQuestions([])
+      }
     } catch (err) {
       setEditError(errorText(err))
     }
@@ -430,6 +459,28 @@ function SpecKitPane() {
       artifacts.find(item => item.path.toLowerCase().includes(kind.toLowerCase()))
     if (match) openArtifact(match.path)
   }, [run, artifacts, open, openArtifact])
+
+  const applyAnswers = useCallback(async () => {
+    if (!open) return
+    setBusy(true)
+    setEditError('')
+    try {
+      const result = await rest('/clarify', {
+        method: 'POST',
+        body: { cwd: folder, path: open.path, answers }
+      })
+      setDraft(__str(result && result.content))
+      setSavedContent(__str(result && result.content))
+      setOpen({ path: open.path, mtime: result && result.mtime })
+      const asked = await rest(`/questions?cwd=${encodeURIComponent(folder)}&path=${encodeURIComponent(open.path)}`)
+      setQuestions((asked && asked.questions) || [])
+      setAnswers({})
+    } catch (err) {
+      setEditError(errorText(err))
+    } finally {
+      setBusy(false)
+    }
+  }, [open, answers, folder])
 
   const saveArtifact = useCallback(async () => {
     if (!open) return
@@ -650,6 +701,16 @@ function SpecKitPane() {
       : null,
     status === 'completed' || status === 'aborted' || status === 'failed'
       ? jsx(DoneCard, { run, onRestart: restart })
+      : null,
+    open && questions.length
+      ? jsx(QuestionsPanel, {
+          questions,
+          answers,
+          onChange: (index, value) => setAnswers(prev => ({ ...prev, [index]: value })),
+          onApply: applyAnswers,
+          busy,
+          error: editError
+        })
       : null,
     open
       ? jsx(ArtifactEditor, {

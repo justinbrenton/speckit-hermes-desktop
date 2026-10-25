@@ -1206,6 +1206,90 @@ def browse(path: str = Query("", description="Directory to list; empty lists fil
     return {"path": str(base), "parent": parent, "entries": entries[:500]}
 
 
+# ---------------------------------------------------------------------------
+# clarification interview
+# ---------------------------------------------------------------------------
+
+CLARIFICATION = re.compile(r"\[NEEDS CLARIFICATION:\s*([^\]]*)\]")
+
+
+def _read_confined(root: Path, path: str) -> Path:
+    target = (root / path).resolve()
+    allowed = [
+        (root / ".specify").resolve(),
+        (root / "specs").resolve(),
+    ]
+    if not any(base == target or base in target.parents for base in allowed):
+        raise HTTPException(status_code=400, detail="path must stay inside .specify/ or specs/")
+    return target
+
+
+@router.get("/questions")
+def list_questions(
+    cwd: str = Query(..., description="Absolute project directory"),
+    path: str = Query(..., description="Artifact to inspect"),
+) -> dict[str, Any]:
+    """Open `[NEEDS CLARIFICATION: ...]` markers in one artifact.
+
+    spec-kit uses these markers as its quality gate, and its own guidance for
+    resolving them is to edit the artifact or tell the agent. This surfaces them
+    as questions so the answers can be written back in one pass.
+    """
+    root = _project_root(cwd)
+    target = _read_confined(root, path)
+    if not target.is_file():
+        raise HTTPException(status_code=404, detail=f"not found: {path}")
+    text = _read_text(target)
+    questions = [
+        {"index": index, "text": match.group(1).strip()}
+        for index, match in enumerate(CLARIFICATION.finditer(text))
+    ]
+    return {"path": path, "questions": questions, "count": len(questions)}
+
+
+class AnswerRequest(BaseModel):
+    cwd: str
+    path: str
+    answers: dict[str, str] = {}
+
+
+@router.post("/clarify")
+def answer_questions(payload: AnswerRequest) -> dict[str, Any]:
+    """Replace answered markers in place; unanswered ones stay as markers."""
+    root = _project_root(payload.cwd)
+    target = _read_confined(root, payload.path)
+    if not target.is_file():
+        raise HTTPException(status_code=404, detail=f"not found: {payload.path}")
+
+    text = _read_text(target)
+    matches = list(CLARIFICATION.finditer(text))
+    answered = 0
+    out: list[str] = []
+    cursor = 0
+    for index, match in enumerate(matches):
+        answer = (payload.answers.get(str(index)) or "").strip()
+        out.append(text[cursor:match.start()])
+        if answer:
+            out.append(answer)
+            answered += 1
+        else:
+            out.append(match.group(0))
+        cursor = match.end()
+    out.append(text[cursor:])
+    updated = "".join(out)
+
+    remaining = len(CLARIFICATION.findall(updated))
+    if answered:
+        _write_text_atomic(target, updated)
+    return {
+        "path": payload.path,
+        "answered": answered,
+        "remaining": remaining,
+        "content": updated,
+        "mtime": _mtime_ms(target),
+    }
+
+
 @router.get("/artifacts")
 def list_artifacts(cwd: str = Query(..., description="Absolute project directory")) -> dict[str, Any]:
     """Every spec-kit artifact under .specify, newest feature first."""

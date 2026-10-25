@@ -375,3 +375,44 @@ def test_stop_ignores_another_projects_job(client, project, tmp_path, monkeypatc
     assert killed == []
 
 
+def test_questions_come_from_clarification_markers(client, project):
+    spec = project / ".specify" / "specs" / "001-demo" / "spec.md"
+    spec.write_text(
+        "# Spec\n- [NEEDS CLARIFICATION: which auth?]\n- [NEEDS CLARIFICATION: how many users?]\n",
+        encoding="utf-8",
+    )
+    body = client.get(
+        f"{PREFIX}/questions", params={"cwd": str(project), "path": ".specify/specs/001-demo/spec.md"}
+    ).json()
+    assert body["count"] == 2
+    assert body["questions"][0]["text"] == "which auth?"
+    assert body["questions"][1]["index"] == 1
+
+
+def test_answer_writes_back_and_leaves_unanswered_markers(client, project):
+    spec = project / ".specify" / "specs" / "001-demo" / "spec.md"
+    spec.write_text(
+        "# Spec\n- [NEEDS CLARIFICATION: which auth?]\n- [NEEDS CLARIFICATION: how many users?]\n",
+        encoding="utf-8",
+    )
+    body = client.post(
+        f"{PREFIX}/clarify",
+        json={
+            "cwd": str(project),
+            "path": ".specify/specs/001-demo/spec.md",
+            "answers": {"0": "Email and password"},
+        },
+    ).json()
+    assert body["answered"] == 1
+    assert body["remaining"] == 1
+    assert "Email and password" in body["content"]
+    assert "which auth?" not in body["content"]
+    assert "how many users?" in body["content"], "an unanswered marker must survive"
+
+
+def test_questions_refuse_paths_outside_the_project(client, project):
+    response = client.get(
+        f"{PREFIX}/questions", params={"cwd": str(project), "path": "../../secrets.txt"}
+    )
+    assert response.status_code == 400
+
