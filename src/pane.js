@@ -437,6 +437,7 @@ function SpecKitPane() {
   const [logText, setLogText] = useState('')
   const [showLog, setShowLog] = useState(false)
   const [runs, setRuns] = useState([])
+  const [viewing, setViewing] = useState(null)
   const [integrationOk, setIntegrationOk] = useState(null)
   const [conflict, setConflict] = useState(null)
   const pollRef = useRef(null)
@@ -501,8 +502,28 @@ function SpecKitPane() {
     }
   }, [])
 
+  const openRun = useCallback(async (runId, path, processId) => {
+    if (!runId || !path || !processId) return
+    setBusy(true)
+    setError('')
+    try {
+      const view = await rest(`/workflows/${encodeURIComponent(processId)}/runs/${encodeURIComponent(runId)}?cwd=${encodeURIComponent(path)}`)
+      setRun(view)
+      setViewing(runId)
+      setOpen(null)
+    } catch (err) {
+      setError(errorText(err))
+    } finally {
+      setBusy(false)
+    }
+  }, [])
+
   const refreshRun = useCallback(async (path, processId) => {
     if (!path || !processId) return
+    if (viewing) {
+      // Someone is reading an earlier run; polling must not swap it underneath.
+      return
+    }
     try {
       const latest = await rest(`/workflows/${encodeURIComponent(processId)}/runs/latest?cwd=${encodeURIComponent(path)}`)
       setRun(latest)
@@ -513,7 +534,21 @@ function SpecKitPane() {
     } catch (err) {
       setError(errorText(err))
     }
-  }, [])
+  }, [viewing])
+
+  const backToLatest = useCallback(async () => {
+    // Read the latest directly: refreshRun skips while `viewing` is set, and that
+    // state has not re-rendered yet at this point.
+    setViewing(null)
+    if (!folder || !process) return
+    try {
+      const latest = await rest(`/workflows/${encodeURIComponent(process.id)}/runs/latest?cwd=${encodeURIComponent(folder)}`)
+      setRun(latest)
+    } catch (err) {
+      setError(errorText(err))
+    }
+  }, [folder, process])
+
 
   useEffect(() => {
     const stored = ctxRef && ctxRef.storage ? ctxRef.storage.get('specKitProject', '') : ''
@@ -681,6 +716,7 @@ function SpecKitPane() {
   const pickProcess = useCallback(async item => {
     setProcess(item)
     setPathChosen(item.id !== 'speckit')
+    setViewing(null)
     setError('')
     await refreshRun(folder, item.id)
   }, [folder, refreshRun])
@@ -688,6 +724,7 @@ function SpecKitPane() {
   const start = useCallback(async () => {
     const spec = __str(values.spec || values.report || values.idea)
     if (!spec || !process || !folder) return
+    setViewing(null)
     setBusy(true)
     setError('')
     try {
@@ -852,7 +889,13 @@ function SpecKitPane() {
               jsx(StartCard, { process, values, onChange: (name, value) => setValues(prev => ({ ...prev, [name]: value })), onStart: start, busy, error })
             ] }))
       : null,
-    status === 'running'
+    viewing
+      ? jsxs('div', { className: 'flex items-center justify-between gap-2 rounded border sk-border px-2 py-1', children: [
+          jsx('span', { className: 'sk-tiny sk-dim', children: `Earlier run ${viewing} · ${status}` }),
+          jsx(Button, { size: 'xs', variant: 'outline', onClick: backToLatest, disabled: busy, children: 'Back to latest' })
+        ] })
+      : null,
+    status === 'running' && !viewing
       ? jsxs('div', { className: 'flex items-center justify-between gap-2', children: [
           jsxs('div', { className: 'flex items-center gap-2', children: [
             jsx(GlyphSpinner, { size: 'sm' }),
@@ -874,7 +917,7 @@ function SpecKitPane() {
             : null
         ] })
       : null,
-    status === 'completed' || status === 'aborted' || status === 'failed'
+    !viewing && (status === 'completed' || status === 'aborted' || status === 'failed')
       ? jsx(DoneCard, { run, onRestart: restart })
       : null,
     open && questions.length
@@ -916,18 +959,20 @@ function SpecKitPane() {
             runs.length > 1
               ? jsxs('div', { className: 'mt-2 flex flex-col gap-1', children: [
                   jsx('p', { className: 'sk-tiny sk-medium sk-dim', children: 'Previous runs' }),
-                  ...runs.slice(1, 6).map(item => jsxs('div', {
-                    className: 'flex items-center justify-between gap-2 rounded border sk-border px-2 py-1 sk-tiny',
+                  ...runs.slice(1, 6).map(item => jsxs('button', {
+                    type: 'button',
+                    onClick: () => openRun(item.run_id, folder, process.id),
+                    className: 'flex items-center justify-between gap-2 rounded border sk-border px-2 py-1 text-left sk-tiny sk-hover',
                     children: [
                       jsx('span', { className: 'sk-truncate', children: item.summary || item.run_id }),
-                      jsx('span', { className: 'shrink-0 sk-faint', children: item.status })
+                      jsx('span', { className: 'shrink-0 sk-faint', children: viewing === item.run_id ? 'viewing' : item.status })
                     ]
                   }, item.run_id))
                 ] })
               : null
           ] })
         }),
-    status === 'paused' && run.gate
+    status === 'paused' && run.gate && !viewing
       ? jsxs('div', { className: 'flex flex-col gap-2 border-t sk-border pt-2', children: [
           run.output_check && run.output_check.checked && run.output_check.unchanged
             ? jsx('p', {

@@ -797,3 +797,37 @@ def test_optional_inputs_carry_a_default_so_they_are_never_empty():
             continue
         assert spec.get("default"), f"{name} is optional but has no default"
 
+
+def _write_run(project, run_id, workflow_id, status="completed", mtime_offset=0.0):
+    import os
+    import time
+
+    directory = project / ".specify" / "workflows" / "runs" / run_id
+    directory.mkdir(parents=True, exist_ok=True)
+    state = {"run_id": run_id, "workflow_id": workflow_id, "status": status,
+             "current_step_id": "review-test", "step_results": {}}
+    path = directory / "state.json"
+    path.write_text(json.dumps(state), encoding="utf-8")
+    stamp = time.time() + mtime_offset
+    os.utime(path, (stamp, stamp))
+    return path
+
+
+def test_history_is_scoped_to_the_process(client, project, cli):
+    _write_run(project, "speckitrun1", "speckit", mtime_offset=-30)
+    _write_run(project, "bugrun1", "bug", mtime_offset=-5)
+
+    body = client.get(f"{PREFIX}/workflows/speckit/runs", params={"cwd": str(project)}).json()
+    assert "speckitrun1" in [item["run_id"] for item in body["runs"]]
+    assert "bugrun1" not in [item["run_id"] for item in body["runs"]], "another process's run is not ours"
+
+    latest = client.get(f"{PREFIX}/workflows/speckit/runs/latest", params={"cwd": str(project)}).json()
+    # The fixture's own run has no workflow id, so it is allowed through; the bug
+    # run is not, even though it is the newest on disk.
+    assert latest["run_id"] != "bugrun1", "the newest run of a different workflow must be ignored"
+
+
+def test_a_state_without_a_workflow_id_is_kept(client, project, cli):
+    _write_run(project, "legacy1", None)
+    body = client.get(f"{PREFIX}/workflows/speckit/runs", params={"cwd": str(project)}).json()
+    assert "legacy1" in [item["run_id"] for item in body["runs"]], "an older state with no id is not hidden"

@@ -1594,6 +1594,8 @@ def list_runs(process: str, cwd: str = Query(..., description="Absolute project 
                 state = json.loads(state_file.read_text(encoding="utf-8"))
             except (OSError, ValueError):
                 continue
+            if not _run_belongs(state, process):
+                continue
             out.append({
                 "run_id": entry.name,
                 "status": state.get("status"),
@@ -1804,11 +1806,36 @@ def read_artifact(
     return {"path": path, "content": _read_text(target), "mtime": _mtime_ms(target), "exists": True}
 
 
-def _latest_run(root: Path) -> Optional[dict[str, Any]]:
+def _run_belongs(state: dict[str, Any], process: str) -> bool:
+    """Is this run's workflow the process being asked about?
+
+    Every process keeps its runs in one shared directory, so a list or a "latest"
+    that ignores the workflow id shows another process's run. States written by
+    older builds carry no id; those are kept rather than hidden.
+    """
+    ids = {
+        str(state.get("workflow_id") or "").strip(),
+        str(state.get("installed_workflow_id") or "").strip(),
+    }
+    ids.discard("")
+    return not ids or process in ids
+
+
+def _latest_run(root: Path, process: Optional[str] = None) -> Optional[dict[str, Any]]:
     runs = root / ".specify" / "workflows" / "runs"
     if not runs.is_dir():
         return None
     candidates = [d for d in runs.iterdir() if d.is_dir() and (d / "state.json").is_file()]
+    if process:
+        kept = []
+        for directory in candidates:
+            try:
+                state = json.loads((directory / "state.json").read_text(encoding="utf-8"))
+            except (OSError, ValueError):
+                continue
+            if _run_belongs(state, process):
+                kept.append(directory)
+        candidates = kept
     if not candidates:
         return None
     newest = max(candidates, key=lambda d: (d / "state.json").stat().st_mtime)
@@ -1864,7 +1891,7 @@ def workflow_latest(process: str, cwd: str = Query(..., description="Absolute pr
     """Newest run's live state. The pane polls this instead of holding a request open."""
     root = _project_root(cwd)
     _process_data(root, process)
-    run = _latest_run(root)
+    run = _latest_run(root, process)
     if run is None:
         return {"process": process, "status": "none", "run_id": None, "gate": None, "nodes": []}
     return _run_view(process, run, root)
