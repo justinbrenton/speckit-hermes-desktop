@@ -504,6 +504,11 @@ def _run_state_status(root: Path, run_id: str) -> Optional[str]:
         return None
 
 
+#: A gate we answered seconds ago can still show "paused" on disk. Killing the
+#: process in that window kills the step that just started, so wait it out.
+GATE_TAKEOVER_GRACE = 20.0
+
+
 def _active_key(root: Path, process: str) -> tuple[str, str]:
     return (str(root).lower(), process)
 
@@ -866,7 +871,12 @@ def workflow_run(process: str, payload: WorkflowRunRequest) -> dict[str, Any]:
             _snapshot_file(root, run_id).write_text(json.dumps(before_artifacts), encoding="utf-8")
         except OSError:
             pass
-    ACTIVE_RUNS[key] = {"proc": JOBS.get(job["job_id"], {}).get("proc"), "run_id": run_id, "kind": "run"}
+    ACTIVE_RUNS[key] = {
+        "proc": JOBS.get(job["job_id"], {}).get("proc"),
+        "run_id": run_id,
+        "kind": "run",
+        "started_at": time.time(),
+    }
     return {
         "process": process,
         "run_id": run_id,
@@ -904,7 +914,8 @@ def workflow_resume(process: str, run_id: str, payload: WorkflowResumeRequest) -
         # file says paused. That process has nothing left to do: the run is on
         # disk, so answering the gate now is safe and must not be refused. A run
         # that is genuinely executing still gets the 409.
-        if _run_state_status(root, run_id) == "paused":
+        age = time.time() - float(ACTIVE_RUNS[key].get("started_at") or 0)
+        if _run_state_status(root, run_id) == "paused" and age > GATE_TAKEOVER_GRACE:
             parked = ACTIVE_RUNS.pop(key, {})
             proc = parked.get("proc")
             if proc is not None and proc.poll() is None:
@@ -919,7 +930,12 @@ def workflow_resume(process: str, run_id: str, payload: WorkflowResumeRequest) -
             )
     _write_snapshot(root, run_id)
     job = _start_job(args, root, max(30, min(payload.timeout, SPECIFY_TIMEOUT_MAX)))
-    ACTIVE_RUNS[key] = {"proc": JOBS.get(job["job_id"], {}).get("proc"), "run_id": run_id, "kind": "resume"}
+    ACTIVE_RUNS[key] = {
+        "proc": JOBS.get(job["job_id"], {}).get("proc"),
+        "run_id": run_id,
+        "kind": "resume",
+        "started_at": time.time(),
+    }
     return {"process": process, "run_id": run_id, "job_id": job["job_id"], "running": True}
 
 

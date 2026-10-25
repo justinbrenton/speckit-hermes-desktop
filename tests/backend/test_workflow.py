@@ -879,3 +879,24 @@ def test_the_short_path_has_no_checklist_or_analyze_gate(client, project):
     assert "review-checklist" not in body["steps"]
     assert "review-analyze" not in body["steps"]
 
+
+def test_resume_does_not_kill_the_step_it_just_started(client, project, cli):
+    """A gate answered seconds ago still reads "paused" on disk for a moment."""
+    run_dir = project / ".specify" / "workflows" / "runs" / "fresh1"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "state.json").write_text(json.dumps({"workflow_id": "speckit", "status": "paused"}), encoding="utf-8")
+
+    proc = ParkedProc()
+    plugin_api.ACTIVE_RUNS[(str(project).lower(), "speckit")] = {
+        "proc": proc, "run_id": "fresh1", "kind": "resume", "started_at": time.time()
+    }
+    try:
+        response = client.post(
+            f"{PREFIX}/workflows/speckit/runs/fresh1/resume",
+            json={"cwd": str(project), "answers": {"gate_review_spec": "approve"}},
+        )
+        assert response.status_code == 409, response.text
+        assert proc.killed is False, "a step that just started must not be killed"
+    finally:
+        plugin_api.ACTIVE_RUNS.clear()
+
