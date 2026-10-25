@@ -126,6 +126,15 @@ const PROCESS_COPY = [
   }
 ]
 
+function IntegrationBanner({ ok, busy, onRepair }) {
+  if (ok !== false) return null
+  return jsxs('div', { className: 'sk-panel flex flex-col gap-1 rounded border p-2 sk-border', children: [
+    jsx('p', { className: 'sk-small sk-medium sk-err', children: 'Dispatched steps are not told which project they are in' }),
+    jsx('p', { className: 'sk-tiny sk-dim', children: 'spec-kit was reinstalled and the working-directory fix is gone, so generated files land beside your workspace instead of in the project.' }),
+    jsx(Button, { size: 'xs', variant: 'outline', onClick: onRepair, disabled: busy, children: 'Re-apply fix' })
+  ] })
+}
+
 function ProgressHeader({ steps, run }) {
   const progress = progressFor(steps, run)
   if (!progress.total) return null
