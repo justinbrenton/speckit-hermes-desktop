@@ -1,8 +1,10 @@
 name: tests
 
-# The plugin's own suites. The backend suite needs a Hermes install on PYTHONPATH
-# to run, so CI checks its syntax and the manifests instead of pretending to run
-# tests it cannot. Run `python -m pytest tests/backend -q` locally for those.
+# The plugin's own suites. The backend suite turned out not to need a Hermes
+# install: it imports the router and drives it with Starlette's test client, and
+# the only Hermes imports are lazy, inside the Kanban routes. So it runs on all
+# three platforms here. The one thing CI cannot exercise is a real `specify`
+# dispatch, because that needs the CLI.
 
 on:
   push:
@@ -25,6 +27,21 @@ jobs:
       - run: npm run build
       - run: npm test
 
+  backend:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements-dev.txt
+      - name: Run the backend suite
+        run: python -m pytest tests/backend -q
+
   manifests:
     runs-on: ubuntu-latest
     steps:
@@ -32,7 +49,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install pyyaml
+      - run: pip install -r requirements-dev.txt
       - name: Compile the backend and its tests
         run: python -m py_compile dashboard/plugin_api.py tests/backend/*.py
       - name: Manifest parity
