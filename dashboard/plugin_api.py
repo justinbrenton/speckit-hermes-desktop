@@ -1766,9 +1766,27 @@ def browse(path: str = Query("", description="Directory to list; empty lists fil
 # clarification interview
 # ---------------------------------------------------------------------------
 
-# No \s* after the colon: [^\]]* can match spaces too, and two overlapping
-# quantifiers make matching quadratic on a long run of spaces. Trim instead.
-CLARIFICATION = re.compile(r"\[NEEDS CLARIFICATION:([^\]]*)\]")
+#: spec-kit's marker. Parsed with plain string scans, not a regex: any pattern
+#: that has to backtrack over the body is quadratic on input with many prefixes
+#: and no closing bracket, and this text comes from a file the model wrote.
+CLARIFICATION_PREFIX = "[NEEDS CLARIFICATION:"
+
+
+def clarification_markers(text: str) -> list[tuple[int, int, str]]:
+    """(start, end, body) for every complete `[NEEDS CLARIFICATION: ...]` marker."""
+    markers: list[tuple[int, int, str]] = []
+    search_from = 0
+    while True:
+        start = text.find(CLARIFICATION_PREFIX, search_from)
+        if start < 0:
+            break
+        body_from = start + len(CLARIFICATION_PREFIX)
+        close = text.find("]", body_from)
+        if close < 0:
+            break
+        markers.append((start, close + 1, text[body_from:close]))
+        search_from = close + 1
+    return markers
 
 
 def _read_confined(root: Path, path: str) -> Path:
@@ -1799,8 +1817,8 @@ def list_questions(
         raise HTTPException(status_code=404, detail=f"not found: {path}")
     text = _read_text(target)
     questions = [
-        {"index": index, "text": match.group(1).strip()}
-        for index, match in enumerate(CLARIFICATION.finditer(text))
+        {"index": index, "text": body.strip()}
+        for index, (_, _, body) in enumerate(clarification_markers(text))
     ]
     return {"path": path, "questions": questions, "count": len(questions)}
 
@@ -1820,23 +1838,23 @@ def answer_questions(payload: AnswerRequest) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail=f"not found: {payload.path}")
 
     text = _read_text(target)
-    matches = list(CLARIFICATION.finditer(text))
+    markers = clarification_markers(text)
     answered = 0
     out: list[str] = []
     cursor = 0
-    for index, match in enumerate(matches):
+    for index, (start, end, _) in enumerate(markers):
         answer = (payload.answers.get(str(index)) or "").strip()
-        out.append(text[cursor:match.start()])
+        out.append(text[cursor:start])
         if answer:
             out.append(answer)
             answered += 1
         else:
-            out.append(match.group(0))
-        cursor = match.end()
+            out.append(text[start:end])
+        cursor = end
     out.append(text[cursor:])
     updated = "".join(out)
 
-    remaining = len(CLARIFICATION.findall(updated))
+    remaining = len(clarification_markers(updated))
     if answered:
         _write_text_atomic(target, updated)
     return {

@@ -969,3 +969,32 @@ def test_workflow_parse_errors_do_not_leak_internals(client, tmp_path):
     assert message == "workflow could not be parsed"
     assert "line" not in message.lower() and "yaml" not in message.lower()
 
+
+def test_marker_parsing_is_literal_and_survives_bad_input():
+    text = "A [NEEDS CLARIFICATION: which store?] B [NEEDS CLARIFICATION: which host?]"
+    bodies = [body.strip() for _, _, body in plugin_api.clarification_markers(text)]
+    assert bodies == ["which store?", "which host?"]
+
+    # No closing bracket anywhere: nothing is returned, and it returns immediately.
+    unterminated = "[NEEDS CLARIFICATION:" + " " * 50000
+    started = time.time()
+    assert plugin_api.clarification_markers(unterminated) == []
+    assert time.time() - started < 0.5
+
+
+def test_answering_questions_replaces_only_the_answered_marker(client, project, cli):
+    artifact = project / ".specify" / "specs" / "001-demo" / "spec.md"
+    artifact.write_text(
+        "# Spec\n[NEEDS CLARIFICATION: which store?]\nKeep this.\n[NEEDS CLARIFICATION: which host?]\n",
+        encoding="utf-8",
+    )
+    body = client.post(
+        f"{PREFIX}/clarify",
+        json={"cwd": str(project), "path": ".specify/specs/001-demo/spec.md", "answers": {"0": "SQLite"}},
+    ).json()
+    assert body["answered"] == 1
+    assert body["remaining"] == 1
+    assert "SQLite" in body["content"]
+    assert "Keep this." in body["content"]
+    assert "[NEEDS CLARIFICATION: which host?]" in body["content"]
+
