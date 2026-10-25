@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 
-import { install } from '../scripts/install.mjs'
+import { install, resolveHome } from '../scripts/install.mjs'
 
 const LEGACY = '// legacy plugin.js from before the v2 install\nexport default { id: "legacy", register() {} }\n'
 
@@ -56,3 +56,17 @@ test('dry run writes nothing', async () => {
     await rm(home, { recursive: true, force: true })
   }
 })
+
+test('an absolute POSIX home keeps its leading slash', () => {
+  // Splitting on "/" and dropping empty segments turned "/tmp/x" into "tmp/x",
+  // which installs into the working directory instead of the requested one.
+  assert.equal(resolveHome('/tmp/x').home, '/tmp/x')
+  assert.equal(resolveHome('/home/me/.hermes/profiles/codie').home, '/home/me/.hermes')
+  assert.equal(resolveHome('/home/me/.hermes/profiles/codie').profile, 'codie')
+})
+
+test('a Windows home is normalised to forward slashes and stays absolute', () => {
+  assert.equal(resolveHome('C:\\Users\\me\\hermes').home, 'C:/Users/me/hermes')
+  assert.equal(resolveHome('C:\\Users\\me\\hermes\\profiles\\two').profile, 'two')
+})
+

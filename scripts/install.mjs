@@ -58,17 +58,19 @@ export function resolveHome(explicit, env = process.env) {
   if (candidate) {
     // Segment split instead of a separator regex: a HERMES_HOME exported by another
     // process can carry doubled backslashes, and '/' form is fine for node's fs.
-    const segments = String(candidate)
-      .split('')
-      .map(ch => (ch === CH_BACKSLASH || ch === '/' ? '/' : ch))
-      .join('')
-      .split('/')
-      .filter(Boolean)
+    // The leading separator is remembered before empty segments are dropped: on
+    // POSIX a dropped one turns "/tmp/x" into the relative path "tmp/x".
+    const normalised = String(candidate)
+      .split(CH_BACKSLASH)
+      .join('/')
+      .replace(/\/{2,}/g, '/')
+    const root = normalised.startsWith('//') ? '//' : normalised.startsWith('/') ? '/' : ''
+    const segments = normalised.split('/').filter(Boolean)
     const marker = segments.lastIndexOf('profiles')
     if (marker > 0 && marker === segments.length - 2) {
-      return { home: segments.slice(0, marker).join('/'), profile: segments[marker + 1] }
+      return { home: root + segments.slice(0, marker).join('/'), profile: segments[marker + 1] }
     }
-    return { home: segments.join('/'), profile: '' }
+    return { home: root + segments.join('/'), profile: '' }
   }
   if (env.LOCALAPPDATA) {
     return { home: join(env.LOCALAPPDATA, 'hermes'), profile: '' }
