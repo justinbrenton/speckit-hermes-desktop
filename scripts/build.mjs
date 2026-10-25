@@ -42,6 +42,20 @@ export async function build({ root = ROOT } = {}) {
     throw new Error('CORE_INJECT marker survived the build')
   }
 
+  // A component used but never defined renders as a crash in the app, not a
+  // build error — exactly what a deleted definition plus a surviving call site
+  // produces. Catch it here.
+  const used = new Set([...out.matchAll(/jsxs?\(([A-Z][A-Za-z0-9_]*)/g)].map(match => match[1]))
+  const defined = new Set([...out.matchAll(/function ([A-Z][A-Za-z0-9_]*)\(/g)].map(match => match[1]))
+  const fromSdk = new Set([
+    'Button', 'Badge', 'Input', 'Textarea', 'ScrollArea', 'GlyphSpinner',
+    'EmptyState', 'Codicon', 'Select', 'Dialog', 'Switch', 'Tooltip'
+  ])
+  const missing = [...used].filter(name => !defined.has(name) && !fromSdk.has(name))
+  if (missing.length) {
+    throw new Error(`plugin.js references undefined components: ${missing.join(', ')}`)
+  }
+
   const target = resolve(root, 'desktop/plugin.js')
   await mkdir(dirname(target), { recursive: true })
   await writeFile(target, out, 'utf8')
