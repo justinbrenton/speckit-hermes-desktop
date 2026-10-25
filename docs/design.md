@@ -154,6 +154,20 @@ stock gate without it ignores every `-i` you pass and pauses forever. `init` now
 patches every installed workflow after scaffolding, and `POST
 /repair-workflows` does the same for projects created earlier.
 
+### The clarification interview
+
+spec-kit marks ambiguity inline as `[NEEDS CLARIFICATION: ...]`, and its own
+guidance is to resolve those by editing the artifact or telling the agent. The
+pane turns them into a form instead: `GET /questions` lists the markers in the
+open artifact, `POST /clarify` writes the answers back in place and reports how
+many are still open. Unanswered markers survive, so the file never claims more
+certainty than it has.
+
+Answers replace the marker where it sits, so text around it stays. A marker at
+the end of a sentence reads naturally; one embedded mid-clause can read awkwardly
+("Shared team account accounts"). Editing the file directly is still the escape
+hatch, and the editor is right there.
+
 ### A step that writes nothing is a failure, not a success
 
 The engine reports a command step `completed` when its dispatch exits 0, even if
