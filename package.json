@@ -1,6 +1,6 @@
 {
   "name": "spec-kit-hermes",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "private": true,
   "type": "module",
   "description": "Spec-Kit integration for Hermes Desktop: one master pane (Spec -> Constitution -> Tasks) with real .specify/ persistence and round-trip sync",
