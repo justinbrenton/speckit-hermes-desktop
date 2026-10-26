@@ -1,8 +1,10 @@
 name: tests
 
-# The plugin's own suites. The backend suite needs a Hermes install on PYTHONPATH
-# to run, so CI checks its syntax and the manifests instead of pretending to run
-# tests it cannot. Run `python -m pytest tests/backend -q` locally for those.
+# The plugin's own suites. The backend suite turned out not to need a Hermes
+# install: it imports the router and drives it with Starlette's test client, and
+# the only Hermes imports are lazy, inside the Kanban routes. So it runs on all
+# three platforms here. The one thing CI cannot exercise is a real `specify`
+# dispatch, because that needs the CLI.
 
 on:
   push:
@@ -15,7 +17,11 @@ permissions:
 
 jobs:
   node:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -25,6 +31,74 @@ jobs:
       - run: npm run build
       - run: npm test
 
+  backend:
+    # The router suite: everything that does not need Hermes itself.
+    name: backend (router, ${{ matrix.os }}, py${{ matrix.python }})
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+        python: ["3.12"]
+        include:
+          # The oldest and newest interpreter the plugin is likely to meet.
+          - os: ubuntu-latest
+            python: "3.13"
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+      - run: pip install -r requirements-dev.txt
+      - name: Run the router suite
+        run: python -m pytest tests/backend -q -m "not hermes" --junitxml=junit.xml
+      - name: The suite must not skip anything it is not expected to skip
+        if: always()
+        run: python scripts/check-skips.py junit.xml
+
+  hermes-integration:
+    # The tests that import Hermes internals: dashboard mounting and the Kanban
+    # bridge. They are deselected from the matrix above, not skipped, so this job
+    # is the only thing between a broken integration and a green build.
+    name: backend (hermes integration)
+    runs-on: ubuntu-latest
+    env:
+      # Must satisfy plugin.yaml's requires_hermes floor. This is the commit this
+      # plugin is developed against; bump both together.
+      HERMES_COMMIT: bda3a363e969
+      # A literal path: the runner context is not available in a job-level env
+      # block, and GitHub rejects the whole workflow when it is used there.
+      HERMES_SRC: /tmp/hermes-agent
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - uses: astral-sh/setup-uv@v5
+      - name: Stage Hermes at the pinned commit
+        # Nothing pip-installable provides this version: PyPI stops at 0.19.0, and
+        # the project's setup.py refuses to build a wheel or sdist on purpose. Its
+        # uv.lock still gives the dependency set, so sync the environment without
+        # installing the project and put the source on PYTHONPATH.
+        run: |
+          mkdir -p "$HERMES_SRC"
+          curl -sSL "https://codeload.github.com/NousResearch/hermes-agent/tar.gz/${HERMES_COMMIT}" \
+            | tar xz -C "$HERMES_SRC" --strip-components=1
+          cd "$HERMES_SRC"
+          uv sync --frozen --no-install-project
+          uv pip install --python "$HERMES_SRC/.venv/bin/python" -r "$GITHUB_WORKSPACE/requirements-dev.txt"
+      - name: Confirm Hermes really imports
+        run: |
+          PYTHONPATH="$HERMES_SRC" "$HERMES_SRC/.venv/bin/python" -c \
+            "import hermes_cli.web_server_dashboard, hermes_cli.kanban_db_connect; print('hermes imports ok')"
+      - name: Run the Hermes integration tests
+        run: |
+          PYTHONPATH="$HERMES_SRC" "$HERMES_SRC/.venv/bin/python" -m pytest tests/backend \
+            -q -m hermes --junitxml=junit.xml
+      - name: No silent skips
+        if: always()
+        run: python scripts/check-skips.py junit.xml
+
   manifests:
     runs-on: ubuntu-latest
     steps:
@@ -32,7 +106,7 @@ jobs:
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install pyyaml
+      - run: pip install -r requirements-dev.txt
       - name: Compile the backend and its tests
         run: python -m py_compile dashboard/plugin_api.py tests/backend/*.py
       - name: Manifest parity

@@ -327,12 +327,17 @@ def test_a_second_run_is_refused_while_one_is_active(client, project, cli, monke
 def test_stop_kills_the_matching_job(client, project, monkeypatch):
     """Stop must signal the process for this project and this run."""
     ran = []
+    signalled = []
 
     class FakeProc:
         pid = 5150
 
         def poll(self):
             return None
+
+        def kill(self):
+            # The POSIX path signals the Popen directly; Windows shells out to taskkill.
+            signalled.append(self.pid)
 
     monkeypatch.setattr(plugin_api, "JOBS", {
         "j1": {"proc": FakeProc(), "argv": ["workflow", "resume", "abc123"], "cwd": str(project)}
@@ -349,7 +354,10 @@ def test_stop_kills_the_matching_job(client, project, monkeypatch):
     assert response.status_code == 200, response.text
     body = response.json()
     assert body["stopped"] is True
-    assert ran and str(FakeProc.pid) in ran[0], "the pid must reach the kill command"
+    if os.name == "nt":
+        assert ran and str(FakeProc.pid) in ran[0], "the pid must reach the kill command"
+    else:
+        assert signalled == [FakeProc.pid], "the process must be signalled directly"
 
 
 def test_stop_ignores_another_projects_job(client, project, tmp_path, monkeypatch):
