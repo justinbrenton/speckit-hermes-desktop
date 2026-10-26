@@ -33,6 +33,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -554,6 +555,10 @@ def _clip_bytes(text: str, limit: int) -> tuple[str, bool]:
         return text, False
     return data[:max(limit, 0)].decode("utf-8", "ignore"), True
 
+#: Guards run admission: the "is a run live?" check and the reservation that
+#: answers it have to be one step, or two requests arriving together both pass.
+ACTIVE_LOCK = threading.Lock()
+
 #: Background dispatches, keyed by job id. The CLI's own run state lives under
 #: .specify/workflows/runs; this only tracks the process we spawned.
 JOBS: dict[str, dict[str, Any]] = {}
@@ -642,6 +647,76 @@ def _run_state_status(root: Path, run_id: str) -> Optional[str]:
 GATE_TAKEOVER_GRACE = 20.0
 
 
+def _admit_resume(root: Path, process: str, run_id: str) -> tuple[str]:
+    """Decide whether this resume may run, and claim the slot if so.
+
+    Same check-and-claim problem as a start, plus a takeover: answering the gate of
+    a run whose dispatched process is still alive means killing that process first.
+    """
+    key = _active_key(root, process)
+    with ACTIVE_LOCK:
+        _release_finished_jobs()
+        if key in ACTIVE_RUNS:
+            # A job parked at a gate can still be alive for a moment after the state
+            # file says paused. That process has nothing left to do: the run is on
+            # disk, so answering the gate now is safe and must not be refused.
+            entry = ACTIVE_RUNS[key]
+            age = time.time() - float(entry.get("started_at") or 0)
+            # Only a *resume* can be the step a second answer would kill. A fresh run
+            # that parked quickly must be answerable at once.
+            just_answered = entry.get("kind") == "resume" and age <= GATE_TAKEOVER_GRACE
+            # And the active job must be the run being answered: naming an older run
+            # must not kill whatever newer run is in flight.
+            same_run = str(entry.get("run_id") or "") == run_id
+            if _run_state_status(root, run_id) == "paused" and same_run and not just_answered:
+                parked = ACTIVE_RUNS.pop(key, {})
+                proc = parked.get("proc")
+                if proc is not None and proc.poll() is None:
+                    try:
+                        proc.kill()
+                    except OSError:
+                        pass
+            else:
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"a {process} run is already in progress in this project",
+                )
+        ACTIVE_RUNS[key] = {
+            "proc": None,
+            "run_id": run_id,
+            "process": _canonical_process(process),
+            "kind": "resume",
+            "started_at": time.time(),
+        }
+    return key
+
+
+def _reserve_run(root: Path, process: str) -> tuple[str]:
+    """Claim this project's single run slot, or refuse.
+
+    Reading "is a run live?" and recording "this run is live" must happen under one
+    lock. Without it two requests that arrive together both see an empty slot, both
+    dispatch, and one of the two runs is left executing with nothing tracking it.
+    """
+    key = _active_key(root, process)
+    with ACTIVE_LOCK:
+        _release_finished_jobs()
+        if key in ACTIVE_RUNS:
+            running = ACTIVE_RUNS[key].get("process") or "another process"
+            raise HTTPException(
+                status_code=409,
+                detail=f"a run of {running} is already in progress in this project",
+            )
+        ACTIVE_RUNS[key] = {
+            "proc": None,
+            "run_id": None,
+            "process": _canonical_process(process),
+            "kind": "starting",
+            "started_at": time.time(),
+        }
+    return key
+
+
 def _active_key(root: Path, process: str = "") -> tuple[str]:
     """One live run per project, not per process.
 
@@ -653,6 +728,9 @@ def _active_key(root: Path, process: str = "") -> tuple[str]:
 
 def _release_finished_jobs() -> None:
     for key, entry in list(ACTIVE_RUNS.items()):
+        if entry.get("kind") == "starting":
+            # Reserved but nothing dispatched yet, so there is no process to inspect.
+            continue
         proc = entry.get("proc")
         if proc is None or proc.poll() is not None:
             ACTIVE_RUNS.pop(key, None)
@@ -1019,31 +1097,31 @@ def workflow_run(process: str, payload: WorkflowRunRequest) -> dict[str, Any]:
         if value is not None and str(value) != "":
             args += ["-i", f"{key}={value}"]
     args.append("--json")
-    _release_finished_jobs()
-    key = _active_key(root, process)
-    if key in ACTIVE_RUNS:
-        running = ACTIVE_RUNS[key].get("process") or "another process"
-        raise HTTPException(
-            status_code=409,
-            detail=f"a run of {running} is already in progress in this project",
-        )
+    key = _reserve_run(root, process)
     before = _run_ids(root)
     before_artifacts = _artifact_index(root)
-    job = _start_job(args, root, max(30, min(payload.timeout, SPECIFY_TIMEOUT_MAX)))
-    run_id = _await_new_run(root, before)
+    try:
+        job = _start_job(args, root, max(30, min(payload.timeout, SPECIFY_TIMEOUT_MAX)))
+        run_id = _await_new_run(root, before)
+    except BaseException:
+        # Nothing was dispatched, so the reservation must not outlive the request.
+        with ACTIVE_LOCK:
+            ACTIVE_RUNS.pop(key, None)
+        raise
     if run_id:
         try:
             _snapshot_file(root, run_id).parent.mkdir(parents=True, exist_ok=True)
             _snapshot_file(root, run_id).write_text(json.dumps(before_artifacts), encoding="utf-8")
         except OSError:
             pass
-    ACTIVE_RUNS[key] = {
-        "proc": JOBS.get(job["job_id"], {}).get("proc"),
-        "run_id": run_id,
-        "process": _canonical_process(process),
-        "kind": "run",
-        "started_at": time.time(),
-    }
+    with ACTIVE_LOCK:
+        ACTIVE_RUNS[key] = {
+            "proc": JOBS.get(job["job_id"], {}).get("proc"),
+            "run_id": run_id,
+            "process": _canonical_process(process),
+            "kind": "run",
+            "started_at": time.time(),
+        }
     return {
         "process": process,
         "run_id": run_id,
@@ -1074,43 +1152,23 @@ def workflow_resume(process: str, run_id: str, payload: WorkflowResumeRequest) -
         if value is not None and str(value) != "":
             args += ["-i", f"{key}={value}"]
     args.append("--json")
-    _release_finished_jobs()
-    key = _active_key(root, process)
-    if key in ACTIVE_RUNS:
-        # A job parked at a gate can still be alive for a moment after the state
-        # file says paused. That process has nothing left to do: the run is on
-        # disk, so answering the gate now is safe and must not be refused. A run
-        # that is genuinely executing still gets the 409.
-        entry = ACTIVE_RUNS[key]
-        age = time.time() - float(entry.get("started_at") or 0)
-        # Only a *resume* can be the step that a second answer would kill. A fresh
-        # run that parked quickly must be answerable at once, so the window does
-        # not apply to it.
-        just_answered = entry.get("kind") == "resume" and age <= GATE_TAKEOVER_GRACE
-        # And the active job must be the run being answered: naming an older run
-        # must not kill whatever newer run is in flight.
-        same_run = str(entry.get("run_id") or "") == run_id
-        if _run_state_status(root, run_id) == "paused" and same_run and not just_answered:
-            parked = ACTIVE_RUNS.pop(key, {})
-            proc = parked.get("proc")
-            if proc is not None and proc.poll() is None:
-                try:
-                    proc.kill()
-                except OSError:
-                    pass
-        else:
-            raise HTTPException(
-                status_code=409,
-                detail=f"a {process} run is already in progress in this project",
-            )
+    key = _admit_resume(root, process, run_id)
     _write_snapshot(root, run_id)
-    job = _start_job(args, root, max(30, min(payload.timeout, SPECIFY_TIMEOUT_MAX)))
-    ACTIVE_RUNS[key] = {
-        "proc": JOBS.get(job["job_id"], {}).get("proc"),
-        "run_id": run_id,
-        "kind": "resume",
-        "started_at": time.time(),
-    }
+    try:
+        job = _start_job(args, root, max(30, min(payload.timeout, SPECIFY_TIMEOUT_MAX)))
+    except BaseException:
+        # Nothing was dispatched, so the reservation must not outlive the request.
+        with ACTIVE_LOCK:
+            ACTIVE_RUNS.pop(key, None)
+        raise
+    with ACTIVE_LOCK:
+        ACTIVE_RUNS[key] = {
+            "proc": JOBS.get(job["job_id"], {}).get("proc"),
+            "run_id": run_id,
+            "process": _canonical_process(process),
+            "kind": "resume",
+            "started_at": time.time(),
+        }
     return {"process": process, "run_id": run_id, "job_id": job["job_id"], "running": True}
 
 

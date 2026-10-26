@@ -76,7 +76,7 @@ is no token to borrow. Hence the mount is proven in-process instead (section 6).
 
 ```
 $ PYTHONPATH="$LOCALAPPDATA/hermes/hermes-agent" python -m pytest tests/backend -q -m hermes
-5 passed, 115 deselected
+5 passed, 117 deselected
 ```
 
 These run in CI too, in a job that stages a pinned Hermes commit, so mounting is not a
@@ -94,7 +94,7 @@ $ npm test
 ℹ tests 52   ℹ pass 52   ℹ fail 0
 
 $ python -m pytest tests/backend -q -m "not hermes"
-115 passed, 5 deselected
+117 passed, 5 deselected
 ```
 
 What the suites cover:

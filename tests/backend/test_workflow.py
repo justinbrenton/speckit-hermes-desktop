@@ -1447,3 +1447,56 @@ def test_a_second_process_cannot_start_in_one_project(client, project, monkeypat
     plugin_api.ACTIVE_RUNS.clear()
     plugin_api.JOBS.clear()
 
+
+def test_two_simultaneous_starts_cannot_both_dispatch(client, project, monkeypatch):
+    """The check and the reservation must be one step, or a live run is stranded."""
+    import threading
+
+    entered = threading.Event()
+    release = threading.Event()
+
+    def slow_job(args, cwd, timeout=None):
+        entered.set()
+        assert release.wait(5), "the first start never finished"
+        plugin_api.JOBS["slow"] = {"proc": None, "id": "slow"}
+        return {"job_id": "slow", "id": "slow", "pid": 0, "stdout_file": ""}
+
+    monkeypatch.setattr(plugin_api, "_start_job", slow_job)
+    monkeypatch.setattr(plugin_api, "_await_new_run", lambda root_, before, timeout=25.0: "run-z")
+    plugin_api.ACTIVE_RUNS.clear()
+    plugin_api.JOBS.clear()
+
+    first = {}
+
+    def start_first():
+        first["response"] = client.post(
+            f"{PREFIX}/workflows/bugfix/run", json={"cwd": str(project), "inputs": {"report": "x"}}
+        )
+
+    worker = threading.Thread(target=start_first)
+    worker.start()
+    try:
+        assert entered.wait(5), "the first start never reached the dispatcher"
+        second = client.post(f"{PREFIX}/workflows/assess/run", json={"cwd": str(project), "inputs": {"idea": "y"}})
+        assert second.status_code == 409, f"both starts dispatched: {second.status_code}"
+    finally:
+        release.set()
+        worker.join(10)
+        plugin_api.ACTIVE_RUNS.clear()
+        plugin_api.JOBS.clear()
+
+    assert first["response"].status_code == 200, first["response"].text
+
+
+def test_a_failed_dispatch_releases_the_reservation(client, project, monkeypatch):
+    def broken_job(args, cwd, timeout=None):
+        raise RuntimeError("cannot spawn")
+
+    monkeypatch.setattr(plugin_api, "_start_job", broken_job)
+    plugin_api.ACTIVE_RUNS.clear()
+
+    with pytest.raises(RuntimeError):
+        client.post(f"{PREFIX}/workflows/bugfix/run", json={"cwd": str(project), "inputs": {"report": "x"}})
+
+    assert plugin_api.ACTIVE_RUNS == {}, f"a dead dispatch left a reservation: {plugin_api.ACTIVE_RUNS}"
+
