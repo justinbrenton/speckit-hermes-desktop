@@ -59,24 +59,40 @@ jobs:
   hermes-integration:
     # The tests that import Hermes internals: dashboard mounting and the Kanban
     # bridge. They are deselected from the matrix above, not skipped, so this job
-    # is the only thing standing between a broken integration and a green build.
+    # is the only thing between a broken integration and a green build.
     name: backend (hermes integration)
     runs-on: ubuntu-latest
+    env:
+      # Must satisfy plugin.yaml's requires_hermes floor. This is the commit this
+      # plugin is developed against; bump both together.
+      HERMES_COMMIT: bda3a363e969
+      HERMES_SRC: ${{ runner.temp }}/hermes-agent
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
-      - run: pip install -r requirements-dev.txt
-      - name: Install Hermes at the commit this plugin is developed against
-        # Bump this when plugin.yaml's requires_hermes floor moves. A tag would be
-        # nicer, but releases lag the plugin (0.21.5 at v2026.9.24 while the floor
-        # is 0.22.2).
-        run: pip install "hermes-agent @ git+https://github.com/NousResearch/hermes-agent@bda3a363e969"
-      - name: Confirm Hermes really imported
-        run: python -c "import hermes_cli.web_server_dashboard, hermes_cli.kanban_db_connect; print('hermes imports ok')"
+      - uses: astral-sh/setup-uv@v5
+      - name: Stage Hermes at the pinned commit
+        # Nothing pip-installable provides this version: PyPI stops at 0.19.0, and
+        # the project's setup.py refuses to build a wheel or sdist on purpose. Its
+        # uv.lock still gives the dependency set, so sync the environment without
+        # installing the project and put the source on PYTHONPATH.
+        run: |
+          mkdir -p "$HERMES_SRC"
+          curl -sSL "https://codeload.github.com/NousResearch/hermes-agent/tar.gz/${HERMES_COMMIT}" \
+            | tar xz -C "$HERMES_SRC" --strip-components=1
+          cd "$HERMES_SRC"
+          uv sync --frozen --no-install-project
+          uv pip install --python "$HERMES_SRC/.venv/bin/python" -r "$GITHUB_WORKSPACE/requirements-dev.txt"
+      - name: Confirm Hermes really imports
+        run: |
+          PYTHONPATH="$HERMES_SRC" "$HERMES_SRC/.venv/bin/python" -c \
+            "import hermes_cli.web_server_dashboard, hermes_cli.kanban_db_connect; print('hermes imports ok')"
       - name: Run the Hermes integration tests
-        run: python -m pytest tests/backend -q -m hermes --junitxml=junit.xml
+        run: |
+          PYTHONPATH="$HERMES_SRC" "$HERMES_SRC/.venv/bin/python" -m pytest tests/backend \
+            -q -m hermes --junitxml=junit.xml
       - name: No silent skips
         if: always()
         run: python scripts/check-skips.py junit.xml
