@@ -167,14 +167,18 @@ def test_processes_without_a_workflow_are_offered_with_their_shape(client, tmp_p
     body = client.get(f"{PREFIX}/processes", params={"cwd": str(root)}).json()
     by_id = {item["id"]: item for item in body["processes"]}
 
-    assert by_id["bug"]["installed"] is False
-    assert [step["id"] for step in by_id["bug"]["steps"]] == [
+    # The process id must match the bundled workflow, or the same process appears
+    # twice: once as installed, once as generated.
+    assert "bug" not in by_id, "the process id and the shipped workflow id must agree"
+    assert by_id["bugfix"]["installed"] is False
+    assert by_id["bugfix"]["extension"] == "bug", "the pane needs to know what to install"
+    assert [step["id"] for step in by_id["bugfix"]["steps"]] == [
         "assess", "review-assess", "fix", "test", "review-test"
     ]
-    gates = [step for step in by_id["bug"]["steps"] if step["type"] == "gate"]
+    gates = [step for step in by_id["bugfix"]["steps"] if step["type"] == "gate"]
     assert all(gate["verdict_input"] for gate in gates), "a pane cannot answer a gate without one"
-    assert by_id["bug"]["inputs"][0]["name"] == "report"
-    assert by_id["bug"]["inputs"][0]["required"] is True
+    assert by_id["bugfix"]["inputs"][0]["name"] == "report"
+    assert by_id["bugfix"]["inputs"][0]["required"] is True
 
     assert [step["id"] for step in by_id["assess"]["steps"]][0] == "intake"
     assert "implementation" not in [step["id"] for step in by_id["assess"]["steps"]]
@@ -183,15 +187,15 @@ def test_processes_without_a_workflow_are_offered_with_their_shape(client, tmp_p
 def test_shaping_writes_the_workflow_a_bare_extension_does_not_ship(client, tmp_path):
     root = _project(tmp_path, {"speckit": "schema_version: \"1.0\"\nworkflow:\n  id: speckit\n"})
 
-    body = client.post(f"{PREFIX}/workflow/shape", json={"cwd": str(root), "process": "bug"}).json()
+    body = client.post(f"{PREFIX}/workflow/shape", json={"cwd": str(root), "process": "bugfix"}).json()
     assert body["changed"] is True
-    workflow = (root / ".specify" / "workflows" / "bug" / "workflow.yml").read_text(encoding="utf-8")
-    assert "id: \"bug\"" in workflow
+    workflow = (root / ".specify" / "workflows" / "bugfix" / "workflow.yml").read_text(encoding="utf-8")
+    assert "id: \"bugfix\"" in workflow
     assert "verdict_input: gate_review_assess" in workflow
     assert "gate_review_assess:" in workflow
 
     # Shaping again changes nothing and writes no second backup.
-    again = client.post(f"{PREFIX}/workflow/shape", json={"cwd": str(root), "process": "bug"}).json()
+    again = client.post(f"{PREFIX}/workflow/shape", json={"cwd": str(root), "process": "bugfix"}).json()
     assert again["changed"] is False
 
 
@@ -199,4 +203,145 @@ def test_an_unknown_process_is_rejected(client, tmp_path):
     root = _project(tmp_path, {"speckit": "schema_version: \"1.0\"\nworkflow:\n  id: speckit\n"})
     response = client.post(f"{PREFIX}/workflow/shape", json={"cwd": str(root), "process": "nope"})
     assert response.status_code == 400
+
+
+def test_a_legacy_bug_workflow_does_not_become_a_second_card(client, tmp_path):
+    """Older projects have .specify/workflows/bug/. It must not shadow or duplicate."""
+    root = _project(tmp_path, {"speckit": "schema_version: \"1.0\"\nworkflow:\n  id: speckit\n"})
+    legacy = root / ".specify" / "workflows" / "bug"
+    legacy.mkdir(parents=True)
+    (legacy / "workflow.yml").write_text(
+        "schema_version: \"1.0\"\nworkflow:\n  id: \"bug\"\n  name: \"Bug fixing\"\n"
+        "steps:\n  - id: assess\n    command: speckit.bug.assess\n",
+        encoding="utf-8",
+    )
+
+    body = client.get(f"{PREFIX}/processes", params={"cwd": str(root)}).json()
+    ids = [item["id"] for item in body["processes"]]
+    assert ids.count("bugfix") == 1, f"one card per process, got {ids}"
+    assert "bug" not in ids, f"the alias must not surface as its own card: {ids}"
+
+    entry = next(item for item in body["processes"] if item["id"] == "bugfix")
+    assert entry["extension"] == "bug", "the Install action has to be reachable for a legacy tree too"
+
+
+def test_an_on_disk_bundle_reports_its_extension(client, tmp_path):
+    """The shipped workflow resolves its extension too, not only the generated one."""
+    root = _project(tmp_path, {})
+    bundled = Path(__file__).resolve().parents[2] / "workflows" / "bugfix" / "workflow.yml"
+    target = root / ".specify" / "workflows" / "bugfix" / "workflow.yml"
+    target.parent.mkdir(parents=True, exist_ok=True)
+    target.write_text(bundled.read_text(encoding="utf-8"), encoding="utf-8")
+
+    body = client.get(f"{PREFIX}/processes", params={"cwd": str(root)}).json()
+    entry = next(item for item in body["processes"] if item["id"] == "bugfix")
+    assert entry["installed"] is True
+    assert entry["extension"] == "bug"
+
+
+def test_the_canonical_workflow_wins_when_both_trees_exist(client, tmp_path):
+    root = _project(tmp_path, {"speckit": "schema_version: \"1.0\"\nworkflow:\n  id: speckit\n"})
+    bundled = Path(__file__).resolve().parents[2] / "workflows" / "bugfix" / "workflow.yml"
+    new = root / ".specify" / "workflows" / "bugfix" / "workflow.yml"
+    new.parent.mkdir(parents=True)
+    new.write_text(bundled.read_text(encoding="utf-8"), encoding="utf-8")
+    legacy = root / ".specify" / "workflows" / "bug"
+    legacy.mkdir(parents=True)
+    (legacy / "workflow.yml").write_text(
+        "schema_version: \"1.0\"\nworkflow:\n  id: \"bug\"\n  name: \"LEGACY Bug\"\n"
+        "steps:\n  - id: assess\n    command: speckit.bug.assess\n",
+        encoding="utf-8",
+    )
+
+    body = client.get(f"{PREFIX}/processes", params={"cwd": str(root)}).json()
+    card = next(item for item in body["processes"] if item["id"] == "bugfix")
+    assert card["name"] != "LEGACY Bug", "the shipped workflow wins over the legacy tree"
+    # the shipped bundle's own steps, not the generated spec's
+    assert [step["id"] for step in card["steps"]], "the canonical card has steps"
+    assert card["steps"][0]["id"] == "assess"
+    assert card["version"] == "1.0.1", "the shipped workflow's version identifies which file won"
+
+
+def test_a_legacy_project_runs_its_own_workflow_file(client, tmp_path, monkeypatch):
+    """A pre-rename project has only workflows/bug/: reading and running must use it."""
+    root = _project(tmp_path, {})
+    legacy = root / ".specify" / "workflows" / "bug"
+    legacy.mkdir(parents=True)
+    (legacy / "workflow.yml").write_text(
+        "schema_version: \"1.0\"\nworkflow:\n  id: \"bug\"\n  name: \"Legacy\"\n"
+        "steps:\n  - id: assess\n    command: speckit.bug.assess\n",
+        encoding="utf-8",
+    )
+    calls = []
+
+    def fake_job(args, cwd, timeout=None):
+        calls.append({"args": args, "cwd": str(cwd)})
+        return {"job_id": "job1", "id": "job1", "pid": 0, "stdout_file": ""}
+
+    monkeypatch.setattr(plugin_api, "_start_job", fake_job)
+    monkeypatch.setattr(plugin_api, "_await_new_run", lambda root_, before, timeout=25.0: "run-1")
+
+    response = client.post(f"{PREFIX}/workflows/bugfix/run", json={"cwd": str(root), "inputs": {"report": "x"}})
+    assert response.status_code == 200, response.text
+    assert ["workflow", "run", "bug"] == calls[-1]["args"][:3], "the CLI must be asked for the id that exists"
+    assert (legacy / "workflow.yml").is_file()
+
+
+def test_shaping_accepts_the_legacy_id(client, tmp_path):
+    root = _project(tmp_path, {})
+    response = client.post(f"{PREFIX}/workflow/shape", json={"cwd": str(root), "process": "bug"})
+    assert response.status_code == 200, response.text
+
+
+def test_a_workflow_with_no_id_of_its_own_still_reports_its_extension(client, tmp_path):
+    """The directory name is the process id when the file does not declare one."""
+    root = _project(tmp_path, {})
+    target = root / ".specify" / "workflows" / "bugfix" / "workflow.yml"
+    target.parent.mkdir(parents=True)
+    target.write_text(
+        "schema_version: \"1.0\"\nworkflow:\n  name: \"No id\"\n"
+        "steps:\n  - id: assess\n    command: speckit.bug.assess\n",
+        encoding="utf-8",
+    )
+
+    body = client.get(f"{PREFIX}/processes", params={"cwd": str(root)}).json()
+    card = next(item for item in body["processes"] if item["id"] == "bugfix")
+    assert card["extension"] == "bug", "an id-less file must not lose its Install action"
+
+
+def test_shaping_a_legacy_project_rewrites_its_own_file(client, tmp_path):
+    """The pane shapes before every run; that must not create a second tree."""
+    root = _project(tmp_path, {})
+    legacy = root / ".specify" / "workflows" / "bug"
+    legacy.mkdir(parents=True)
+    (legacy / "workflow.yml").write_text(
+        "schema_version: \"1.0\"\nworkflow:\n  id: \"bug\"\n  name: \"MINE\"\n"
+        "steps:\n  - id: assess\n    command: speckit.bug.assess\n",
+        encoding="utf-8",
+    )
+
+    response = client.post(f"{PREFIX}/workflow/shape", json={"cwd": str(root), "process": "bugfix"})
+    assert response.status_code == 200, response.text
+    assert not (root / ".specify" / "workflows" / "bugfix").exists(), "no competing tree"
+    assert "MINE" not in (legacy / "workflow.yml").read_text(encoding="utf-8"), "the legacy file was rewritten"
+
+    body = client.get(f"{PREFIX}/processes", params={"cwd": str(root)}).json()
+    card = next(item for item in body["processes"] if item["id"] == "bugfix")
+    assert card["source"].endswith(str(Path("bug") / "workflow.yml")), f"still reading the legacy file: {card['source']}"
+
+
+def test_the_legacy_id_can_start_a_run_when_nothing_is_on_disk(client, tmp_path, monkeypatch):
+    root = _project(tmp_path, {})
+    calls = []
+
+    def fake_job(args, cwd, timeout=None):
+        calls.append(args)
+        return {"job_id": "j", "id": "j", "pid": 0, "stdout_file": ""}
+
+    monkeypatch.setattr(plugin_api, "_start_job", fake_job)
+    monkeypatch.setattr(plugin_api, "_await_new_run", lambda root_, before, timeout=25.0: "r")
+
+    response = client.post(f"{PREFIX}/workflows/bug/run", json={"cwd": str(root), "inputs": {"report": "x"}})
+    assert response.status_code == 200, response.text
+    assert calls[-1][:3] == ["workflow", "run", "bugfix"], "the generated tree is canonical once written"
 

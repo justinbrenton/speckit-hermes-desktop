@@ -1354,3 +1354,39 @@ def test_shaping_creates_a_workflow_that_was_never_installed(client, tmp_path):
     for gate in [s for s in doc["steps"] if s.get("type") == "gate"]:
         assert gate.get("verdict_input") in doc["inputs"]
 
+
+def test_the_extension_endpoint_accepts_the_process_id(client, project, monkeypatch):
+    """The pane knows the process as `bugfix`; the extension it installs is `bug`."""
+    calls = []
+    monkeypatch.setattr(
+        plugin_api,
+        "_run_specify",
+        lambda args, cwd, timeout: calls.append(args) or {"ok": True, "exit_code": 0, "payload": None, "output": "", "stderr": ""},
+    )
+
+    for sent in ("bugfix", "bug"):
+        response = client.post(f"{PREFIX}/extensions/install", json={"cwd": str(project), "id": sent})
+        assert response.status_code == 200, f"{sent} was refused: {response.text}"
+        assert response.json()["extension"] == "bug"
+
+    assert calls == [["extension", "add", "bug"], ["extension", "add", "bug"]]
+
+
+def test_a_core_process_is_not_reported_as_an_extension(client, project, cli):
+    body = client.get(f"{PREFIX}/processes", params={"cwd": str(project)}).json()
+    by_id = {item["id"]: item for item in body["processes"]}
+    assert by_id["speckit"]["extension"] is None, "speckit ships in core; there is no extension to install"
+
+
+def test_a_run_recorded_under_the_legacy_id_stays_visible(client, project, cli):
+    """History written before the rename must not vanish from the pane."""
+    _write_state(
+        project,
+        "legacyrun",
+        {"assess": {"type": "command", "status": "completed", "output": {"stdout": "old"}}},
+        workflow_id="bug",
+    )
+
+    body = client.get(f"{PREFIX}/workflows/bugfix/runs", params={"cwd": str(project)}).json()
+    assert "legacyrun" in [run.get("run_id") for run in body["runs"]], f"legacy run hidden: {body}"
+

@@ -102,13 +102,33 @@ test('every sk- class the pane uses is defined in SK_CSS', () => {
   assert.deepEqual(missing, [], `styling classes with no rule: ${missing.join(', ')}`)
 })
 
-test('SK_CSS contains no selector a browser would drop', () => {
-  const css = skCss()
-  // Every rule here is a class selector. Anything that is not one, or that carries
-  // a template artefact, cannot match an element and is silently dead CSS.
-  const selectors = [...css.matchAll(/^\s*([^\s{@][^{]*)\{/gm)].map(m => m[1].trim())
-  const invalid = selectors.filter(sel => !sel.startsWith('.') || /[`$]/.test(sel))
-  assert.deepEqual(invalid, [], `these selectors cannot match anything: ${invalid.join(', ')}`)
+// One valid class selector, optionally with a pseudo-class or pseudo-element.
+const SELECTOR = /^\.[a-z][a-z0-9-]*(:{1,2}[a-z-]+(\([^)]*\))?)*$/
+
+function deadSelectors(css) {
+  const dead = []
+  for (const match of css.matchAll(/^\s*([^\s{@][^{]*)\{/gm)) {
+    // A rule's selector list is comma separated: one bad entry drops the whole rule,
+    // so each part is checked, not the joined string.
+    for (const part of match[1].split(',')) {
+      const selector = part.trim()
+      if (!SELECTOR.test(selector)) dead.push(selector)
+    }
+  }
+  return dead
+}
+
+test('every selector in SK_CSS can match an element', () => {
+  const dead = deadSelectors(skCss())
+  assert.deepEqual(dead, [], `these selectors cannot match anything: ${dead.join(', ')}`)
+})
+
+test('a malformed selector in a list is caught, not waved through', () => {
+  // The shape that shipped once: a valid class followed by a broken selector. The
+  // browser drops the entire rule, which is why checking only the first token misses it.
+  assert.deepEqual(deadSelectors('.sk-truncate, .*** { overflow: hidden; }'), ['.***'])
+  assert.deepEqual(deadSelectors('.sk-a, .sk-b:hover { color: red; }'), [])
+  assert.deepEqual(deadSelectors('.sk-a::before { content: ""; }'), [])
 })
 
 test('every component that calls useState imports it', () => {

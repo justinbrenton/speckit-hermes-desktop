@@ -175,6 +175,7 @@ function ProcessChoice({ processes, onPick, onInstall, error, busy }) {
     ready: ['sk-pill-ready', 'Ready'],
     setup: ['sk-pill-setup', 'Sets up on first run'],
     missing: ['sk-pill-missing', 'Needs an extension'],
+    broken: ['sk-pill-missing', 'Commands missing'],
     absent: ['sk-pill-missing', 'Not available here']
   }
   return jsxs('div', { className: 'sk-root flex h-full flex-col gap-3 p-3', children: [
@@ -189,9 +190,12 @@ function ProcessChoice({ processes, onPick, onInstall, error, busy }) {
         // the workflow file is written for us on Start.
         const runnable = Boolean(entry) && commands.length > 0 && commands.every(step => step.skill_installed)
         const needsSetup = runnable && entry.installed === false
+        // Only an extension the backend will actually install gets an Install action;
+        // a core process with missing commands needs a different answer entirely.
+        const extension = entry && entry.extension ? entry.extension : null
         const [pillClass, pillText] = runnable
           ? STATUS[needsSetup ? 'setup' : 'ready']
-          : STATUS[commands.length ? 'missing' : 'absent']
+          : STATUS[!commands.length ? 'absent' : extension ? 'missing' : 'broken']
 
         const dim = runnable ? '' : ' sk-fade'
         const body = [
@@ -205,15 +209,17 @@ function ProcessChoice({ processes, onPick, onInstall, error, busy }) {
             ? (needsSetup
                 ? jsx('span', { className: 'sk-tiny sk-faint', children: 'Its workflow is written the first time you start it.' })
                 : null)
-            : jsxs('span', { className: 'mt-1 flex items-center gap-2', children: [
+            : jsxs('span', { className: 'mt-1 flex flex-col gap-1', children: [
                 jsx('span', { className: 'sk-tiny sk-faint', children: commands.length ? 'Commands not installed.' : 'Not installed.' }),
-                jsx(Button, {
-                  size: 'xs',
-                  variant: 'outline',
-                  onClick: event => { event.stopPropagation(); onInstall(copy.id) },
-                  disabled: busy,
-                  children: `Install ${copy.id}`
-                })
+                extension
+                  ? jsx(Button, {
+                      size: 'xs',
+                      variant: 'outline',
+                      onClick: event => { event.stopPropagation(); onInstall(extension) },
+                      disabled: busy,
+                      children: `Install the ${extension} extension`
+                    })
+                  : jsx('span', { className: 'sk-tiny sk-faint', children: 'Re-apply the Hermes integration above, then reopen this pane.' })
               ] })
         ]
 

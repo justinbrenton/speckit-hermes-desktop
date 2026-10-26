@@ -388,8 +388,11 @@ def list_processes(cwd: str = Query(..., description="Absolute project directory
     workflows_dir = root / ".specify" / "workflows"
     installed, skill_dirs = _installed_skills()
 
-    def build_entry(data: dict[str, Any], source: str, installed_process: bool) -> dict[str, Any] | None:
+    def build_entry(data: dict[str, Any], source: str, installed_process: bool, process_id: str = "") -> dict[str, Any] | None:
         wf = data.get("workflow") or {}
+        # A workflow file need not declare an id; the directory it lives in is the
+        # name the rest of this module resolves, so use that when it is missing.
+        _effective_id = str(process_id or wf.get("id") or "").strip()
         inputs = []
         for name, spec in (data.get("inputs") or {}).items():
             spec = spec or {}
@@ -446,6 +449,13 @@ def list_processes(cwd: str = Query(..., description="Absolute project directory
             "description": wf.get("description", ""),
             "source": source,
             "installed": installed_process,
+            "extension": (
+                PROCESS_SPECS.get(_effective_id)
+                or PROCESS_SPECS.get(_canonical_process(_effective_id))
+                or PROCESS_SPECS.get(process_id)
+                or PROCESS_SPECS.get(_canonical_process(process_id))
+                or {}
+            ).get("extension"),
             "inputs": inputs,
             "steps": steps,
             "ready": bool(command_steps) and all(s["skill_installed"] for s in command_steps),
@@ -464,10 +474,30 @@ def list_processes(cwd: str = Query(..., description="Absolute project directory
         if not isinstance(data, dict):
             errors.append({"file": str(wf_file), "error": "not a mapping"})
             continue
-        entry = build_entry(data, str(wf_file), True)
+        entry = build_entry(data, str(wf_file), True, wf_file.parent.name)
         if entry:
             entry["id"] = entry["id"] or wf_file.parent.name
             processes.append(entry)
+
+    # Collapse ids that mean the same process: an older project has a `bug` tree
+    # beside the `bugfix` one we ship, and two cards for one process is worse than
+    # either alone. The canonical id wins; the alias is dropped, not deleted.
+    collapsed: list[dict[str, Any]] = []
+    winner_raw: dict[str, str] = {}
+    winner_at: dict[str, int] = {}
+    for entry in processes:
+        raw_id = entry["id"]
+        canonical = _canonical_process(raw_id)
+        entry["id"] = canonical
+        if canonical not in winner_at:
+            winner_at[canonical] = len(collapsed)
+            winner_raw[canonical] = raw_id
+            collapsed.append(entry)
+        elif raw_id == canonical and winner_raw[canonical] != canonical:
+            # The canonical file wins over the legacy one, whatever order they arrive in.
+            collapsed[winner_at[canonical]] = entry
+            winner_raw[canonical] = raw_id
+    processes = collapsed
 
     known = {entry["id"] for entry in processes}
     has_specify = (root / ".specify").is_dir()
@@ -480,7 +510,7 @@ def list_processes(cwd: str = Query(..., description="Absolute project directory
             logger.warning("generated workflow %s is unusable: %s", process_id, exc)
             errors.append({"file": process_id, "error": "generated workflow is unusable"})
             continue
-        entry = build_entry(data, "", False)
+        entry = build_entry(data, "", False, process_id)
         if entry:
             processes.append(entry)
 
@@ -873,8 +903,33 @@ def _run_specify(args: list[str], cwd: Path, timeout: int) -> dict[str, Any]:
     }
 
 
+#: Ids this plugin wrote before the workflow id and the extension id were separated.
+#: Older projects have a `.specify/workflows/bug/` tree, which must keep working.
+PROCESS_ALIASES: dict[str, str] = {"bug": "bugfix"}
+
+
+def _canonical_process(process_id: str) -> str:
+    pid = str(process_id or "").strip()
+    return PROCESS_ALIASES.get(pid, pid)
+
+
+def _resolve_process_id(root: Path, process_id: str) -> str:
+    """The id whose workflow file exists: the canonical one, else a legacy alias.
+
+    A project created before the rename has `workflows/bug/`, and both the read path
+    and the CLI's own `workflow run <id>` need that id, not the new one.
+    """
+    canonical = _canonical_process(process_id)
+    if (root / ".specify" / "workflows" / canonical / "workflow.yml").is_file():
+        return canonical
+    for alias, target in PROCESS_ALIASES.items():
+        if target == canonical and (root / ".specify" / "workflows" / alias / "workflow.yml").is_file():
+            return alias
+    return canonical
+
+
 def _process_workflow_file(root: Path, process_id: str) -> Path:
-    return root / ".specify" / "workflows" / process_id / "workflow.yml"
+    return root / ".specify" / "workflows" / _resolve_process_id(root, process_id) / "workflow.yml"
 
 
 def _ensure_process_workflow(root: Path, process_id: str) -> bool:
@@ -884,6 +939,7 @@ def _ensure_process_workflow(root: Path, process_id: str) -> bool:
     after someone shapes the process. Reads must not depend on that ordering:
     picking a process in the pane asks for its latest run before Start is pressed.
     """
+    process_id = _canonical_process(process_id)
     if process_id not in PROCESS_SPECS:
         return False
     target = _process_workflow_file(root, process_id)
@@ -948,7 +1004,8 @@ def workflow_run(process: str, payload: WorkflowRunRequest) -> dict[str, Any]:
     """Start a workflow. Gates park; nothing executes synchronously."""
     root = _project_root(payload.cwd)
     _process_data(root, process)
-    args = ["workflow", "run", process]
+    # Ask the CLI for the id it can actually find: a pre-rename project has `bug/`.
+    args = ["workflow", "run", _resolve_process_id(root, process)]
     for key, value in payload.inputs.items():
         if value is not None and str(value) != "":
             args += ["-i", f"{key}={value}"]
@@ -1196,6 +1253,10 @@ def install_extension(payload: ExtensionRequest) -> dict[str, Any]:
     """Install a bundled extension (bug, assess) and refresh workflow discovery."""
     root = _project_root(payload.cwd)
     ext_id = re.sub(r"[^a-z0-9_-]", "", (payload.id or "").lower())
+    # The process is called `bugfix` (the bundled workflow's own id), while the
+    # extension that provides its commands is `bug`. Accept either, so the pane can
+    # pass the process id it is showing.
+    ext_id = {"bugfix": "bug"}.get(ext_id, ext_id)
     if ext_id not in {"bug", "assess"}:
         raise HTTPException(status_code=400, detail=f"unknown extension: {payload.id!r}")
     result = _run_specify(["extension", "add", ext_id], root, 300)
@@ -1348,7 +1409,9 @@ def _workflow_yaml(mode: str, with_constitution: bool = True) -> str:
 #: extensions provide commands only, so their workflow is generated from the
 #: documented step order the first time the process is used.
 PROCESS_SPECS: dict[str, dict[str, Any]] = {
-    "bug": {
+    # Keyed by the id the bundled workflow uses. It has to match workflows/ on disk,
+    # or the same process appears twice: once installed, once generated.
+    "bugfix": {
         "name": "Bug fixing",
         "description": "Assess a report, apply the fix, verify it",
         "inputs": [("report", True, "Paste the bug report, or a URL to it")],
@@ -1360,12 +1423,14 @@ PROCESS_SPECS: dict[str, dict[str, Any]] = {
             ("test", "speckit.bug.test", None,
              "Verify the fix recorded for the most recent bug under .specify/bugs/."),
         ],
+        "extension": "bug",
         "gates": {
             "assess": "Review the assessment before applying a fix.",
             "test": "Review the verification before closing the bug.",
         },
     },
     "assess": {
+        "extension": "assess",
         "name": "Idea assessment",
         "description": "Intake, research, define, shape, then a go / clarify / kill decision",
         "inputs": [("idea", True, "Describe the idea")],
@@ -1457,21 +1522,23 @@ def shape_workflow(payload: ShapeRequest) -> dict[str, Any]:
     """Write the short or full documented SDD workflow into the project."""
     root = _project_root(payload.cwd)
     mode = "full" if str(payload.mode).lower() == "full" else "short"
-    process_id = str(payload.process or "speckit").strip()
+    process_id = _canonical_process(str(payload.process or "speckit").strip())
 
     if process_id != "speckit":
         # A process whose extension ships commands only: the workflow is ours to
         # write, and writing it is what makes the process runnable at all.
         if process_id not in PROCESS_SPECS:
             raise HTTPException(status_code=400, detail=f"unknown process: {process_id}")
-        target = root / ".specify" / "workflows" / process_id / "workflow.yml"
+        # Write over the file this process actually reads: a pre-rename project has
+        # workflows/bug/, and creating a second tree would silently shadow it.
+        target = _process_workflow_file(root, process_id)
         if not (root / ".specify").is_dir():
             raise HTTPException(status_code=404, detail="no .specify directory here")
         target.parent.mkdir(parents=True, exist_ok=True)
         with_constitution = False
         generated = _process_yaml(process_id)
     else:
-        target = root / ".specify" / "workflows" / "speckit" / "workflow.yml"
+        target = _process_workflow_file(root, process_id)
         if not (root / ".specify").is_dir():
             raise HTTPException(status_code=404, detail="no .specify directory here")
         # A project that never installed the CLI's bundle has no speckit workflow at
@@ -2048,7 +2115,8 @@ def _run_belongs(state: dict[str, Any], process: str) -> bool:
         str(state.get("installed_workflow_id") or "").strip(),
     }
     ids.discard("")
-    return process in ids
+    wanted = _canonical_process(process)
+    return any(_canonical_process(state_id) == wanted for state_id in ids)
 
 
 def _latest_run(root: Path, process: Optional[str] = None) -> Optional[dict[str, Any]]:

@@ -77,6 +77,13 @@ const RULES = [
     ]
   },
   {
+    // A stated total, as in "116 backend tests: 111 that need only FastAPI and 5
+    // that need Hermes". The breakdown halves are checked by their own rules; this
+    // one stops the total from being written as the router count.
+    regex: /(\d[\d,]*)\s+backend tests(?=\s*:)/gi,
+    candidates: () => [[total]]
+  },
+  {
     // A breakdown: "85 that need only FastAPI and 5 that need Hermes"
     regex: /(\d[\d,]*)\s+that need only/gi,
     candidates: () => [[router]]
