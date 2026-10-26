@@ -27,13 +27,13 @@ python -m pytest tests/backend -q -m "not hermes"
 CI installs it before pytest for the same reason: the suite does not run without
 them, and a fresh checkout does not have them.
 
-72 backend tests and 40 node tests, 77 backend tests in total once the Hermes ones are included. Nothing skips; `pytest.ini` sets `--strict-markers`,
+85 backend tests and 43 node tests, 90 backend tests in total once the Hermes ones are included. Nothing skips; `pytest.ini` sets `--strict-markers`,
 so a mistyped marker is an error rather than a silently ignored test.
 
 ## Running with Hermes
 
 Point `PYTHONPATH` at a Hermes install and run the `hermes` suite, or drop the marker to
-run all 77:
+run all 90:
 
 ```
 PYTHONPATH=/path/to/hermes-agent python -m pytest tests/backend -q
