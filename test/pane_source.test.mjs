@@ -140,6 +140,15 @@ test('the chooser renders the workflows discovery returned', () => {
   assert.match(body, /No workflows found in this folder/, 'and an empty folder needs a state')
 })
 
+test('starting a workflow shapes only the workflows this plugin generates', () => {
+  const index = SOURCE.indexOf('const start = useCallback')
+  assert.ok(index >= 0, 'start is missing')
+  const slice = SOURCE.slice(index, index + 1600)
+  // A custom workflow already has its file; asking the backend to shape it is a 400.
+  assert.match(slice, /const generated = !__str\(process\.source\)/, 'the shape call needs a guard')
+  assert.match(slice, /if \(generated\) \{/, 'and must be behind it')
+})
+
 test('every component that calls useState imports it', () => {
   const calls = SOURCE.match(/= useState\(/g) || []
   if (calls.length === 0) return

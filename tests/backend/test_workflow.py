@@ -724,7 +724,7 @@ def test_resume_takes_over_a_run_that_is_still_parked(client, project, cli):
     (run_dir / "state.json").write_text(json.dumps({"status": "paused"}), encoding="utf-8")
 
     proc = ParkedProc()
-    plugin_api.ACTIVE_RUNS[(str(project).lower(), "speckit")] = {"proc": proc, "run_id": "parked1", "kind": "run"}
+    plugin_api.ACTIVE_RUNS[plugin_api._active_key(project, "speckit")] = {"proc": proc, "run_id": "parked1", "kind": "run"}
     try:
         response = client.post(
             f"{PREFIX}/workflows/speckit/runs/parked1/resume",
@@ -741,7 +741,7 @@ def test_resume_still_refuses_a_run_that_is_executing(client, project, cli):
     run_dir.mkdir(parents=True, exist_ok=True)
     (run_dir / "state.json").write_text(json.dumps({"status": "running"}), encoding="utf-8")
 
-    plugin_api.ACTIVE_RUNS[(str(project).lower(), "speckit")] = {"proc": ParkedProc(), "run_id": "busy1", "kind": "run"}
+    plugin_api.ACTIVE_RUNS[plugin_api._active_key(project, "speckit")] = {"proc": ParkedProc(), "run_id": "busy1", "kind": "run"}
     try:
         response = client.post(
             f"{PREFIX}/workflows/speckit/runs/busy1/resume",
@@ -887,7 +887,7 @@ def test_resume_does_not_kill_the_step_it_just_started(client, project, cli):
     (run_dir / "state.json").write_text(json.dumps({"workflow_id": "speckit", "status": "paused"}), encoding="utf-8")
 
     proc = ParkedProc()
-    plugin_api.ACTIVE_RUNS[(str(project).lower(), "speckit")] = {
+    plugin_api.ACTIVE_RUNS[plugin_api._active_key(project, "speckit")] = {
         "proc": proc, "run_id": "fresh1", "kind": "resume", "started_at": time.time()
     }
     try:
@@ -908,7 +908,7 @@ def test_a_fresh_run_can_be_answered_as_soon_as_it_parks(client, project, cli):
     (run_dir / "state.json").write_text(json.dumps({"workflow_id": "speckit", "status": "paused"}), encoding="utf-8")
 
     proc = ParkedProc()
-    plugin_api.ACTIVE_RUNS[(str(project).lower(), "speckit")] = {
+    plugin_api.ACTIVE_RUNS[plugin_api._active_key(project, "speckit")] = {
         "proc": proc, "run_id": "parked2", "kind": "run", "started_at": time.time()
     }
     try:
@@ -1008,7 +1008,7 @@ def test_answering_an_old_gate_does_not_kill_a_newer_run(client, project, cli):
     (old / "state.json").write_text(json.dumps({"workflow_id": "speckit", "status": "paused"}), encoding="utf-8")
 
     proc = ParkedProc()
-    plugin_api.ACTIVE_RUNS[(str(project).lower(), "speckit")] = {
+    plugin_api.ACTIVE_RUNS[plugin_api._active_key(project, "speckit")] = {
         "proc": proc, "run_id": "newer2", "kind": "run", "started_at": time.time() - 600
     }
     try:
@@ -1415,6 +1415,35 @@ def test_the_legacy_spelling_cannot_start_a_second_run(client, project, monkeypa
 
     second = client.post(f"{PREFIX}/workflows/bug/run", json={"cwd": str(project), "inputs": {"report": "x"}})
     assert second.status_code == 409, f"the alias opened a second run: {second.status_code}"
+    plugin_api.ACTIVE_RUNS.clear()
+    plugin_api.JOBS.clear()
+
+
+def test_a_second_process_cannot_start_in_one_project(client, project, monkeypatch):
+    """One live run per project, which is what the README promises."""
+    class LiveProc:
+        def poll(self):
+            return None
+
+        def kill(self):
+            pass
+
+    def fake_job(args, cwd, timeout=None):
+        plugin_api.JOBS["j"] = {"proc": LiveProc(), "id": "j"}
+        return {"job_id": "j", "id": "j", "pid": 0, "stdout_file": ""}
+
+    monkeypatch.setattr(plugin_api, "_start_job", fake_job)
+    monkeypatch.setattr(plugin_api, "_await_new_run", lambda root_, before, timeout=25.0: "run-y")
+    plugin_api.ACTIVE_RUNS.clear()
+    plugin_api.JOBS.clear()
+
+    first = client.post(f"{PREFIX}/workflows/bugfix/run", json={"cwd": str(project), "inputs": {"report": "x"}})
+    assert first.status_code == 200, first.text
+
+    second = client.post(f"{PREFIX}/workflows/assess/run", json={"cwd": str(project), "inputs": {"idea": "y"}})
+    assert second.status_code == 409, f"a second process started alongside: {second.status_code}"
+    assert "bugfix" in second.text, "the refusal should say what is already running"
+
     plugin_api.ACTIVE_RUNS.clear()
     plugin_api.JOBS.clear()
 

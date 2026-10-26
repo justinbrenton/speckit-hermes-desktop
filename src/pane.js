@@ -829,12 +829,16 @@ function SpecKitPane() {
     setBusy(true)
     setError('')
     try {
-      // Every process runs from a workflow file. speckit's needs the chosen path;
-      // bug and assess ship commands only, so their workflow is written here.
-      await rest('/workflow/shape', { method: 'POST', body: { cwd: folder, mode, process: process.id } })
-      const shaped = await rest(`/processes?cwd=${encodeURIComponent(folder)}`)
-      const updated = ((shaped && shaped.processes) || []).find(item => item.id === process.id)
-      if (updated) setProcess(updated)
+      // Shape only the workflows we generate: speckit needs the chosen path, and
+      // bugfix/assess ship commands only. A workflow the project installed itself
+      // already has its file, and asking the backend to shape it is an error.
+      const generated = !__str(process.source) || ['speckit', 'bugfix', 'assess'].includes(process.id)
+      if (generated) {
+        await rest('/workflow/shape', { method: 'POST', body: { cwd: folder, mode, process: process.id } })
+        const shaped = await rest(`/processes?cwd=${encodeURIComponent(folder)}`)
+        const updated = ((shaped && shaped.processes) || []).find(item => item.id === process.id)
+        if (updated) setProcess(updated)
+      }
       await rest(`/workflows/${encodeURIComponent(process.id)}/run`, {
         method: 'POST',
         body: { cwd: folder, inputs: values }

@@ -368,3 +368,32 @@ def test_a_shaped_legacy_file_does_not_win_over_the_canonical_one(client, tmp_pa
     assert card["name"] != "LEGACY", "the card must describe the file a run would use"
     assert card["source"].endswith(str(Path("bugfix") / "workflow.yml")), card["source"]
 
+
+def test_a_custom_workflow_is_listed_and_can_start(client, tmp_path, monkeypatch):
+    root = _project(tmp_path, {})
+    custom = root / ".specify" / "workflows" / "my-flow"
+    custom.mkdir(parents=True)
+    (custom / "workflow.yml").write_text(
+        "schema_version: \"1.0\"\nworkflow:\n  id: \"my-flow\"\n  name: \"My Flow\"\n"
+        "inputs:\n  spec:\n    type: string\n    required: true\n"
+        "steps:\n  - id: one\n    type: shell\n    run: \"true\"\n",
+        encoding="utf-8",
+    )
+
+    body = client.get(f"{PREFIX}/processes", params={"cwd": str(root)}).json()
+    assert "my-flow" in [item["id"] for item in body["processes"]]
+
+    calls = []
+
+    def fake_job(args, cwd, timeout=None):
+        calls.append(args)
+        return {"job_id": "j", "id": "j", "pid": 0, "stdout_file": ""}
+
+    monkeypatch.setattr(plugin_api, "_start_job", fake_job)
+    monkeypatch.setattr(plugin_api, "_await_new_run", lambda root_, before, timeout=25.0: "r9")
+    plugin_api.ACTIVE_RUNS.clear()
+
+    response = client.post(f"{PREFIX}/workflows/my-flow/run", json={"cwd": str(root), "inputs": {"spec": "x"}})
+    assert response.status_code == 200, response.text
+    assert calls[-1][:3] == ["workflow", "run", "my-flow"]
+

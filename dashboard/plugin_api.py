@@ -642,10 +642,13 @@ def _run_state_status(root: Path, run_id: str) -> Optional[str]:
 GATE_TAKEOVER_GRACE = 20.0
 
 
-def _active_key(root: Path, process: str) -> tuple[str, str]:
-    # Keyed on the canonical process: `bug` and `bugfix` are one workflow, and two
-    # spellings must not each open their own run in the same project.
-    return (str(root).lower(), _canonical_process(process))
+def _active_key(root: Path, process: str = "") -> tuple[str]:
+    """One live run per project, not per process.
+
+    Two workflows writing artifacts into the same `.specify/` tree at once is what
+    the documented rule forbids, and a per-process key allowed exactly that.
+    """
+    return (str(root).lower(),)
 
 
 def _release_finished_jobs() -> None:
@@ -1019,9 +1022,10 @@ def workflow_run(process: str, payload: WorkflowRunRequest) -> dict[str, Any]:
     _release_finished_jobs()
     key = _active_key(root, process)
     if key in ACTIVE_RUNS:
+        running = ACTIVE_RUNS[key].get("process") or "another process"
         raise HTTPException(
             status_code=409,
-            detail=f"a {process} run is already in progress in this project",
+            detail=f"a run of {running} is already in progress in this project",
         )
     before = _run_ids(root)
     before_artifacts = _artifact_index(root)
@@ -1036,6 +1040,7 @@ def workflow_run(process: str, payload: WorkflowRunRequest) -> dict[str, Any]:
     ACTIVE_RUNS[key] = {
         "proc": JOBS.get(job["job_id"], {}).get("proc"),
         "run_id": run_id,
+        "process": _canonical_process(process),
         "kind": "run",
         "started_at": time.time(),
     }
