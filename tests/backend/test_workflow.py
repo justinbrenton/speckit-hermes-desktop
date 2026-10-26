@@ -1595,3 +1595,33 @@ def test_a_stopped_startup_does_not_overwrite_a_newer_claim(client, project, mon
     plugin_api.ACTIVE_RUNS.clear()
     plugin_api.JOBS.clear()
 
+
+def test_a_failed_answer_does_not_untrack_a_newer_run(client, project, monkeypatch):
+    """The failure path may only free the slot it still owns."""
+    def failing_job(args, cwd, timeout=None):
+        # someone stopped this reservation and re-claimed the project meanwhile
+        key = plugin_api._active_key(project, "bugfix")
+        with plugin_api.ACTIVE_LOCK:
+            plugin_api.ACTIVE_RUNS[key] = {
+                "proc": None, "run_id": "newer", "process": "assess",
+                "kind": "run", "token": 424242, "started_at": 0,
+            }
+        raise RuntimeError("dispatch failed")
+
+    run_dir = project / ".specify" / "workflows" / "runs" / "gate2"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "state.json").write_text(json.dumps({"status": "paused"}), encoding="utf-8")
+
+    monkeypatch.setattr(plugin_api, "_start_job", failing_job)
+    plugin_api.ACTIVE_RUNS.clear()
+
+    with pytest.raises(RuntimeError):
+        client.post(
+            f"{PREFIX}/workflows/speckit/runs/gate2/resume",
+            json={"cwd": str(project), "answers": {"gate_review_spec": "approve"}},
+        )
+
+    entry = plugin_api.ACTIVE_RUNS.get(plugin_api._active_key(project, "speckit"), {})
+    assert entry.get("run_id") == "newer", f"the failed answer untracked a newer run: {entry}"
+    plugin_api.ACTIVE_RUNS.clear()
+

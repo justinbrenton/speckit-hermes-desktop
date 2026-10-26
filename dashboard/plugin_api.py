@@ -707,6 +707,18 @@ def _admit_resume(root: Path, process: str, run_id: str) -> tuple[tuple[str], in
     return key, token
 
 
+def _release_reservation(key: tuple[str], token: int) -> None:
+    """Drop a reservation we still own, and nothing else.
+
+    A dispatch that fails must free the slot — but only if the slot is still ours.
+    If it was stopped and re-claimed while we were starting, the entry belongs to
+    that newer run, and popping it would untrack a live process.
+    """
+    with ACTIVE_LOCK:
+        if (ACTIVE_RUNS.get(key) or {}).get("token") == token:
+            ACTIVE_RUNS.pop(key, None)
+
+
 def _claim_dispatch(key: tuple[str], token: int, job: dict[str, Any], run_id: Optional[str], kind: str, process: str) -> None:
     """Turn a reservation into the live entry, unless someone cancelled it.
 
@@ -1161,8 +1173,7 @@ def workflow_run(process: str, payload: WorkflowRunRequest) -> dict[str, Any]:
         run_id = _await_new_run(root, before)
     except BaseException:
         # Nothing was dispatched, so the reservation must not outlive the request.
-        with ACTIVE_LOCK:
-            ACTIVE_RUNS.pop(key, None)
+        _release_reservation(key, token)
         raise
     if run_id:
         try:
@@ -1207,8 +1218,7 @@ def workflow_resume(process: str, run_id: str, payload: WorkflowResumeRequest) -
         job = _start_job(args, root, max(30, min(payload.timeout, SPECIFY_TIMEOUT_MAX)))
     except BaseException:
         # Nothing was dispatched, so the reservation must not outlive the request.
-        with ACTIVE_LOCK:
-            ACTIVE_RUNS.pop(key, None)
+        _release_reservation(key, token)
         raise
     _claim_dispatch(key, token, job, run_id, "resume", process)
     return {"process": process, "run_id": run_id, "job_id": job["job_id"], "running": True}
