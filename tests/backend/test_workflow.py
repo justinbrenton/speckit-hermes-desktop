@@ -1625,3 +1625,41 @@ def test_a_failed_answer_does_not_untrack_a_newer_run(client, project, monkeypat
     assert entry.get("run_id") == "newer", f"the failed answer untracked a newer run: {entry}"
     plugin_api.ACTIVE_RUNS.clear()
 
+
+def test_stop_only_reaches_the_run_it_names(client, project, monkeypatch):
+    """The argv fallback must match the run id, not every workflow job in the project."""
+    class Proc:
+        def __init__(self, pid):
+            self.pid = pid
+            self.killed = False
+
+        def poll(self):
+            return None
+
+        def kill(self):
+            self.killed = True
+
+    mine, theirs = Proc(111), Proc(222)
+    taskkilled = []
+
+    class FakeRun:
+        @staticmethod
+        def run(argv, **kwargs):
+            taskkilled.append(argv[-1])
+
+    plugin_api.ACTIVE_RUNS.clear()
+    plugin_api.JOBS.clear()
+    # no tracked entry: this is the restart case the argv fallback exists for
+    plugin_api.JOBS["mine"] = {"proc": mine, "cwd": str(project), "argv": ["workflow", "resume", "run-abc"]}
+    plugin_api.JOBS["theirs"] = {"proc": theirs, "cwd": str(project), "argv": ["workflow", "run", "other"]}
+    monkeypatch.setattr(plugin_api.subprocess, "run", FakeRun.run)
+
+    client.post(f"{PREFIX}/workflows/speckit/runs/run-abc/stop", json={"cwd": str(project)})
+
+    def stopped(proc):
+        return proc.killed or str(proc.pid) in taskkilled
+
+    assert stopped(mine), "the named run was not stopped"
+    assert not stopped(theirs), f"stop reached another run's process: {taskkilled}"
+    plugin_api.ACTIVE_RUNS.clear()
+    plugin_api.JOBS.clear()

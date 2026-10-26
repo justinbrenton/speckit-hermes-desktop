@@ -1232,14 +1232,28 @@ def stop_run(process: str, run_id: str, payload: WorkflowResumeRequest) -> dict[
     if not RUN_ID_RE.fullmatch(run_id or ""):
         raise HTTPException(status_code=400, detail=f"invalid run id: {run_id!r}")
     killed: list[int] = []
-    for job in list(JOBS.values()):
-        proc = job.get("proc")
+    key = _active_key(root, process)
+
+    # Prefer the tracked entry: it names exactly one run, so stopping cannot reach a
+    # different run's process. The argv scan is only a fallback for a run we no
+    # longer track (a restart), and it must match the run id itself.
+    with ACTIVE_LOCK:
+        entry = ACTIVE_RUNS.get(key)
+        owned = entry if entry is not None and entry.get("run_id") == run_id else None
+        if owned is not None:
+            ACTIVE_RUNS.pop(key, None)
+        tracked = (owned or {}).get("proc")
+
+    targets = [tracked] if tracked is not None else [
+        job.get("proc")
+        for job in list(JOBS.values())
+        if job.get("proc") is not None
+        and str(job.get("cwd", "")).lower() == str(root).lower()
+        and run_id in " ".join(job.get("argv") or [])
+    ]
+
+    for proc in targets:
         if proc is None or proc.poll() is not None:
-            continue
-        argv = job.get("argv") or []
-        if str(job.get("cwd", "")).lower() != str(root).lower():
-            continue
-        if argv[:1] != ["workflow"] and run_id not in " ".join(argv):
             continue
         pid = proc.pid
         try:
@@ -1250,14 +1264,6 @@ def stop_run(process: str, run_id: str, payload: WorkflowResumeRequest) -> dict[
             killed.append(pid)
         except (OSError, subprocess.SubprocessError):
             continue
-    _release_finished_jobs()
-    key = _active_key(root, process)
-    with ACTIVE_LOCK:
-        entry = ACTIVE_RUNS.get(key)
-        # The slot belongs to the project, so stopping must name the run: popping
-        # whatever is in the slot untracked a newer run (or a reservation).
-        if entry is not None and entry.get("run_id") == run_id:
-            ACTIVE_RUNS.pop(key, None)
     return {"run_id": run_id, "stopped": bool(killed), "pids": killed}
 
 
