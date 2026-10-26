@@ -31,6 +31,12 @@ except ImportError:  # pragma: no cover - fallback for a bare interpreter
 #: why); keep this list empty unless a skip is genuinely unavoidable.
 ALLOWED: list[tuple[str, str | None, str]] = []
 
+#: Default floor. A report smaller than this means the selection shrank, not that
+#: the suite is healthy. The caller sets it when it runs a subset: the integration
+#: job legitimately runs five tests, and a floor of forty there would fail a correct
+#: run.
+MIN_TESTS = 40
+
 
 def _allowed(module: str, test_name: str) -> tuple[bool, str]:
     for fragment, wanted, why in ALLOWED:
@@ -43,15 +49,25 @@ def _allowed(module: str, test_name: str) -> tuple[bool, str]:
 
 
 def main(argv: list[str]) -> int:
-    if len(argv) != 2:
+    args = list(argv[1:])
+    minimum = MIN_TESTS
+    if "--min" in args:
+        index = args.index("--min")
+        try:
+            minimum = int(args[index + 1])
+        except (IndexError, ValueError):
+            print("--min needs a number", file=sys.stderr)
+            return 2
+        del args[index:index + 2]
+    if len(args) != 1:
         print(__doc__, file=sys.stderr)
         return 2
-    report = Path(argv[1])
+    report = Path(args[0])
     if not report.is_file():
-        # The suite step already failed and reported why; adding a second red step
-        # here would only hide that.
-        print(f"no JUnit report at {report}, nothing to check")
-        return 0
+        # Fail closed: a typo in the --junitxml path, or a suite that died before
+        # reporting, must not leave this gate silently disabled.
+        print(f"no JUnit report at {report}: the suite did not report, so skips cannot be checked", file=sys.stderr)
+        return 1
 
     root = ET.parse(report).getroot()
     suites = root.findall(".//testsuite") or [root]
@@ -78,6 +94,9 @@ def main(argv: list[str]) -> int:
                 unexpected.append(label)
 
     print(f"\n{total} tests, {skipped} skipped, {len(unexpected)} unexpected")
+    if total < minimum:
+        print(f"only {total} tests were reported, fewer than the {minimum} expected", file=sys.stderr)
+        return 1
     if unexpected:
         print("\nA test that skips in CI is coverage nobody has. Mark it `hermes` and let", file=sys.stderr)
         print("the integration job run it, or make it runnable here.", file=sys.stderr)

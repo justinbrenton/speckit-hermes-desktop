@@ -75,9 +75,12 @@ is no token to borrow. Hence the mount is proven in-process instead (section 6).
 `_discover_dashboard_plugins` and `_mount_one_plugin_api`, then makes an HTTP request:
 
 ```
-$ PYTHONPATH="$LOCALAPPDATA/hermes/hermes-agent" python -m pytest tests/backend -q
-3 passed in 1.37s
+$ PYTHONPATH="$LOCALAPPDATA/hermes/hermes-agent" python -m pytest tests/backend -q -m hermes
+5 passed, 72 deselected
 ```
+
+These run in CI too, in a job that stages a pinned Hermes commit, so mounting is not a
+claim that only holds on the machine it was written on.
 
 - discovery finds the manifest, `has_api: true`, `_api_file: 'plugin_api.py'`
 - `_mount_one_plugin_api(app, entry, {'spec-kit-hermes'}, set())` returns `True`
@@ -87,11 +90,11 @@ $ PYTHONPATH="$LOCALAPPDATA/hermes/hermes-agent" python -m pytest tests/backend 
 ## 7. Test suites
 
 ```
-$ node --test test/*.test.mjs
-ℹ tests 36   ℹ pass 36   ℹ fail 0
+$ npm test
+ℹ tests 40   ℹ pass 40   ℹ fail 0
 
-$ python -m pytest tests/backend -q
-22 passed
+$ python -m pytest tests/backend -q -m "not hermes"
+72 passed, 5 deselected
 ```
 
 What the suites cover:

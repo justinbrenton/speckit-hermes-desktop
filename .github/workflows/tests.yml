@@ -9,8 +9,9 @@ name: tests
 on:
   push:
     branches: [master]
+  # No base-branch filter: a stacked PR is still a PR, and it had no checks at all
+  # while this was limited to master.
   pull_request:
-    branches: [master]
 
 permissions:
   contents: read
@@ -20,7 +21,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest]
+        os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -62,15 +63,19 @@ jobs:
     # is the only thing between a broken integration and a green build.
     name: backend (hermes integration)
     runs-on: ubuntu-latest
+    timeout-minutes: 20
     env:
       # Must satisfy plugin.yaml's requires_hermes floor. This is the commit this
       # plugin is developed against; bump both together.
-      HERMES_COMMIT: bda3a363e969
+      HERMES_COMMIT: bda3a363e9695e3f63fce4a7ca85ba17b5fecb61
       # A literal path: the runner context is not available in a job-level env
       # block, and GitHub rejects the whole workflow when it is used there.
       HERMES_SRC: /tmp/hermes-agent
     steps:
       - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -82,7 +87,7 @@ jobs:
         # installing the project and put the source on PYTHONPATH.
         run: |
           mkdir -p "$HERMES_SRC"
-          curl -sSL "https://codeload.github.com/NousResearch/hermes-agent/tar.gz/${HERMES_COMMIT}" \
+          curl -sSL --fail "https://codeload.github.com/NousResearch/hermes-agent/tar.gz/${HERMES_COMMIT}" \
             | tar xz -C "$HERMES_SRC" --strip-components=1
           cd "$HERMES_SRC"
           uv sync --frozen --no-install-project
@@ -97,7 +102,13 @@ jobs:
             -q -m hermes --junitxml=junit.xml
       - name: No silent skips
         if: always()
-        run: python scripts/check-skips.py junit.xml
+        # Five tests here by design: this job runs the hermes-marked subset.
+        run: python scripts/check-skips.py junit.xml --min 5
+      - name: Preflight (counts, doc numbers, generated HTML)
+        env:
+          PREFLIGHT_PYTHON: /tmp/hermes-agent/.venv/bin/python
+          PYTHONPATH: /tmp/hermes-agent
+        run: node scripts/preflight.mjs
 
   manifests:
     runs-on: ubuntu-latest

@@ -161,7 +161,7 @@ design: `parseSpec`/`serializeSpec`, `parseTasks`/`serializeTasks`, the constitu
 builder and validator, the Kanban derivation helpers, the stepper state machine and
 `dispatchMessage`. The wizard calls none of them — the skills write those files now.
 They were deleted with their tests; `core.mjs` is 105 lines of wizard model, and
-`plugin.js` dropped from 70,675 to 43,734 bytes.
+`plugin.js` lost roughly a third of its size in that pass (the sizes are in the commit).
 
 ### The wizard's decisions are testable
 
@@ -372,7 +372,7 @@ scripts/install.mjs       copies both halves into a Hermes home, edits config, b
 scripts/config-enable.mjs surgical plugins.enabled edit
 scripts/verify-install.py re-runs Hermes' own discovery and mount, then drives the routes
 scripts/render-docs.mjs   docs/design.md → docs/design.html
-backend/plugin_api.py     FastAPI router
+dashboard/plugin_api.py   FastAPI router, mounted by Hermes at /api/plugins/spec-kit-hermes
 tests/backend/            route tests plus a real mount through Hermes' dashboard loader
 test/                     node --test suites
 docs/design.md            this file
@@ -450,7 +450,7 @@ Shipped:
   workflows by `/init` and `/repair-workflows`.
 - Artifact listing across `<project>/specs/` and `.specify/`, read-only viewer.
 - Installer that backs up before it writes.
-- 57 node tests, 39 backend tests.
+- 40 node tests, and 77 backend tests: 72 that need only FastAPI and 5 that need Hermes.
 
 Next, in the order I would do them:
 
@@ -520,12 +520,12 @@ SDK export. `Fragment` comes from React.
 
 | Claim | Command | Observed |
 |---|---|---|
-| Node tests pass | `npm test` | 57 tests, 57 pass, 0 fail |
+| Node tests pass | `npm test` | 40 tests, 40 pass, 0 fail |
 | The built plugin loads like the runtime loads it | `node --test test/plugin-smoke.test.mjs` | default export present, `id: spec-kit-hermes`, one pane and one status item registered |
-| The deployed plugin matches the build | `cmp desktop/plugin.js ~/.hermes/desktop-plugins/spec-kit-hermes/plugin.js` | identical, 43,953 bytes |
+| The deployed plugin matches the build | `cmp desktop/plugin.js ~/.hermes/desktop-plugins/spec-kit-hermes/plugin.js` | identical |
 | The config edit adds one line, not a duplicate key | feed the live `config.yaml` through `config-enable.mjs` | 1 line added, `plugins.enabled` contains `spec-kit-hermes` once, file parses |
-| Backend half is installed | `ls ~/.hermes/plugins/spec-kit-hermes/dashboard/` | `plugin_api.py` (10,031 bytes), `manifest.json`, `index.js` |
-| Backend tests pass | `python -m pytest tests/backend -q` | 39 passed (routes, mount, file I/O, discovery, workflow bridge, artifacts, gates) |
+| Backend half is installed | `ls ~/.hermes/plugins/spec-kit-hermes/dashboard/` | `plugin_api.py`, `manifest.json`, `index.js` |
+| Backend tests pass | `python -m pytest tests/backend -q -m "not hermes"` | 72 passed, 5 deselected; the 5 need Hermes and run in their own CI job |
 | Process discovery is data-driven | `tests/backend/test_processes.py` | a bugfix workflow becomes inputs + command steps + a gate; skills resolved and flagged |
 | A gate pauses and resumes | `POST /run` then `POST /runs/<id>/resume` with `gate_review_spec=approve` | paused at review-spec; `choice= approve`; engine ran `plan` and paused at review-plan |
 | Artifacts are listed and readable | `GET /artifacts`, `GET /artifact` | 7 artifacts in the demo project, `spec.md` read back at 1,829 chars |
