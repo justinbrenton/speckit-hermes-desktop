@@ -1390,3 +1390,31 @@ def test_a_run_recorded_under_the_legacy_id_stays_visible(client, project, cli):
     body = client.get(f"{PREFIX}/workflows/bugfix/runs", params={"cwd": str(project)}).json()
     assert "legacyrun" in [run.get("run_id") for run in body["runs"]], f"legacy run hidden: {body}"
 
+
+def test_the_legacy_spelling_cannot_start_a_second_run(client, project, monkeypatch):
+    """`bug` and `bugfix` name one workflow, so the run lock must be shared."""
+    class LiveProc:
+        def poll(self):
+            return None
+
+        def kill(self):
+            pass
+
+    def fake_job(args, cwd, timeout=None):
+        # the lock reads proc out of JOBS, so the stub has to put it there
+        plugin_api.JOBS["j"] = {"proc": LiveProc(), "id": "j"}
+        return {"job_id": "j", "id": "j", "pid": 0, "stdout_file": ""}
+
+    monkeypatch.setattr(plugin_api, "_start_job", fake_job)
+    monkeypatch.setattr(plugin_api, "_await_new_run", lambda root_, before, timeout=25.0: "run-x")
+    plugin_api.ACTIVE_RUNS.clear()
+    plugin_api.JOBS.clear()
+
+    first = client.post(f"{PREFIX}/workflows/bugfix/run", json={"cwd": str(project), "inputs": {"report": "x"}})
+    assert first.status_code == 200, first.text
+
+    second = client.post(f"{PREFIX}/workflows/bug/run", json={"cwd": str(project), "inputs": {"report": "x"}})
+    assert second.status_code == 409, f"the alias opened a second run: {second.status_code}"
+    plugin_api.ACTIVE_RUNS.clear()
+    plugin_api.JOBS.clear()
+

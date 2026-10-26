@@ -463,7 +463,7 @@ Shipped:
   workflow omits that declaration, so its gates accept a resume and discard it.
 - A claim gate: every test count stated in the docs is compared with the suites that just
   ran, and a pre-commit hook runs it.
-- 50 node tests, and 116 backend tests: 111 that need only FastAPI and 5 that need Hermes.
+- 51 node tests, and 118 backend tests: 113 that need only FastAPI and 5 that need Hermes.
 
 Next, in the order I would do them:
 
@@ -530,12 +530,12 @@ SDK export. `Fragment` comes from React.
 
 | Claim | Command | Observed |
 |---|---|---|
-| Node tests pass | `npm test` | 50 tests, 50 pass, 0 fail |
+| Node tests pass | `npm test` | 51 tests, 51 pass, 0 fail |
 | The built plugin loads like the runtime loads it | `node --test test/plugin-smoke.test.mjs` | default export present, `id: spec-kit-hermes`, one pane and one status item registered |
 | The deployed plugin matches the build | `cmp desktop/plugin.js ~/.hermes/desktop-plugins/spec-kit-hermes/plugin.js` | identical |
 | The config edit adds one line, not a duplicate key | feed the live `config.yaml` through `config-enable.mjs` | 1 line added, `plugins.enabled` contains `spec-kit-hermes` once, file parses |
 | Backend half is installed | `ls ~/.hermes/plugins/spec-kit-hermes/dashboard/` | `plugin_api.py`, `manifest.json`, `index.js` |
-| Backend tests pass | `python -m pytest tests/backend -q -m "not hermes"` | 111 passed, 5 deselected; the 5 need Hermes and run in their own CI job |
+| Backend tests pass | `python -m pytest tests/backend -q -m "not hermes"` | 113 passed, 5 deselected; the 5 need Hermes and run in their own CI job |
 | Process discovery is data-driven | `tests/backend/test_processes.py` | a bugfix workflow becomes inputs + command steps + a gate; skills resolved and flagged |
 | A gate pauses and resumes | `POST /run` then `POST /runs/<id>/resume` with `gate_review_spec=approve` | paused at review-spec; `choice= approve`; engine ran `plan` and paused at review-plan |
 | Artifacts are listed and readable | `GET /artifacts`, `GET /artifact` | 7 artifacts in the demo project, `spec.md` read back at 1,829 chars |

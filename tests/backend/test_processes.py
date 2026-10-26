@@ -345,3 +345,26 @@ def test_the_legacy_id_can_start_a_run_when_nothing_is_on_disk(client, tmp_path,
     assert response.status_code == 200, response.text
     assert calls[-1][:3] == ["workflow", "run", "bugfix"], "the generated tree is canonical once written"
 
+
+def test_a_shaped_legacy_file_does_not_win_over_the_canonical_one(client, tmp_path):
+    """Shaping writes id: bugfix into bug/, so the declared id cannot pick the winner."""
+    root = _project(tmp_path, {})
+    bundled = Path(__file__).resolve().parents[2] / "workflows" / "bugfix" / "workflow.yml"
+    canonical = root / ".specify" / "workflows" / "bugfix" / "workflow.yml"
+    canonical.parent.mkdir(parents=True)
+    canonical.write_text(bundled.read_text(encoding="utf-8"), encoding="utf-8")
+
+    legacy = root / ".specify" / "workflows" / "bug"
+    legacy.mkdir(parents=True)
+    (legacy / "workflow.yml").write_text(
+        "schema_version: \"1.0\"\nworkflow:\n  id: \"bugfix\"\n  name: \"LEGACY\"\n"
+        "steps:\n  - id: assess\n    command: speckit.bug.assess\n",
+        encoding="utf-8",
+    )
+
+    body = client.get(f"{PREFIX}/processes", params={"cwd": str(root)}).json()
+    card = next(item for item in body["processes"] if item["id"] == "bugfix")
+    # The declared id is identical in both files, so only the directory can decide.
+    assert card["name"] != "LEGACY", "the card must describe the file a run would use"
+    assert card["source"].endswith(str(Path("bugfix") / "workflow.yml")), card["source"]
+

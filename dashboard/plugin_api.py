@@ -477,6 +477,10 @@ def list_processes(cwd: str = Query(..., description="Absolute project directory
         entry = build_entry(data, str(wf_file), True, wf_file.parent.name)
         if entry:
             entry["id"] = entry["id"] or wf_file.parent.name
+            # Which file this card came from. A shaped legacy file declares the
+            # canonical id, so the declared id cannot say whether this is the file
+            # a run would use.
+            entry["_dir"] = wf_file.parent.name
             processes.append(entry)
 
     # Collapse ids that mean the same process: an older project has a `bug` tree
@@ -486,7 +490,7 @@ def list_processes(cwd: str = Query(..., description="Absolute project directory
     winner_raw: dict[str, str] = {}
     winner_at: dict[str, int] = {}
     for entry in processes:
-        raw_id = entry["id"]
+        raw_id = entry.pop("_dir", "") or entry["id"]
         canonical = _canonical_process(raw_id)
         entry["id"] = canonical
         if canonical not in winner_at:
@@ -639,7 +643,9 @@ GATE_TAKEOVER_GRACE = 20.0
 
 
 def _active_key(root: Path, process: str) -> tuple[str, str]:
-    return (str(root).lower(), process)
+    # Keyed on the canonical process: `bug` and `bugfix` are one workflow, and two
+    # spellings must not each open their own run in the same project.
+    return (str(root).lower(), _canonical_process(process))
 
 
 def _release_finished_jobs() -> None:

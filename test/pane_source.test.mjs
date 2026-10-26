@@ -131,6 +131,15 @@ test('a malformed selector in a list is caught, not waved through', () => {
   assert.deepEqual(deadSelectors('.sk-a::before { content: ""; }'), [])
 })
 
+test('the chooser renders the workflows discovery returned', () => {
+  const body = componentBody('ProcessChoice')
+  // Hard-coding three names hid every workflow a project installed for itself.
+  assert.ok(!/children:\s*PROCESS_COPY\.map/.test(body), 'the chooser must not render from a fixed list')
+  assert.match(body, /cards\.map\(entry =>/, 'it must map the discovered processes')
+  assert.match(body, /entry\.name \|\| entry\.id/, 'an unknown workflow needs a fallback title')
+  assert.match(body, /No workflows found in this folder/, 'and an empty folder needs a state')
+})
+
 test('every component that calls useState imports it', () => {
   const calls = SOURCE.match(/= useState\(/g) || []
   if (calls.length === 0) return

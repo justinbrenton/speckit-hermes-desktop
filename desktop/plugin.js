@@ -299,8 +299,22 @@ function ProgressHeader({ steps, run }) {
 }
 
 function ProcessChoice({ processes, onPick, onInstall, error, busy }) {
-  const byId = {}
-  for (const item of processes || []) byId[item.id] = item
+  // Render what discovery found, not a hard-coded list: a project can install its
+  // own workflow, and three fixed names hid every one of those.
+  const KNOWN_ORDER = PROCESS_COPY.map(copy => copy.id)
+  const copyFor = entry => {
+    const known = PROCESS_COPY.find(copy => copy.id === entry.id)
+    return known || {
+      id: entry.id,
+      title: entry.name || entry.id,
+      need: entry.description || 'A workflow installed in this project',
+      get: ''
+    }
+  }
+  const cards = [...(processes || [])].sort((a, b) => {
+    const rank = id => { const at = KNOWN_ORDER.indexOf(id); return at < 0 ? KNOWN_ORDER.length : at }
+    return rank(a.id) - rank(b.id)
+  })
   const STATUS = {
     ready: ['sk-pill-ready', 'Ready'],
     setup: ['sk-pill-setup', 'Sets up on first run'],
@@ -313,8 +327,9 @@ function ProcessChoice({ processes, onPick, onInstall, error, busy }) {
     jsx('p', { className: 'sk-small sk-dim', children: 'Three ways into spec-kit. Each one is its own workflow, not a phase of the others.' }),
     error ? jsx('p', { className: 'sk-small sk-err', children: error }) : null,
     jsx(ScrollArea, { className: 'min-h-0 flex-1', children:
-      jsx('div', { className: 'flex flex-col gap-2', children: PROCESS_COPY.map(copy => {
-        const entry = byId[copy.id]
+      cards.length
+        ? jsx('div', { className: 'flex flex-col gap-2', children: cards.map(entry => {
+        const copy = copyFor(entry)
         const commands = ((entry && entry.steps) || []).filter(step => step.type === 'command')
         // The extension's commands must be installed before the process can run;
         // the workflow file is written for us on Start.
@@ -334,7 +349,7 @@ function ProcessChoice({ processes, onPick, onInstall, error, busy }) {
             jsx('span', { className: `sk-pill ${pillClass} shrink-0`, children: pillText })
           ] }),
           jsx('span', { className: `sk-small sk-dim${dim}`, children: copy.need }),
-          jsx('span', { className: `sk-tiny sk-faint${dim}`, children: copy.get }),
+          copy.get ? jsx('span', { className: `sk-tiny sk-faint${dim}`, children: copy.get }) : null,
           runnable
             ? (needsSetup
                 ? jsx('span', { className: 'sk-tiny sk-faint', children: 'Its workflow is written the first time you start it.' })
@@ -362,12 +377,13 @@ function ProcessChoice({ processes, onPick, onInstall, error, busy }) {
               onClick: () => onPick(entry),
               className: 'sk-card-btn flex flex-col gap-1 rounded border sk-border p-2 text-left',
               children: body
-            }, copy.id)
+            }, entry.id)
           : jsx('div', {
               className: 'flex flex-col gap-1 rounded border sk-border p-2',
               children: body
-            }, copy.id)
+            }, entry.id)
       }) })
+        : jsx('p', { className: 'sk-small sk-dim', children: 'No workflows found in this folder yet. Initialise spec-kit here, or pick another folder.' })
     })
   ] })
 }
