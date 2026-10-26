@@ -32,6 +32,8 @@ jobs:
       - run: npm test
 
   backend:
+    # The router suite: everything that does not need Hermes itself.
+    name: backend (router, ${{ matrix.os }}, py${{ matrix.python }})
     strategy:
       fail-fast: false
       matrix:
@@ -48,9 +50,34 @@ jobs:
         with:
           python-version: ${{ matrix.python }}
       - run: pip install -r requirements-dev.txt
-      - name: Run the backend suite
-        run: python -m pytest tests/backend -q --junitxml=junit.xml
+      - name: Run the router suite
+        run: python -m pytest tests/backend -q -m "not hermes" --junitxml=junit.xml
       - name: The suite must not skip anything it is not expected to skip
+        if: always()
+        run: python scripts/check-skips.py junit.xml
+
+  hermes-integration:
+    # The tests that import Hermes internals: dashboard mounting and the Kanban
+    # bridge. They are deselected from the matrix above, not skipped, so this job
+    # is the only thing standing between a broken integration and a green build.
+    name: backend (hermes integration)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: pip install -r requirements-dev.txt
+      - name: Install Hermes at the commit this plugin is developed against
+        # Bump this when plugin.yaml's requires_hermes floor moves. A tag would be
+        # nicer, but releases lag the plugin (0.21.5 at v2026.9.24 while the floor
+        # is 0.22.2).
+        run: pip install "hermes-agent @ git+https://github.com/NousResearch/hermes-agent@bda3a363e969"
+      - name: Confirm Hermes really imported
+        run: python -c "import hermes_cli.web_server_dashboard, hermes_cli.kanban_db_connect; print('hermes imports ok')"
+      - name: Run the Hermes integration tests
+        run: python -m pytest tests/backend -q -m hermes --junitxml=junit.xml
+      - name: No silent skips
         if: always()
         run: python scripts/check-skips.py junit.xml
 

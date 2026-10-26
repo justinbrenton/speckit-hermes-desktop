@@ -19,6 +19,11 @@ import pytest
 
 BACKEND_DIR = Path(__file__).resolve().parents[2] / "dashboard"
 
+# Every test here drives Hermes' own plugin pipeline, so the whole module is
+# `hermes`-marked: CI runs it in the integration job that installs Hermes, and the
+# router suite deselects it rather than skipping it.
+pytestmark = pytest.mark.hermes
+
 dashboard = pytest.importorskip(
     "hermes_cli.web_server_dashboard",
     reason="hermes_cli dashboard code not importable in this interpreter",

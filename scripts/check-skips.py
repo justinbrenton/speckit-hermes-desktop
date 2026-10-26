@@ -25,25 +25,11 @@ try:
 except ImportError:  # pragma: no cover - fallback for a bare interpreter
     import xml.etree.ElementTree as ET  # type: ignore[no-redef]
 
-#: (module fragment, test name or None for the whole module, why). Keep this list
-#: short and explain each entry: every name here is verification that CI does not do.
-ALLOWED: list[tuple[str, str | None, str]] = [
-    (
-        "test_mount",
-        None,
-        "imports hermes_cli.web_server_dashboard at module level",
-    ),
-    (
-        "test_plugin_api",
-        "test_kanban_sync_creates_and_dedupes",
-        "needs hermes_cli kanban_db_connect",
-    ),
-    (
-        "test_plugin_api",
-        "test_kanban_links_are_scoped_to_the_project",
-        "needs hermes_cli kanban_db_connect",
-    ),
-]
+#: Nothing should skip in CI. The Hermes-backed tests are deselected by marker and
+#: run in their own job, so a skip here means something broke, or someone added a
+#: skip to make a red build green. Entries are (module fragment, test name or None,
+#: why); keep this list empty unless a skip is genuinely unavoidable.
+ALLOWED: list[tuple[str, str | None, str]] = []
 
 
 def _allowed(module: str, test_name: str) -> tuple[bool, str]:
@@ -93,8 +79,8 @@ def main(argv: list[str]) -> int:
 
     print(f"\n{total} tests, {skipped} skipped, {len(unexpected)} unexpected")
     if unexpected:
-        print("\nA test that skips in CI is coverage nobody has. Either make it runnable", file=sys.stderr)
-        print("here, or add its file to ALLOWED with a reason.", file=sys.stderr)
+        print("\nA test that skips in CI is coverage nobody has. Mark it `hermes` and let", file=sys.stderr)
+        print("the integration job run it, or make it runnable here.", file=sys.stderr)
         return 1
     return 0
 

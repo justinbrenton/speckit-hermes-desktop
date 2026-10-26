@@ -202,6 +202,7 @@ def kanban_home(tmp_path: Path, monkeypatch):
     return home
 
 
+@pytest.mark.hermes
 def test_kanban_sync_creates_and_dedupes(client, project, kanban_home):
     body = {
         "cwd": str(project),
@@ -228,6 +229,7 @@ def test_kanban_sync_creates_and_dedupes(client, project, kanban_home):
     assert rows["FR-1"]["done"] is False
 
 
+@pytest.mark.hermes
 def test_kanban_links_are_scoped_to_the_project(client, project, tmp_path, kanban_home):
     client.post(
         f"{PREFIX}/kanban/sync",
