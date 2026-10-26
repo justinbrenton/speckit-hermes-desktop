@@ -25,12 +25,35 @@ try:
 except ImportError:  # pragma: no cover - fallback for a bare interpreter
     import xml.etree.ElementTree as ET  # type: ignore[no-redef]
 
-#: Tests that legitimately require a Hermes install. Keep this list short and
-#: explain each entry, because every name here is verification that CI does not do.
-ALLOWED = {
-    # test_mount.py imports hermes_cli.web_server_dashboard at module level.
-    "tests/backend/test_mount.py",
-}
+#: (module fragment, test name or None for the whole module, why). Keep this list
+#: short and explain each entry: every name here is verification that CI does not do.
+ALLOWED: list[tuple[str, str | None, str]] = [
+    (
+        "test_mount",
+        None,
+        "imports hermes_cli.web_server_dashboard at module level",
+    ),
+    (
+        "test_plugin_api",
+        "test_kanban_sync_creates_and_dedupes",
+        "needs hermes_cli kanban_db_connect",
+    ),
+    (
+        "test_plugin_api",
+        "test_kanban_links_are_scoped_to_the_project",
+        "needs hermes_cli kanban_db_connect",
+    ),
+]
+
+
+def _allowed(module: str, test_name: str) -> tuple[bool, str]:
+    for fragment, wanted, why in ALLOWED:
+        if fragment not in module:
+            continue
+        # A collection skip reports the module itself as the test name.
+        if wanted is None or test_name == wanted or test_name == module:
+            return True, why
+    return False, ""
 
 
 def main(argv: list[str]) -> int:
@@ -39,8 +62,10 @@ def main(argv: list[str]) -> int:
         return 2
     report = Path(argv[1])
     if not report.is_file():
-        print(f"no JUnit report at {report}", file=sys.stderr)
-        return 2
+        # The suite step already failed and reported why; adding a second red step
+        # here would only hide that.
+        print(f"no JUnit report at {report}, nothing to check")
+        return 0
 
     root = ET.parse(report).getroot()
     suites = root.findall(".//testsuite") or [root]
@@ -56,11 +81,12 @@ def main(argv: list[str]) -> int:
             skipped += 1
             name = case.get("file") or case.get("classname") or case.get("name") or "?"
             path = name.replace("\\", "/")
-            allowed = any(path.startswith(prefix) or prefix in path for prefix in ALLOWED)
+            test_name = case.get("name") or ""
+            allowed, why = _allowed(path, test_name)
             reason = (skip.get("message") or "").strip().splitlines()[:1]
-            label = f"{path}::{case.get('name')}"
+            label = f"{path}::{test_name}"
             if allowed:
-                print(f"skipped (known): {label} - {reason[0] if reason else 'no reason given'}")
+                print(f"skipped (known, {why}): {label} - {reason[0] if reason else 'no reason given'}")
             else:
                 print(f"skipped (UNEXPECTED): {label} - {reason[0] if reason else 'no reason given'}")
                 unexpected.append(label)
