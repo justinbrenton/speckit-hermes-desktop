@@ -17,7 +17,11 @@ permissions:
 
 jobs:
   node:
-    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -32,15 +36,23 @@ jobs:
       fail-fast: false
       matrix:
         os: [ubuntu-latest, macos-latest, windows-latest]
+        python: ["3.12"]
+        include:
+          # The oldest and newest interpreter the plugin is likely to meet.
+          - os: ubuntu-latest
+            python: "3.13"
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.12"
+          python-version: ${{ matrix.python }}
       - run: pip install -r requirements-dev.txt
       - name: Run the backend suite
-        run: python -m pytest tests/backend -q
+        run: python -m pytest tests/backend -q --junitxml=junit.xml
+      - name: The suite must not skip anything it is not expected to skip
+        if: always()
+        run: python scripts/check-skips.py junit.xml
 
   manifests:
     runs-on: ubuntu-latest
