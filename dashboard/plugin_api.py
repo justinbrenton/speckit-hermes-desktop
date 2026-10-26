@@ -470,6 +470,18 @@ REVIEWED_STDOUT_PREVIEW = 6000
 REVIEWED_STDERR_PREVIEW = 2000
 STEP_OUTPUT_MAX_BYTES = 1_048_576
 
+
+def _utf8_bytes(text: str) -> int:
+    return len(text.encode("utf-8", "ignore"))
+
+
+def _clip_bytes(text: str, limit: int) -> tuple[str, bool]:
+    """Cut text to at most `limit` UTF-8 bytes without splitting a character."""
+    data = text.encode("utf-8", "ignore")
+    if len(data) <= limit:
+        return text, False
+    return data[:max(limit, 0)].decode("utf-8", "ignore"), True
+
 #: Background dispatches, keyed by job id. The CLI's own run state lives under
 #: .specify/workflows/runs; this only tracks the process we spawned.
 JOBS: dict[str, dict[str, Any]] = {}
@@ -1760,11 +1772,14 @@ def browse(path: str = Query("", description="Directory to list; empty lists fil
         import os.path as _osp
 
         resolved_text = _osp.realpath(_osp.expanduser(str(path)))
-        if not any(
-            resolved_text == _osp.realpath(str(root))
-            or resolved_text.startswith(_osp.realpath(str(root)) + _osp.sep)
-            for root in allowed
-        ):
+
+        def _beneath(candidate: str, base: str) -> bool:
+            # "/" and "C:\\" already end in the separator; appending another would
+            # ask for "//" and refuse every descendant of a filesystem root.
+            prefix = base if base.endswith(_osp.sep) else base + _osp.sep
+            return candidate == base or candidate.startswith(prefix)
+
+        if not any(_beneath(resolved_text, _osp.realpath(str(root))) for root in allowed):
             raise HTTPException(status_code=403, detail=f"outside SPECKIT_ALLOWED_ROOTS: {resolved_text}")
         path = resolved_text
 
@@ -2055,14 +2070,21 @@ def _run_view(process: str, run: dict[str, Any], root: Path) -> dict[str, Any]:
             stdout = output_block.get("stdout") or ""
             stderr = output_block.get("stderr") or ""
             gate["reviewed_step"] = reviewed_id
-            gate["reviewed_stdout"] = stdout[-REVIEWED_STDOUT_PREVIEW:]
-            gate["reviewed_stderr"] = stderr[-REVIEWED_STDERR_PREVIEW:]
+            gate["reviewed_stdout"], stdout_cut = _clip_bytes(
+                stdout[-REVIEWED_STDOUT_PREVIEW:], REVIEWED_STDOUT_PREVIEW
+            )
+            gate["reviewed_stderr"], stderr_cut = _clip_bytes(
+                stderr[-REVIEWED_STDERR_PREVIEW:], REVIEWED_STDERR_PREVIEW
+            )
             # Say when this is a tail: a findings list that starts at the top must
             # not silently disappear from the review.
-            gate["reviewed_stdout_bytes"] = len(stdout)
-            gate["reviewed_stderr_bytes"] = len(stderr)
+            gate["reviewed_stdout_bytes"] = _utf8_bytes(stdout)
+            gate["reviewed_stderr_bytes"] = _utf8_bytes(stderr)
             gate["reviewed_truncated"] = (
-                len(stdout) > REVIEWED_STDOUT_PREVIEW or len(stderr) > REVIEWED_STDERR_PREVIEW
+                gate["reviewed_stdout_bytes"] > _utf8_bytes(gate["reviewed_stdout"])
+                or gate["reviewed_stderr_bytes"] > _utf8_bytes(gate["reviewed_stderr"])
+                or stdout_cut
+                or stderr_cut
             )
     return {
         "process": process,
@@ -2110,7 +2132,8 @@ def run_step_output(
 
     A gate carries a preview so the pane can render without loading megabytes. When
     that preview is a tail, the reviewer needs the whole thing, and this is where
-    they get it.
+    they get it. The size cap applies to the response as a whole: stdout is served
+    first and stderr gets what is left, so the two together cannot exceed it.
     """
     root = _project_root(cwd)
     _process_data(root, process)
@@ -2123,21 +2146,29 @@ def run_step_output(
         state = json.loads(state_file.read_text(encoding="utf-8"))
     except (OSError, ValueError):
         raise HTTPException(status_code=500, detail="run state is not readable JSON")
+    if not _run_belongs(state, process):
+        # The runs directory is shared, so this request could otherwise read another
+        # process's output by guessing an id.
+        raise HTTPException(status_code=404, detail=f"run {run_id} does not belong to {process}")
     results = state.get("step_results") or {}
     if step not in results:
         raise HTTPException(status_code=404, detail=f"no step {step!r} in run {run_id}")
     output = results[step].get("output") or {}
     stdout = output.get("stdout") or ""
     stderr = output.get("stderr") or ""
-    truncated = len(stdout) + len(stderr) > STEP_OUTPUT_MAX_BYTES
+    budget = STEP_OUTPUT_MAX_BYTES
+    served_stdout, cut = _clip_bytes(stdout, budget)
+    budget -= _utf8_bytes(served_stdout)
+    served_stderr, stderr_cut = _clip_bytes(stderr, budget)
     return {
         "run_id": run_id,
         "step": step,
-        "stdout": stdout[:STEP_OUTPUT_MAX_BYTES],
-        "stderr": stderr[:STEP_OUTPUT_MAX_BYTES],
-        "stdout_bytes": len(stdout),
-        "stderr_bytes": len(stderr),
-        "truncated": truncated,
+        "stdout": served_stdout,
+        "stderr": served_stderr,
+        "stdout_bytes": _utf8_bytes(stdout),
+        "stderr_bytes": _utf8_bytes(stderr),
+        "truncated": cut or stderr_cut,
+        "limit_bytes": STEP_OUTPUT_MAX_BYTES,
     }
 
 

@@ -1149,3 +1149,86 @@ def test_browse_is_unrestricted_when_no_allowlist_is_set(client, monkeypatch, tm
     monkeypatch.delenv("SPECKIT_ALLOWED_ROOTS", raising=False)
     top = client.get(f"{PREFIX}/browse").json()
     assert top["entries"], "no ceiling means the usual roots"
+
+
+def _write_state(project, run_id, results, workflow_id="speckit", current_step_id=None):
+    run_dir = project / ".specify" / "workflows" / "runs" / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "state.json").write_text(
+        json.dumps({
+            "workflow_id": workflow_id,
+            "status": "paused",
+            "current_step_id": current_step_id,
+            "step_results": results,
+        }),
+        encoding="utf-8",
+    )
+
+
+def test_output_for_another_process_run_is_refused(client, project, cli):
+    client.post(f"{PREFIX}/workflow/shape", json={"cwd": str(project), "mode": "full"})
+    _write_state(
+        project,
+        "bugrun",
+        {"assess": {"type": "command", "status": "completed", "output": {"stdout": "bug output"}}},
+        workflow_id="bug",
+    )
+
+    response = client.get(
+        f"{PREFIX}/workflows/speckit/runs/bugrun/output",
+        params={"cwd": str(project), "step": "assess"},
+    )
+    assert response.status_code == 404, "the runs directory is shared; the process must match"
+    assert "does not belong" in response.text
+
+
+def test_the_cap_applies_to_both_streams_together(client, project, cli, monkeypatch):
+    monkeypatch.setattr(plugin_api, "STEP_OUTPUT_MAX_BYTES", 1000)
+    _write_state(
+        project,
+        "bigrun",
+        {"analyze": {"type": "command", "status": "completed", "output": {"stdout": "o" * 4000, "stderr": "e" * 4000}}},
+    )
+
+    payload = client.get(
+        f"{PREFIX}/workflows/speckit/runs/bigrun/output",
+        params={"cwd": str(project), "step": "analyze"},
+    ).json()
+
+    served = len(payload["stdout"].encode()) + len(payload["stderr"].encode())
+    assert served <= 1000, f"served {served} bytes against a 1000 byte cap"
+    assert payload["truncated"] is True
+    assert payload["stdout_bytes"] == 4000
+
+
+def test_byte_counts_are_bytes_not_characters(client, project, cli, monkeypatch):
+    monkeypatch.setattr(plugin_api, "REVIEWED_STDOUT_PREVIEW", 1000)
+    client.post(f"{PREFIX}/workflow/shape", json={"cwd": str(project), "mode": "full"})
+    text = "é" * 2000  # two bytes each
+    _write_state(
+        project,
+        "unicoderun",
+        {
+            "analyze": {"type": "command", "status": "completed", "output": {"stdout": text}},
+            "review-analyze": {"type": "gate", "status": "paused"},
+        },
+        current_step_id="review-analyze",
+    )
+
+    gate = client.get(
+        f"{PREFIX}/workflows/speckit/runs/unicoderun", params={"cwd": str(project)}
+    ).json()["gate"]
+    assert gate["reviewed_stdout_bytes"] == 4000
+    assert len(gate["reviewed_stdout"].encode()) <= 1000
+    assert gate["reviewed_truncated"] is True
+
+
+def test_browsing_beneath_a_filesystem_root_is_allowed(client, tmp_path, monkeypatch):
+    # The bug: "/" plus a separator is "//", so every descendant of a root was refused.
+    root = tmp_path.anchor
+    monkeypatch.setenv("SPECKIT_ALLOWED_ROOTS", root)
+
+    response = client.get(f"{PREFIX}/browse", params={"path": str(tmp_path)})
+    assert response.status_code == 200, response.text
+    assert response.json()["path"] == str(tmp_path.resolve())
+

@@ -52,6 +52,29 @@ test('the gate card reads stderr as well as stdout', () => {
   assert.match(body, /reviewed_stderr/, 'a command can report only on stderr')
 })
 
+test('the gate card keeps saying when loaded output is still incomplete', () => {
+  const body = componentBody('GateCard')
+  assert.match(body, /full\.truncated/, 'the endpoint truncated flag must survive the load')
+  assert.match(body, /still capped/, 'the card must say the loaded text is still a cap')
+  assert.match(body, /const \[loadError, setLoadError\] = useState\(''/, 'a failed load needs state to render')
+  assert.match(body, /setLoadError\(errorText\(err\)\)/, 'a rejected load must be caught, not swallowed')
+})
+
+test('the output loader hands the endpoint truncation back to the card', () => {
+  const index = SOURCE.indexOf('onLoadFull: async () => {')
+  assert.ok(index >= 0, 'the pane must supply the loader')
+  const slice = SOURCE.slice(index, index + 900)
+  assert.match(slice, /truncated: Boolean\(payload\.truncated\)/, 'the endpoint flag is dropped')
+})
+
+test('the folder picker falls back to the allowed listing', () => {
+  const index = SOURCE.indexOf('const openBrowser = useCallback')
+  assert.ok(index >= 0, 'openBrowser is missing')
+  const slice = SOURCE.slice(index, index + 1200)
+  assert.match(slice, /rest\('\/browse\?path='\)/, 'a refused folder must still open the allowed listing')
+  assert.match(slice, /setBrowseNotice\('\)?/, 'and must say why')
+})
+
 test('every component that calls useState imports it', () => {
   const calls = SOURCE.match(/= useState\(/g) || []
   if (calls.length === 0) return
