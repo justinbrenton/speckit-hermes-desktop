@@ -24,10 +24,19 @@ BACKEND_DIR = Path(__file__).resolve().parents[2] / "dashboard"
 # router suite deselects it rather than skipping it.
 pytestmark = pytest.mark.hermes
 
-dashboard = pytest.importorskip(
-    "hermes_cli.web_server_dashboard",
-    reason="hermes_cli dashboard code not importable in this interpreter",
-)
+
+@pytest.fixture(scope="module")
+def dashboard():
+    """Hermes' dashboard module, or a skip.
+
+    Imported in a fixture, not at module scope: a module-level importorskip raises
+    during collection, which reports as a skipped module even when the marker
+    would have deselected every test in it.
+    """
+    return pytest.importorskip(
+        "hermes_cli.web_server_dashboard",
+        reason="hermes_cli dashboard code not importable in this interpreter",
+    )
 
 
 @pytest.fixture
@@ -42,7 +51,7 @@ def installed(tmp_path: Path) -> Path:
     return plugins_root
 
 
-def test_discovery_finds_the_manifest(installed: Path):
+def test_discovery_finds_the_manifest(dashboard, installed: Path):
     found = dashboard._discover_dashboard_plugins([(installed, "user")])
     entry = next((p for p in found if p["name"] == "spec-kit-hermes"), None)
     assert entry is not None, [p["name"] for p in found]
@@ -51,7 +60,7 @@ def test_discovery_finds_the_manifest(installed: Path):
     assert entry["source"] == "user"
 
 
-def test_mount_serves_the_router_on_the_gateway_prefix(installed: Path):
+def test_mount_serves_the_router_on_the_gateway_prefix(dashboard, installed: Path):
     from fastapi import FastAPI
     from starlette.testclient import TestClient
 
@@ -68,7 +77,7 @@ def test_mount_serves_the_router_on_the_gateway_prefix(installed: Path):
     assert response.json()["allowed_paths"] == ["spec.md", "memory/constitution.md", "tasks.md"]
 
 
-def test_mount_is_refused_without_consent(installed: Path):
+def test_mount_is_refused_without_consent(dashboard, installed: Path):
     """A user plugin that is not in plugins.enabled must not run Python."""
     from fastapi import FastAPI
 
