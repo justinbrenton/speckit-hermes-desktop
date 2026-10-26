@@ -466,8 +466,9 @@ Next, in the order I would do them:
 
 1. Confirm the wizard in the live app. Nothing in the repo can do this: the suites check
    that components are wired, not that the pane draws.
-2. Ship the gate-patched workflow in the fork's bundle, so a fresh CLI install starts with
-   answerable gates instead of needing `/repair-workflows`.
+2. Land the bundle fix in the fork (`justinbrenton/spec-kit#1`), so a fresh CLI install
+   starts with answerable gates instead of needing `/repair-workflows`. Done in the fork
+   branch, waiting on review: all three bundled workflows now name the input each gate binds.
 3. Bundle variants (backend, fullstack, ml, api-only) and the assessment and bug-fix
    bundles as one-click installs.
 4. A runner for arm64, which is the one platform no CI job covers.

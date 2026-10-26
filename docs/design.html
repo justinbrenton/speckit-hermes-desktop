@@ -334,9 +334,9 @@ specify bundle add    --dev ./bundles/hermes-desktop</code></pre>
 </ol>
 <p>that components are wired, not that the pane draws.</p>
 <ol>
-<li>Ship the gate-patched workflow in the fork's bundle, so a fresh CLI install starts with</li>
+<li>Land the bundle fix in the fork (<code>justinbrenton/spec-kit#1</code>), so a fresh CLI install</li>
 </ol>
-<p>answerable gates instead of needing <code>/repair-workflows</code>.</p>
+<p>starts with answerable gates instead of needing <code>/repair-workflows</code>. Done in the fork branch, waiting on review: all three bundled workflows now name the input each gate binds.</p>
 <ol>
 <li>Bundle variants (backend, fullstack, ml, api-only) and the assessment and bug-fix</li>
 </ol>
