@@ -146,8 +146,8 @@ land in `specs/<number>-<name>/`, or `.specify/bugs/<slug>/` and
   reads it rather than keeping its own.
 - Show you the code spec-kit writes. `implement` and `converge` change files under
   your project, and the pane does not diff them.
-- Work from a folder picker. There is no folder dialog in the plugin SDK, so Browse
-  lists directories through the backend.
+- Open a native folder dialog. The plugin SDK has no file picker, so Browse lists
+  directories through the backend and starts where you left it.
 
 ## Development
 

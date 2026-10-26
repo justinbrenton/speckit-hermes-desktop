@@ -86,6 +86,16 @@ const RULES = [
     candidates: () => [[hermes]]
   },
   {
+    // "... 102 in total" over the backend suites
+    regex: /(\d[\d,]*)\s+in total/gi,
+    candidates: () => [[total]]
+  },
+  {
+    // "... with the 46 node tests that is 148"
+    regex: /that is\s+(\d[\d,]*)/gi,
+    candidates: () => [[node + total]]
+  },
+  {
     // node's own reporter pasted into a doc: "ℹ tests 40", "# pass 40"
     regex: /[ℹ#]\s*(?:tests|pass)\s+(\d[\d,]*)/g,
     candidates: () => [[node]]

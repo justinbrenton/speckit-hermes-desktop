@@ -48,6 +48,15 @@ def main() -> int:
     print(f"dashboard dir: {entry['_dir']}")
     assert entry["has_api"], "manifest declares no usable api file"
 
+    # The backend installs these into a new project on /init. If they did not come
+    # with the install, /init silently writes nothing and every gate is unanswerable.
+    bundle_dir = Path(entry["_dir"]).parent / "workflows"
+    bundled = sorted(p.parent.name for p in bundle_dir.glob("*/workflow.yml"))
+    print(f"workflows    : {bundled or 'MISSING'}")
+    assert bundled == ["assess", "bugfix", "speckit"], (
+        f"expected the three bundled workflows beside dashboard/, found {bundled} in {bundle_dir}"
+    )
+
     # Consent: the active profile's config must list the plugin. ruamel is what Hermes
     # itself parses config with, so prefer it and fail loudly on a duplicate key instead
     # of silently reading whichever copy wins.

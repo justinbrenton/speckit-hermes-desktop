@@ -322,11 +322,15 @@ specify bundle add    --dev ./bundles/hermes-desktop</code></pre>
 </ul>
 <p>Hermes integration when an upgrade overwrites it.</p>
 <ul>
+<li>Ships the three workflows it runs (<code>workflows/</code>), with every gate naming the input it</li>
+</ul>
+<p>binds, and installs them into a new project on <code>/init</code>. Spec-kit's own bundled SDD workflow omits that declaration, so its gates accept a resume and discard it.</p>
+<ul>
 <li>A claim gate: every test count stated in the docs is compared with the suites that just</li>
 </ul>
 <p>ran, and a pre-commit hook runs it.</p>
 <ul>
-<li>46 node tests, and 99 backend tests: 94 that need only FastAPI and 5 that need Hermes.</li>
+<li>47 node tests, and 105 backend tests: 100 that need only FastAPI and 5 that need Hermes.</li>
 </ul>
 <p>Next, in the order I would do them:</p>
 <ol>
@@ -334,14 +338,7 @@ specify bundle add    --dev ./bundles/hermes-desktop</code></pre>
 </ol>
 <p>that components are wired, not that the pane draws.</p>
 <ol>
-<li>Land the bundle fix in the fork (<code>justinbrenton/spec-kit#1</code>), so a fresh CLI install</li>
-</ol>
-<p>starts with answerable gates instead of needing <code>/repair-workflows</code>. Done in the fork branch, waiting on review: all three bundled workflows now name the input each gate binds.</p>
-<ol>
-<li>Bundle variants (backend, fullstack, ml, api-only) and the assessment and bug-fix</li>
-</ol>
-<p>bundles as one-click installs.</p>
-<ol>
+<li>Bundle variants (backend, fullstack, ml, api-only) as one-click installs.</li>
 <li>A runner for arm64, which is the one platform no CI job covers.</li>
 </ol>
 <p>Deliberately out, and why:</p>
@@ -388,12 +385,12 @@ specify bundle add    --dev ./bundles/hermes-desktop</code></pre>
 <div class="table-wrap"><table>
 <thead><tr><th>Claim</th><th>Command</th><th>Observed</th></tr></thead>
 <tbody>
-<tr><td>Node tests pass</td><td><code>npm test</code></td><td>46 tests, 46 pass, 0 fail</td></tr>
+<tr><td>Node tests pass</td><td><code>npm test</code></td><td>47 tests, 47 pass, 0 fail</td></tr>
 <tr><td>The built plugin loads like the runtime loads it</td><td><code>node --test test/plugin-smoke.test.mjs</code></td><td>default export present, <code>id: spec-kit-hermes</code>, one pane and one status item registered</td></tr>
 <tr><td>The deployed plugin matches the build</td><td><code>cmp desktop/plugin.js ~/.hermes/desktop-plugins/spec-kit-hermes/plugin.js</code></td><td>identical</td></tr>
 <tr><td>The config edit adds one line, not a duplicate key</td><td>feed the live <code>config.yaml</code> through <code>config-enable.mjs</code></td><td>1 line added, <code>plugins.enabled</code> contains <code>spec-kit-hermes</code> once, file parses</td></tr>
 <tr><td>Backend half is installed</td><td><code>ls ~/.hermes/plugins/spec-kit-hermes/dashboard/</code></td><td><code>plugin_api.py</code>, <code>manifest.json</code>, <code>index.js</code></td></tr>
-<tr><td>Backend tests pass</td><td><code>python -m pytest tests/backend -q -m &quot;not hermes&quot;</code></td><td>94 passed, 5 deselected; the 5 need Hermes and run in their own CI job</td></tr>
+<tr><td>Backend tests pass</td><td><code>python -m pytest tests/backend -q -m &quot;not hermes&quot;</code></td><td>100 passed, 5 deselected; the 5 need Hermes and run in their own CI job</td></tr>
 <tr><td>Process discovery is data-driven</td><td><code>tests/backend/test_processes.py</code></td><td>a bugfix workflow becomes inputs + command steps + a gate; skills resolved and flagged</td></tr>
 <tr><td>A gate pauses and resumes</td><td><code>POST /run</code> then <code>POST /runs/&lt;id&gt;/resume</code> with <code>gate_review_spec=approve</code></td><td>paused at review-spec; <code>choice= approve</code>; engine ran <code>plan</code> and paused at review-plan</td></tr>
 <tr><td>Artifacts are listed and readable</td><td><code>GET /artifacts</code>, <code>GET /artifact</code></td><td>7 artifacts in the demo project, <code>spec.md</code> read back at 1,829 chars</td></tr>

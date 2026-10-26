@@ -1151,6 +1151,32 @@ def test_browse_is_unrestricted_when_no_allowlist_is_set(client, monkeypatch, tm
     assert top["entries"], "no ceiling means the usual roots"
 
 
+SHIPPED = """\
+schema_version: "1.0"
+workflow:
+  id: "speckit"
+  name: "Shipped"
+  version: "1.0.2"
+inputs:
+  spec:
+    type: string
+    required: true
+  gate_review_spec:
+    type: string
+    required: false
+steps:
+  - id: specify
+    command: speckit.specify
+    input:
+      args: "{{ inputs.spec }}"
+  - id: review-spec
+    type: gate
+    message: "Review"
+    options: [approve, reject]
+    verdict_input: gate_review_spec
+"""
+
+
 def _write_state(project, run_id, results, workflow_id="speckit", current_step_id=None):
     run_dir = project / ".specify" / "workflows" / "runs" / run_id
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -1231,4 +1257,100 @@ def test_browsing_beneath_a_filesystem_root_is_allowed(client, tmp_path, monkeyp
     response = client.get(f"{PREFIX}/browse", params={"path": str(tmp_path)})
     assert response.status_code == 200, response.text
     assert response.json()["path"] == str(tmp_path.resolve())
+
+
+def test_init_installs_our_workflows_with_answerable_gates(client, tmp_path, monkeypatch):
+    """A fresh project must not start with gates it cannot answer."""
+    bare = tmp_path / "fresh"
+    bare.mkdir()
+
+    def fake_init(args, cwd, timeout):
+        # the real CLI creates .specify; the stub has to stand in for that
+        (Path(cwd) / ".specify").mkdir(parents=True, exist_ok=True)
+        return {"ok": True, "exit_code": 0, "payload": None, "output": "", "stderr": ""}
+
+    monkeypatch.setattr(plugin_api, "_run_specify", fake_init)
+
+    body = client.post(f"{PREFIX}/init", json={"cwd": str(bare)}).json()
+
+    assert set(body["workflows_installed"]) == {"speckit", "bugfix", "assess"}, \
+        "every bundled workflow must be copied in, not merely some"
+    assert body["workflows_patched"] == [], "a bundled gate must already be answerable"
+
+    workflow = bare / ".specify" / "workflows" / "speckit" / "workflow.yml"
+    doc = yaml.safe_load(workflow.read_text(encoding="utf-8"))
+    gates = [step for step in doc["steps"] if step.get("type") == "gate"]
+    assert [g["id"] for g in gates] == ["review-spec", "review-plan"], "a gate went missing"
+    for gate in gates:
+        assert gate.get("verdict_input") in doc["inputs"], f"{gate['id']} cannot be answered"
+
+
+def test_the_bundle_is_read_from_the_installed_layout(client, tmp_path, monkeypatch):
+    """`_bundle_dir` must point beside dashboard/, which is where the installer puts it."""
+    plugin_root = tmp_path / "hermes" / "plugins" / "spec-kit-hermes"
+    (plugin_root / "dashboard").mkdir(parents=True)
+    (plugin_root / "workflows" / "speckit").mkdir(parents=True)
+    (plugin_root / "workflows" / "speckit" / "workflow.yml").write_text(SHIPPED, encoding="utf-8")
+
+    project = tmp_path / "proj"
+    (project / ".specify").mkdir(parents=True)
+
+    monkeypatch.setattr(plugin_api, "_bundle_dir", lambda: plugin_root / "workflows")
+    installed, failed = plugin_api._install_bundled_workflows(project)
+
+    assert installed == ["speckit"]
+    assert failed == []
+    assert (project / ".specify" / "workflows" / "speckit" / "workflow.yml").read_text(encoding="utf-8") == SHIPPED
+
+
+def test_a_failed_write_leaves_no_file_and_is_reported(client, tmp_path, monkeypatch):
+    """A half-written workflow would be skipped forever by the exists() guard."""
+    bundle = tmp_path / "bundle" / "speckit"
+    bundle.mkdir(parents=True)
+    (bundle / "workflow.yml").write_text(SHIPPED, encoding="utf-8")
+    project = tmp_path / "p"
+    (project / ".specify").mkdir(parents=True)
+
+    def refuse(target, text):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(plugin_api, "_bundle_dir", lambda: tmp_path / "bundle")
+    monkeypatch.setattr(plugin_api, "_write_text_atomic", refuse)
+
+    installed, failed = plugin_api._install_bundled_workflows(project)
+
+    assert installed == []
+    assert failed == ["speckit"], "a failed install must be reported, not swallowed"
+    assert not (project / ".specify" / "workflows" / "speckit" / "workflow.yml").exists()
+
+
+def test_a_missing_bundle_installs_nothing_rather_than_crashing(client, tmp_path, monkeypatch):
+    project = tmp_path / "p2"
+    (project / ".specify").mkdir(parents=True)
+    monkeypatch.setattr(plugin_api, "_bundle_dir", lambda: tmp_path / "nowhere")
+    assert plugin_api._install_bundled_workflows(project) == ([], [])
+
+
+def test_init_leaves_an_existing_workflow_alone(client, project, monkeypatch):
+    (project / ".specify").mkdir(exist_ok=True)
+    sentinel = project / ".specify" / "workflows" / "speckit" / "workflow.yml"
+    original = sentinel.read_text(encoding="utf-8")
+
+    installed, failed = plugin_api._install_bundled_workflows(project)
+
+    assert "speckit" not in installed
+    assert failed == [], "the project's own copy is the user's"
+    assert sentinel.read_text(encoding="utf-8") == original
+
+
+def test_shaping_creates_a_workflow_that_was_never_installed(client, tmp_path):
+    root = tmp_path / "empty-despite-specify"
+    (root / ".specify").mkdir(parents=True)
+
+    response = client.post(f"{PREFIX}/workflow/shape", json={"cwd": str(root), "mode": "short"})
+
+    assert response.status_code == 200, response.text
+    doc = yaml.safe_load((root / ".specify" / "workflows" / "speckit" / "workflow.yml").read_text(encoding="utf-8"))
+    for gate in [s for s in doc["steps"] if s.get("type") == "gate"]:
+        assert gate.get("verdict_input") in doc["inputs"]
 

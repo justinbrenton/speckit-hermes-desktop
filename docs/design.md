@@ -458,20 +458,19 @@ Shipped:
 - Folder browser that honours `SPECKIT_ALLOWED_ROOTS` when an operator sets one.
 - Installer that backs up before it writes, and `/integration/health` to re-apply the
   Hermes integration when an upgrade overwrites it.
+- Ships the three workflows it runs (`workflows/`), with every gate naming the input it
+  binds, and installs them into a new project on `/init`. Spec-kit's own bundled SDD
+  workflow omits that declaration, so its gates accept a resume and discard it.
 - A claim gate: every test count stated in the docs is compared with the suites that just
   ran, and a pre-commit hook runs it.
-- 46 node tests, and 99 backend tests: 94 that need only FastAPI and 5 that need Hermes.
+- 47 node tests, and 105 backend tests: 100 that need only FastAPI and 5 that need Hermes.
 
 Next, in the order I would do them:
 
 1. Confirm the wizard in the live app. Nothing in the repo can do this: the suites check
    that components are wired, not that the pane draws.
-2. Land the bundle fix in the fork (`justinbrenton/spec-kit#1`), so a fresh CLI install
-   starts with answerable gates instead of needing `/repair-workflows`. Done in the fork
-   branch, waiting on review: all three bundled workflows now name the input each gate binds.
-3. Bundle variants (backend, fullstack, ml, api-only) and the assessment and bug-fix
-   bundles as one-click installs.
-4. A runner for arm64, which is the one platform no CI job covers.
+2. Bundle variants (backend, fullstack, ml, api-only) as one-click installs.
+3. A runner for arm64, which is the one platform no CI job covers.
 
 Deliberately out, and why:
 
@@ -531,12 +530,12 @@ SDK export. `Fragment` comes from React.
 
 | Claim | Command | Observed |
 |---|---|---|
-| Node tests pass | `npm test` | 46 tests, 46 pass, 0 fail |
+| Node tests pass | `npm test` | 47 tests, 47 pass, 0 fail |
 | The built plugin loads like the runtime loads it | `node --test test/plugin-smoke.test.mjs` | default export present, `id: spec-kit-hermes`, one pane and one status item registered |
 | The deployed plugin matches the build | `cmp desktop/plugin.js ~/.hermes/desktop-plugins/spec-kit-hermes/plugin.js` | identical |
 | The config edit adds one line, not a duplicate key | feed the live `config.yaml` through `config-enable.mjs` | 1 line added, `plugins.enabled` contains `spec-kit-hermes` once, file parses |
 | Backend half is installed | `ls ~/.hermes/plugins/spec-kit-hermes/dashboard/` | `plugin_api.py`, `manifest.json`, `index.js` |
-| Backend tests pass | `python -m pytest tests/backend -q -m "not hermes"` | 94 passed, 5 deselected; the 5 need Hermes and run in their own CI job |
+| Backend tests pass | `python -m pytest tests/backend -q -m "not hermes"` | 100 passed, 5 deselected; the 5 need Hermes and run in their own CI job |
 | Process discovery is data-driven | `tests/backend/test_processes.py` | a bugfix workflow becomes inputs + command steps + a gate; skills resolved and flagged |
 | A gate pauses and resumes | `POST /run` then `POST /runs/<id>/resume` with `gate_review_spec=approve` | paused at review-spec; `choice= approve`; engine ran `plan` and paused at review-plan |
 | Artifacts are listed and readable | `GET /artifacts`, `GET /artifact` | 7 artifacts in the demo project, `spec.md` read back at 1,829 chars |

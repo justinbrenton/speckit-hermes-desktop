@@ -13,7 +13,7 @@
  * …plus the consent edit: the name goes into `plugins.enabled` of the profile's
  * config.yaml (a user plugin's Python is not imported without it).
  */
-import { copyFile, mkdir, readFile, stat, writeFile } from 'node:fs/promises'
+import { copyFile, mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -152,6 +152,26 @@ export async function install({ profile, home, dryRun = false } = {}) {
   for (const name of ['plugin_api.py', 'manifest.json', 'index.js']) {
     report.files.push(
       await writeIfChanged(join(dashboardDir, name), await readFile(join(ROOT, 'dashboard', name), 'utf8'), { dryRun })
+    )
+  }
+
+  // 2b. the workflows the backend installs into a new project. Without these the
+  // dashboard reads an empty bundle and /init silently writes nothing, which puts
+  // the unanswerable gates back.
+  const bundleDir = join(ROOT, 'workflows')
+  const workflowsDir = join(home, 'plugins', PLUGIN_ID, 'workflows')
+  const bundleEntries = (await exists(bundleDir)) ? await readdir(bundleDir, { withFileTypes: true }) : []
+  if (bundleEntries.length === 0) {
+    // A checkout or package without workflows/ would otherwise abort the install
+    // after plugin.js and dashboard/ are already written.
+    report.notes.push(`no workflows/ directory at ${bundleDir}: /init will have nothing to install`)
+  }
+  for (const entry of bundleEntries) {
+    if (!entry.isDirectory()) continue
+    const source = join(bundleDir, entry.name, 'workflow.yml')
+    if (!(await exists(source))) continue
+    report.files.push(
+      await writeIfChanged(join(workflowsDir, entry.name, 'workflow.yml'), await readFile(source, 'utf8'), { dryRun })
     )
   }
 

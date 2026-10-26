@@ -305,6 +305,44 @@ def _hermes_skills_dirs() -> list[Path]:
     return unique
 
 
+def _bundle_dir() -> Path:
+    """The workflows that travel with this plugin, beside dashboard/."""
+    return Path(__file__).resolve().parent.parent / "workflows"
+
+
+def _install_bundled_workflows(root: Path) -> tuple[list[str], list[str]]:
+    """Copy our workflows into a project that does not have them yet.
+
+    Spec-kit's own bundled SDD workflow declares review gates without a
+    ``verdict_input``, so `resume -i` is discarded and the first gate is a dead end.
+    Shipping ours means a fresh project is answerable from the first run; an existing
+    project's own copy is never touched.
+    """
+    bundle = _bundle_dir()
+    if not bundle.is_dir() or not (root / ".specify").is_dir():
+        return [], []
+    installed: list[str] = []
+    failed: list[str] = []
+    for entry in sorted(bundle.iterdir()):
+        source = entry / "workflow.yml"
+        if not source.is_file():
+            continue
+        target = root / ".specify" / "workflows" / entry.name / "workflow.yml"
+        if target.exists():
+            continue
+        try:
+            target.parent.mkdir(parents=True, exist_ok=True)
+            # Atomic: a short write would leave a truncated workflow that every
+            # later run skips because it exists, pinning a file with no usable gates.
+            _write_text_atomic(target, source.read_text(encoding="utf-8"))
+        except OSError as err:
+            logger.warning("could not install bundled workflow %s: %s", entry.name, err)
+            failed.append(entry.name)
+            continue
+        installed.append(entry.name)
+    return installed, failed
+
+
 def _installed_skills() -> tuple[set[str], list[Path]]:
     dirs = _hermes_skills_dirs()
     found: set[str] = set()
@@ -1063,6 +1101,7 @@ def init_project(payload: InitRequest) -> dict[str, Any]:
     )
     synced = _sync_legacy_skills()
     aliases = _sync_command_aliases(root)
+    installed, failed = _install_bundled_workflows(root)
     patched = _ensure_gate_verdicts(root)
     return {
         "ok": result["ok"],
@@ -1070,6 +1109,8 @@ def init_project(payload: InitRequest) -> dict[str, Any]:
         "cwd": str(root),
         "output": result.get("output", "") + result.get("stderr", ""),
         "skills_synced": synced,
+        "workflows_installed": installed,
+        "workflows_failed": failed,
         "workflows_patched": patched,
     }
 
@@ -1431,8 +1472,11 @@ def shape_workflow(payload: ShapeRequest) -> dict[str, Any]:
         generated = _process_yaml(process_id)
     else:
         target = root / ".specify" / "workflows" / "speckit" / "workflow.yml"
-        if not target.parent.is_dir():
-            raise HTTPException(status_code=404, detail="no speckit workflow installed here")
+        if not (root / ".specify").is_dir():
+            raise HTTPException(status_code=404, detail="no .specify directory here")
+        # A project that never installed the CLI's bundle has no speckit workflow at
+        # all; writing ours is what makes the process appear, so do not refuse here.
+        target.parent.mkdir(parents=True, exist_ok=True)
         with_constitution = payload.constitution
         if with_constitution is None:
             with_constitution = not _constitution_ready(root)
