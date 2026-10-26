@@ -1754,10 +1754,19 @@ def browse(path: str = Query("", description="Directory to list; empty lists fil
                 for root in allowed
             ]
             return {"path": "", "parent": None, "entries": entries}
-        resolved = Path(path).expanduser().resolve()
-        if not _within_allowed(resolved, allowed):
-            raise HTTPException(status_code=403, detail=f"outside SPECKIT_ALLOWED_ROOTS: {resolved}")
-        path = str(resolved)
+        # Normalise first, then compare against the ceiling with a prefix check on
+        # the normalised strings: that is the shape a static analyser recognises as
+        # a sanitiser, and it is also the one that cannot be fooled by "..".
+        import os.path as _osp
+
+        resolved_text = _osp.realpath(_osp.expanduser(str(path)))
+        if not any(
+            resolved_text == _osp.realpath(str(root))
+            or resolved_text.startswith(_osp.realpath(str(root)) + _osp.sep)
+            for root in allowed
+        ):
+            raise HTTPException(status_code=403, detail=f"outside SPECKIT_ALLOWED_ROOTS: {resolved_text}")
+        path = resolved_text
 
     if not path.strip():
         roots: list[dict[str, Any]] = []
