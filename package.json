@@ -13,6 +13,7 @@
     "test": "node --test test/",
     "test:py": "python -m pytest tests/backend -q",
     "install:plugin": "node scripts/install.mjs",
-    "verify:install": "node scripts/verify-install.py"
+    "verify:install": "node scripts/verify-install.py",
+    "preflight": "node scripts/preflight.mjs"
   }
 }

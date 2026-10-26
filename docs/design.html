@@ -137,7 +137,7 @@ artifacts              read-only, from &lt;project&gt;/specs/ and .specify/memor
     on_reject: abort</code></pre>
 <p>The engine checks <code>&quot;verdict_input&quot; in config</code> (see <code>workflows/step/gate/</code>), so a stock gate without it ignores every <code>-i</code> you pass and pauses forever. <code>init</code> now patches every installed workflow after scaffolding, and <code>POST /repair-workflows</code> does the same for projects created earlier.</p>
 <h3 id="what-was-removed">What was removed</h3>
-<p><code>src/core.mjs</code> used to carry the parsers and models of the abandoned three-editor design: <code>parseSpec</code>/<code>serializeSpec</code>, <code>parseTasks</code>/<code>serializeTasks</code>, the constitution builder and validator, the Kanban derivation helpers, the stepper state machine and <code>dispatchMessage</code>. The wizard calls none of them — the skills write those files now. They were deleted with their tests; <code>core.mjs</code> is 105 lines of wizard model, and <code>plugin.js</code> dropped from 70,675 to 43,734 bytes.</p>
+<p><code>src/core.mjs</code> used to carry the parsers and models of the abandoned three-editor design: <code>parseSpec</code>/<code>serializeSpec</code>, <code>parseTasks</code>/<code>serializeTasks</code>, the constitution builder and validator, the Kanban derivation helpers, the stepper state machine and <code>dispatchMessage</code>. The wizard calls none of them — the skills write those files now. They were deleted with their tests; <code>core.mjs</code> is 105 lines of wizard model, and <code>plugin.js</code> lost roughly a third of its size in that pass (the sizes are in the commit).</p>
 <h3 id="the-wizards-decisions-are-testable">The wizard's decisions are testable</h3>
 <p>The pane's judgement calls — which inputs to ask for, where the run is, which file a gate reviews — live in <code>src/core.mjs</code> as pure functions (<code>visibleInputs</code>, <code>flowSteps</code>, <code>progressFor</code>, <code>artifactForGate</code>) and are covered by <code>npm test</code>. That is where both reported defects came from: a gate whose id (<code>review-spec</code>) does not follow its step's name (<code>specify</code>), and verdict carriers rendering as questions. Matching gates by position, not by name, is the fix the test forced.</p>
 <h3 id="the-clarification-interview">The clarification interview</h3>
@@ -255,8 +255,8 @@ scripts/install.mjs       copies both halves into a Hermes home, edits config, b
 scripts/config-enable.mjs surgical plugins.enabled edit
 scripts/verify-install.py re-runs Hermes' own discovery and mount, then drives the routes
 scripts/render-docs.mjs   docs/design.md → docs/design.html
-backend/plugin_api.py     FastAPI router
-backend/tests/            route tests plus a real mount through Hermes' dashboard loader
+dashboard/plugin_api.py   FastAPI router, mounted by Hermes at /api/plugins/spec-kit-hermes
+tests/backend/            route tests plus a real mount through Hermes' dashboard loader
 test/                     node --test suites
 docs/design.md            this file
 docs/design.html          generated from this file, do not hand edit
@@ -309,7 +309,7 @@ specify bundle add    --dev ./bundles/hermes-desktop</code></pre>
 <ul>
 <li>Artifact listing across <code>&lt;project&gt;/specs/</code> and <code>.specify/</code>, read-only viewer.</li>
 <li>Installer that backs up before it writes.</li>
-<li>57 node tests, 39 backend tests.</li>
+<li>40 node tests, and 77 backend tests: 72 that need only FastAPI and 5 that need Hermes.</li>
 </ul>
 <p>Next, in the order I would do them:</p>
 <ol>
@@ -369,13 +369,13 @@ specify bundle add    --dev ./bundles/hermes-desktop</code></pre>
 <div class="table-wrap"><table>
 <thead><tr><th>Claim</th><th>Command</th><th>Observed</th></tr></thead>
 <tbody>
-<tr><td>Node tests pass</td><td><code>npm test</code></td><td>57 tests, 57 pass, 0 fail</td></tr>
+<tr><td>Node tests pass</td><td><code>npm test</code></td><td>40 tests, 40 pass, 0 fail</td></tr>
 <tr><td>The built plugin loads like the runtime loads it</td><td><code>node --test test/plugin-smoke.test.mjs</code></td><td>default export present, <code>id: spec-kit-hermes</code>, one pane and one status item registered</td></tr>
-<tr><td>The deployed plugin matches the build</td><td><code>cmp desktop/plugin.js ~/.hermes/desktop-plugins/spec-kit-hermes/plugin.js</code></td><td>identical, 43,953 bytes</td></tr>
+<tr><td>The deployed plugin matches the build</td><td><code>cmp desktop/plugin.js ~/.hermes/desktop-plugins/spec-kit-hermes/plugin.js</code></td><td>identical</td></tr>
 <tr><td>The config edit adds one line, not a duplicate key</td><td>feed the live <code>config.yaml</code> through <code>config-enable.mjs</code></td><td>1 line added, <code>plugins.enabled</code> contains <code>spec-kit-hermes</code> once, file parses</td></tr>
-<tr><td>Backend half is installed</td><td><code>ls ~/.hermes/plugins/spec-kit-hermes/dashboard/</code></td><td><code>plugin_api.py</code> (10,031 bytes), <code>manifest.json</code>, <code>index.js</code></td></tr>
-<tr><td>Backend tests pass</td><td><code>python -m pytest backend/tests -q</code></td><td>39 passed (routes, mount, file I/O, discovery, workflow bridge, artifacts, gates)</td></tr>
-<tr><td>Process discovery is data-driven</td><td><code>backend/tests/test_processes.py</code></td><td>a bugfix workflow becomes inputs + command steps + a gate; skills resolved and flagged</td></tr>
+<tr><td>Backend half is installed</td><td><code>ls ~/.hermes/plugins/spec-kit-hermes/dashboard/</code></td><td><code>plugin_api.py</code>, <code>manifest.json</code>, <code>index.js</code></td></tr>
+<tr><td>Backend tests pass</td><td><code>python -m pytest tests/backend -q -m &quot;not hermes&quot;</code></td><td>72 passed, 5 deselected; the 5 need Hermes and run in their own CI job</td></tr>
+<tr><td>Process discovery is data-driven</td><td><code>tests/backend/test_processes.py</code></td><td>a bugfix workflow becomes inputs + command steps + a gate; skills resolved and flagged</td></tr>
 <tr><td>A gate pauses and resumes</td><td><code>POST /run</code> then <code>POST /runs/&lt;id&gt;/resume</code> with <code>gate_review_spec=approve</code></td><td>paused at review-spec; <code>choice= approve</code>; engine ran <code>plan</code> and paused at review-plan</td></tr>
 <tr><td>Artifacts are listed and readable</td><td><code>GET /artifacts</code>, <code>GET /artifact</code></td><td>7 artifacts in the demo project, <code>spec.md</code> read back at 1,829 chars</td></tr>
 <tr><td>The doc pair cannot drift</td><td><code>npm run docs</code></td><td>HTML regenerated from this file</td></tr>

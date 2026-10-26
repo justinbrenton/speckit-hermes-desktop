@@ -153,8 +153,22 @@ land in `specs/<number>-<name>/`, or `.specify/bugs/<slug>/` and
 
 ```bash
 npm run build     # src -> desktop/plugin.js, and fails if a referenced component is undefined
-npm test
+npm test          # pane decisions, build and installer: 40 tests
+python -m pytest tests/backend -q -m "not hermes"   # routes and workflow bridge: 72 tests
 ```
+
+Five more backend tests need Hermes installed, and cover dashboard mounting and the Kanban
+bridge: `python -m pytest tests/backend -q -m hermes`. See [docs/TESTING.md](docs/TESTING.md)
+for the whole picture, including what no suite covers.
+
+Before pushing, one command runs every gate:
+
+```bash
+npm run preflight
+```
+
+It builds, runs both suites, checks that every test count stated in the docs matches what
+just ran, and fails if `docs/design.html` is not what `docs/design.md` renders to.
 
 `src/core.mjs` holds the decisions the pane makes about workflows it did not author:
 which inputs to ask for, where a run is, which file a gate reviews. `src/pane.js` is

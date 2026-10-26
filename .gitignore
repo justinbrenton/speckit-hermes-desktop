@@ -11,3 +11,5 @@ node_modules/
 *.bak
 *-out.txt
 junit.xml
+.claims.json
+.pr*.diff

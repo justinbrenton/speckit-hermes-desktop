@@ -15,7 +15,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { build } from '../scripts/build.mjs'
 
 const ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..')
-const STUBS = join(ROOT, 'test/stubs')
+const STUBS = join(ROOT, 'test-support/stubs')
 const PROBE = join(ROOT, '.smoke-probe.mjs')
 
 function rewrite(code) {
