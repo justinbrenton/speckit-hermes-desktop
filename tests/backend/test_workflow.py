@@ -1069,3 +1069,166 @@ def test_the_reviewed_step_is_the_one_before_the_gate(client, project, cli):
     assert gate["reviewed_step"] == "other"
     assert gate["reviewed_stdout"] == "task list"
 
+
+def _long_run(project, run_id, stdout_len=12000):
+    run_dir = project / ".specify" / "workflows" / "runs" / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    body = "FINDING-ONE: " + ("x" * (stdout_len - 20)) + "TAIL-END"
+    state = {
+        "workflow_id": "speckit",
+        "status": "paused",
+        "current_step_id": "review-analyze",
+        "step_results": {
+            "analyze": {"type": "command", "status": "completed", "output": {"stdout": body, "stderr": "err: tail"}},
+            "review-analyze": {"type": "gate", "status": "paused", "output": {"message": "Review findings"}},
+        },
+    }
+    (run_dir / "state.json").write_text(json.dumps(state), encoding="utf-8")
+    return body
+
+
+def test_a_gate_says_when_its_preview_is_a_tail(client, project, cli):
+    client.post(f"{PREFIX}/workflow/shape", json={"cwd": str(project), "mode": "full"})
+    body = _long_run(project, "long1")
+
+    gate = client.get(f"{PREFIX}/workflows/speckit/runs/long1", params={"cwd": str(project)}).json()["gate"]
+    assert gate["reviewed_truncated"] is True
+    assert gate["reviewed_stdout_bytes"] == len(body)
+    assert "FINDING-ONE" not in gate["reviewed_stdout"], "the preview is the tail, by design"
+    assert gate["reviewed_stdout"].endswith("TAIL-END")
+
+
+def test_the_complete_stream_is_available_for_a_truncated_gate(client, project, cli):
+    client.post(f"{PREFIX}/workflow/shape", json={"cwd": str(project), "mode": "full"})
+    body = _long_run(project, "long2")
+
+    response = client.get(
+        f"{PREFIX}/workflows/speckit/runs/long2/output",
+        params={"cwd": str(project), "step": "analyze"},
+    )
+    assert response.status_code == 200, response.text
+    payload = response.json()
+    assert payload["stdout"] == body, "the beginning is what the preview was missing"
+    assert payload["truncated"] is False
+    assert payload["stderr"] == "err: tail"
+
+
+def test_output_for_an_unknown_step_is_a_404(client, project, cli):
+    _long_run(project, "long3")
+    response = client.get(
+        f"{PREFIX}/workflows/speckit/runs/long3/output",
+        params={"cwd": str(project), "step": "nope"},
+    )
+    assert response.status_code == 404
+
+
+def test_browse_honours_an_allowlist(client, tmp_path, monkeypatch):
+    inside = tmp_path / "work" / "project-a"
+    inside.mkdir(parents=True)
+    outside = tmp_path / "elsewhere"
+    outside.mkdir()
+    monkeypatch.setenv("SPECKIT_ALLOWED_ROOTS", str(tmp_path / "work"))
+
+    top = client.get(f"{PREFIX}/browse").json()
+    assert [entry["path"] for entry in top["entries"]] == [str((tmp_path / "work").resolve())], \
+        "a configured ceiling replaces the drive and home listings"
+
+    listed = client.get(f"{PREFIX}/browse", params={"path": str(inside)})
+    assert listed.status_code == 200, listed.text
+    assert listed.json()["parent"] == str((tmp_path / "work").resolve()), "the ceiling itself is reachable"
+
+    # ...but the ceiling's own parent is not offered.
+    at_root = client.get(f"{PREFIX}/browse", params={"path": str(tmp_path / "work")}).json()
+    assert at_root["parent"] is None, "do not offer a step outside the ceiling"
+
+    refused = client.get(f"{PREFIX}/browse", params={"path": str(outside)})
+    assert refused.status_code == 403, refused.text
+
+
+def test_browse_is_unrestricted_when_no_allowlist_is_set(client, monkeypatch, tmp_path):
+    monkeypatch.delenv("SPECKIT_ALLOWED_ROOTS", raising=False)
+    top = client.get(f"{PREFIX}/browse").json()
+    assert top["entries"], "no ceiling means the usual roots"
+
+
+def _write_state(project, run_id, results, workflow_id="speckit", current_step_id=None):
+    run_dir = project / ".specify" / "workflows" / "runs" / run_id
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "state.json").write_text(
+        json.dumps({
+            "workflow_id": workflow_id,
+            "status": "paused",
+            "current_step_id": current_step_id,
+            "step_results": results,
+        }),
+        encoding="utf-8",
+    )
+
+
+def test_output_for_another_process_run_is_refused(client, project, cli):
+    client.post(f"{PREFIX}/workflow/shape", json={"cwd": str(project), "mode": "full"})
+    _write_state(
+        project,
+        "bugrun",
+        {"assess": {"type": "command", "status": "completed", "output": {"stdout": "bug output"}}},
+        workflow_id="bug",
+    )
+
+    response = client.get(
+        f"{PREFIX}/workflows/speckit/runs/bugrun/output",
+        params={"cwd": str(project), "step": "assess"},
+    )
+    assert response.status_code == 404, "the runs directory is shared; the process must match"
+    assert "does not belong" in response.text
+
+
+def test_the_cap_applies_to_both_streams_together(client, project, cli, monkeypatch):
+    monkeypatch.setattr(plugin_api, "STEP_OUTPUT_MAX_BYTES", 1000)
+    _write_state(
+        project,
+        "bigrun",
+        {"analyze": {"type": "command", "status": "completed", "output": {"stdout": "o" * 4000, "stderr": "e" * 4000}}},
+    )
+
+    payload = client.get(
+        f"{PREFIX}/workflows/speckit/runs/bigrun/output",
+        params={"cwd": str(project), "step": "analyze"},
+    ).json()
+
+    served = len(payload["stdout"].encode()) + len(payload["stderr"].encode())
+    assert served <= 1000, f"served {served} bytes against a 1000 byte cap"
+    assert payload["truncated"] is True
+    assert payload["stdout_bytes"] == 4000
+
+
+def test_byte_counts_are_bytes_not_characters(client, project, cli, monkeypatch):
+    monkeypatch.setattr(plugin_api, "REVIEWED_STDOUT_PREVIEW", 1000)
+    client.post(f"{PREFIX}/workflow/shape", json={"cwd": str(project), "mode": "full"})
+    text = "é" * 2000  # two bytes each
+    _write_state(
+        project,
+        "unicoderun",
+        {
+            "analyze": {"type": "command", "status": "completed", "output": {"stdout": text}},
+            "review-analyze": {"type": "gate", "status": "paused"},
+        },
+        current_step_id="review-analyze",
+    )
+
+    gate = client.get(
+        f"{PREFIX}/workflows/speckit/runs/unicoderun", params={"cwd": str(project)}
+    ).json()["gate"]
+    assert gate["reviewed_stdout_bytes"] == 4000
+    assert len(gate["reviewed_stdout"].encode()) <= 1000
+    assert gate["reviewed_truncated"] is True
+
+
+def test_browsing_beneath_a_filesystem_root_is_allowed(client, tmp_path, monkeypatch):
+    # The bug: "/" plus a separator is "//", so every descendant of a root was refused.
+    root = tmp_path.anchor
+    monkeypatch.setenv("SPECKIT_ALLOWED_ROOTS", root)
+
+    response = client.get(f"{PREFIX}/browse", params={"path": str(tmp_path)})
+    assert response.status_code == 200, response.text
+    assert response.json()["path"] == str(tmp_path.resolve())
+

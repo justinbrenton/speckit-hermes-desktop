@@ -309,7 +309,7 @@ specify bundle add    --dev ./bundles/hermes-desktop</code></pre>
 <ul>
 <li>Artifact listing across <code>&lt;project&gt;/specs/</code> and <code>.specify/</code>, read-only viewer.</li>
 <li>Installer that backs up before it writes.</li>
-<li>43 node tests, and 90 backend tests: 72 that need only FastAPI and 5 that need Hermes.</li>
+<li>46 node tests, and 99 backend tests: 94 that need only FastAPI and 5 that need Hermes.</li>
 </ul>
 <p>Next, in the order I would do them:</p>
 <ol>
@@ -369,12 +369,12 @@ specify bundle add    --dev ./bundles/hermes-desktop</code></pre>
 <div class="table-wrap"><table>
 <thead><tr><th>Claim</th><th>Command</th><th>Observed</th></tr></thead>
 <tbody>
-<tr><td>Node tests pass</td><td><code>npm test</code></td><td>43 tests, 43 pass, 0 fail</td></tr>
+<tr><td>Node tests pass</td><td><code>npm test</code></td><td>46 tests, 46 pass, 0 fail</td></tr>
 <tr><td>The built plugin loads like the runtime loads it</td><td><code>node --test test/plugin-smoke.test.mjs</code></td><td>default export present, <code>id: spec-kit-hermes</code>, one pane and one status item registered</td></tr>
 <tr><td>The deployed plugin matches the build</td><td><code>cmp desktop/plugin.js ~/.hermes/desktop-plugins/spec-kit-hermes/plugin.js</code></td><td>identical</td></tr>
 <tr><td>The config edit adds one line, not a duplicate key</td><td>feed the live <code>config.yaml</code> through <code>config-enable.mjs</code></td><td>1 line added, <code>plugins.enabled</code> contains <code>spec-kit-hermes</code> once, file parses</td></tr>
 <tr><td>Backend half is installed</td><td><code>ls ~/.hermes/plugins/spec-kit-hermes/dashboard/</code></td><td><code>plugin_api.py</code>, <code>manifest.json</code>, <code>index.js</code></td></tr>
-<tr><td>Backend tests pass</td><td><code>python -m pytest tests/backend -q -m &quot;not hermes&quot;</code></td><td>85 passed, 5 deselected; the 5 need Hermes and run in their own CI job</td></tr>
+<tr><td>Backend tests pass</td><td><code>python -m pytest tests/backend -q -m &quot;not hermes&quot;</code></td><td>94 passed, 5 deselected; the 5 need Hermes and run in their own CI job</td></tr>
 <tr><td>Process discovery is data-driven</td><td><code>tests/backend/test_processes.py</code></td><td>a bugfix workflow becomes inputs + command steps + a gate; skills resolved and flagged</td></tr>
 <tr><td>A gate pauses and resumes</td><td><code>POST /run</code> then <code>POST /runs/&lt;id&gt;/resume</code> with <code>gate_review_spec=approve</code></td><td>paused at review-spec; <code>choice= approve</code>; engine ran <code>plan</code> and paused at review-plan</td></tr>
 <tr><td>Artifacts are listed and readable</td><td><code>GET /artifacts</code>, <code>GET /artifact</code></td><td>7 artifacts in the demo project, <code>spec.md</code> read back at 1,829 chars</td></tr>
