@@ -27,19 +27,34 @@ python -m pytest tests/backend -q -m "not hermes"
 CI installs it before pytest for the same reason: the suite does not run without
 them, and a fresh checkout does not have them.
 
-94 backend tests and 46 node tests, 99 backend tests in total once the Hermes ones are included. Nothing skips; `pytest.ini` sets `--strict-markers`,
-so a mistyped marker is an error rather than a silently ignored test.
+94 backend tests that need only FastAPI, and 5 that need Hermes, 99 in total. With the 46
+node tests that is 145, and nothing skips: `pytest.ini` sets `--strict-markers`, so a mistyped
+marker is an error rather than a silently ignored test.
 
 ## Running with Hermes
 
 Point `PYTHONPATH` at a Hermes install and run the `hermes` suite, or drop the marker to
-run all 90:
+run all 99:
 
 ```
 PYTHONPATH=/path/to/hermes-agent python -m pytest tests/backend -q
 ```
 
 The tests create their own throwaway `HERMES_HOME`, so they never touch a real board.
+
+## Before a push
+
+```
+npm run preflight
+```
+
+That is the build, both suites, every test count stated anywhere in the docs, and the
+rendered `docs/design.html`. It exits non-zero if any of them disagree, which is how a
+stale number in a document gets caught before it is published rather than after.
+
+`npm run hooks` installs a pre-commit hook that runs it, so a commit cannot land on a red
+gate by accident. `--no-verify` still works, on purpose, for the case where that is the
+right call.
 
 ## What CI runs
 

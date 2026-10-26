@@ -297,34 +297,53 @@ specify bundle add    --dev ./bundles/hermes-desktop</code></pre>
 <h2 id="8-scope">8. Scope</h2>
 <p>Shipped:</p>
 <ul>
-<li>One guided pane: folder, description, step tracker, gate cards, artifact reader.</li>
-<li>Every workflow action goes through <code>specify workflow run|resume</code>; the pane holds</li>
+<li>One guided pane: folder, process, description, step tracker, gate cards, artifact reader.</li>
+<li>Every workflow action goes through <code>specify workflow run|resume|status</code>; the pane holds</li>
 </ul>
 <p>no workflow logic.</p>
 <ul>
 <li>Non-blocking dispatch: run and resume return a job id, the pane polls run state.</li>
-<li>Gate answers carried by a declared <code>verdict_input</code>, patched into installed</li>
+<li>Three processes from one pane: SDD (<code>speckit</code>), bug fixing (<code>bug</code>) and idea assessment</li>
 </ul>
-<p>workflows by <code>/init</code> and <code>/repair-workflows</code>.</p>
+<p>(<code>assess</code>). The last two are generated on first use, because the bundled extensions ship commands but no workflow.</p>
 <ul>
-<li>Artifact listing across <code>&lt;project&gt;/specs/</code> and <code>.specify/</code>, read-only viewer.</li>
-<li>Installer that backs up before it writes.</li>
+<li>Gate answers carried by a declared <code>verdict_input</code>, patched into installed workflows by</li>
+</ul>
+<p><code>/init</code> and <code>/repair-workflows</code>.</p>
+<ul>
+<li>A gate shows the output of the step it reviews, says when that preview is only the end</li>
+</ul>
+<p>of a longer stream, and can load the rest.</p>
+<ul>
+<li>Stop, a per-project run lock, and run history scoped to its own workflow.</li>
+<li>Artifact listing across <code>&lt;project&gt;/specs/</code> and <code>.specify/</code>, editable with conflict checks.</li>
+<li>Folder browser that honours <code>SPECKIT_ALLOWED_ROOTS</code> when an operator sets one.</li>
+<li>Installer that backs up before it writes, and <code>/integration/health</code> to re-apply the</li>
+</ul>
+<p>Hermes integration when an upgrade overwrites it.</p>
+<ul>
+<li>A claim gate: every test count stated in the docs is compared with the suites that just</li>
+</ul>
+<p>ran, and a pre-commit hook runs it.</p>
+<ul>
 <li>46 node tests, and 99 backend tests: 94 that need only FastAPI and 5 that need Hermes.</li>
 </ul>
 <p>Next, in the order I would do them:</p>
 <ol>
-<li>Confirm the wizard in the live app: describe, start, approve, watch <code>plan</code> land.</li>
-<li>Process choice in the pane: <code>/processes</code> already returns every installed</li>
+<li>Confirm the wizard in the live app. Nothing in the repo can do this: the suites check</li>
 </ol>
-<p>workflow, including bug fixing and assessment; the pane currently takes the first.</p>
+<p>that components are wired, not that the pane draws.</p>
 <ol>
-<li>Ship the gate-patched workflow in the fork's bundle so a fresh clone of the CLI</li>
+<li>Ship the gate-patched workflow in the fork's bundle, so a fresh CLI install starts with</li>
 </ol>
-<p>starts with answerable gates.</p>
+<p>answerable gates instead of needing <code>/repair-workflows</code>.</p>
 <ol>
-<li>Bundle variants (backend, fullstack, ml, api-only) and the assessment and</li>
+<li>Bundle variants (backend, fullstack, ml, api-only) and the assessment and bug-fix</li>
 </ol>
-<p>bug-fix bundles as one-click installs.</p>
+<p>bundles as one-click installs.</p>
+<ol>
+<li>A runner for arm64, which is the one platform no CI job covers.</li>
+</ol>
 <p>Deliberately out, and why:</p>
 <div class="table-wrap"><table>
 <thead><tr><th>Not doing</th><th>Reason</th></tr></thead>

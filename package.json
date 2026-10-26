@@ -14,6 +14,7 @@
     "test:py": "python -m pytest tests/backend -q",
     "install:plugin": "node scripts/install.mjs",
     "verify:install": "node scripts/verify-install.py",
-    "preflight": "node scripts/preflight.mjs"
+    "preflight": "node scripts/preflight.mjs",
+    "hooks": "node scripts/install-hooks.mjs"
   }
 }

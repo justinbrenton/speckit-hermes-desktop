@@ -442,25 +442,35 @@ manifests now would advertise something uninstallable.
 
 Shipped:
 
-- One guided pane: folder, description, step tracker, gate cards, artifact reader.
-- Every workflow action goes through `specify workflow run|resume`; the pane holds
+- One guided pane: folder, process, description, step tracker, gate cards, artifact reader.
+- Every workflow action goes through `specify workflow run|resume|status`; the pane holds
   no workflow logic.
 - Non-blocking dispatch: run and resume return a job id, the pane polls run state.
-- Gate answers carried by a declared `verdict_input`, patched into installed
-  workflows by `/init` and `/repair-workflows`.
-- Artifact listing across `<project>/specs/` and `.specify/`, read-only viewer.
-- Installer that backs up before it writes.
+- Three processes from one pane: SDD (`speckit`), bug fixing (`bug`) and idea assessment
+  (`assess`). The last two are generated on first use, because the bundled extensions
+  ship commands but no workflow.
+- Gate answers carried by a declared `verdict_input`, patched into installed workflows by
+  `/init` and `/repair-workflows`.
+- A gate shows the output of the step it reviews, says when that preview is only the end
+  of a longer stream, and can load the rest.
+- Stop, a per-project run lock, and run history scoped to its own workflow.
+- Artifact listing across `<project>/specs/` and `.specify/`, editable with conflict checks.
+- Folder browser that honours `SPECKIT_ALLOWED_ROOTS` when an operator sets one.
+- Installer that backs up before it writes, and `/integration/health` to re-apply the
+  Hermes integration when an upgrade overwrites it.
+- A claim gate: every test count stated in the docs is compared with the suites that just
+  ran, and a pre-commit hook runs it.
 - 46 node tests, and 99 backend tests: 94 that need only FastAPI and 5 that need Hermes.
 
 Next, in the order I would do them:
 
-1. Confirm the wizard in the live app: describe, start, approve, watch `plan` land.
-2. Process choice in the pane: `/processes` already returns every installed
-   workflow, including bug fixing and assessment; the pane currently takes the first.
-3. Ship the gate-patched workflow in the fork's bundle so a fresh clone of the CLI
-   starts with answerable gates.
-4. Bundle variants (backend, fullstack, ml, api-only) and the assessment and
-   bug-fix bundles as one-click installs.
+1. Confirm the wizard in the live app. Nothing in the repo can do this: the suites check
+   that components are wired, not that the pane draws.
+2. Ship the gate-patched workflow in the fork's bundle, so a fresh CLI install starts with
+   answerable gates instead of needing `/repair-workflows`.
+3. Bundle variants (backend, fullstack, ml, api-only) and the assessment and bug-fix
+   bundles as one-click installs.
+4. A runner for arm64, which is the one platform no CI job covers.
 
 Deliberately out, and why:
 
