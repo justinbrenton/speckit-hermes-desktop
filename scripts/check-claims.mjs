@@ -77,6 +77,15 @@ const RULES = [
     ]
   },
   {
+    // A breakdown: "85 that need only FastAPI and 5 that need Hermes"
+    regex: /(\d[\d,]*)\s+that need only/gi,
+    candidates: () => [[router]]
+  },
+  {
+    regex: /(\d[\d,]*)\s+that need Hermes/gi,
+    candidates: () => [[hermes]]
+  },
+  {
     // node's own reporter pasted into a doc: "ℹ tests 40", "# pass 40"
     regex: /[ℹ#]\s*(?:tests|pass)\s+(\d[\d,]*)/g,
     candidates: () => [[node]]

@@ -382,22 +382,42 @@ function StartCard({ process, values, onChange, onStart, busy, error }) {
   ] })
 }
 
-function GateCard({ run, busy, onDecide, error }) {
+function GateCard({ run, busy, onDecide, error, onLoadFull }) {
   const [showOutput, setShowOutput] = useState(false)
+  const [full, setFull] = useState(null)
+  const [loadingFull, setLoadingFull] = useState(false)
   const gate = run.gate || {}
   const options = gate.options && gate.options.length ? gate.options : ['approve', 'reject']
   const stdout = __str(gate.reviewed_stdout)
   const stderr = __str(gate.reviewed_stderr)
   // A command can report only on stderr, so either stream opens the panel.
-  const output = [stdout, stderr].filter(Boolean).join('\n')
+  const preview = [stdout, stderr].filter(Boolean).join('\n')
+  const output = full === null ? preview : full
+  const truncated = Boolean(gate.reviewed_truncated)
+
+  async function loadFull() {
+    if (!onLoadFull) return
+    setLoadingFull(true)
+    try {
+      const text = await onLoadFull()
+      if (text !== null) setFull(text)
+    } finally {
+      setLoadingFull(false)
+    }
+  }
   return jsxs('div', { className: 'flex flex-col gap-2 rounded border sk-accent p-2', children: [
     jsx('p', { className: 'sk-small sk-medium', children: gate.message || 'Review before continuing' }),
     jsx('p', { className: 'sk-tiny sk-faint', children: 'Edit the file below if it needs work, then approve.' }),
     output
       ? jsxs('div', { className: 'flex flex-col gap-1', children: [
-          jsxs('div', { className: 'flex items-center justify-between', children: [
-            jsx('span', { className: 'sk-tiny sk-medium sk-dim', children: `Output from ${titleCase(__str(gate.reviewed_step))}` }),
-            jsx(Button, { size: 'xs', variant: 'ghost', onClick: () => setShowOutput(value => !value), children: showOutput ? 'Hide' : 'Show' })
+          jsxs('div', { className: 'flex items-center justify-between gap-2', children: [
+            jsx('span', { className: 'sk-tiny sk-medium sk-dim', children: `Output from ${titleCase(__str(gate.reviewed_step))}${truncated && full === null ? ' (the end of a longer stream)' : ''}` }),
+            jsxs('div', { className: 'flex shrink-0 items-center gap-1', children: [
+              truncated && full === null
+                ? jsx(Button, { size: 'xs', variant: 'ghost', disabled: loadingFull, onClick: loadFull, children: loadingFull ? 'Loading…' : 'Load full' })
+                : null,
+              jsx(Button, { size: 'xs', variant: 'ghost', onClick: () => setShowOutput(value => !value), children: showOutput ? 'Hide' : 'Show' })
+            ] })
           ] }),
           showOutput
             ? jsx(ScrollArea, { className: 'max-h-48', children:
@@ -998,7 +1018,21 @@ function SpecKitPane() {
                 children: 'The step before this gate changed no artifact. The agent may have failed silently, so check the files before approving.'
               })
             : null,
-          jsx(GateCard, { run, busy, onDecide: decide, error })
+          jsx(GateCard, {
+            run,
+            busy,
+            onDecide: decide,
+            error,
+            onLoadFull: async () => {
+              const step = __str((run.gate || {}).reviewed_step)
+              if (!step || !run.run_id || !process) return null
+              const payload = await rest(
+                `/workflows/${encodeURIComponent(process.id)}/runs/${encodeURIComponent(run.run_id)}/output` +
+                  `?cwd=${encodeURIComponent(folder)}&step=${encodeURIComponent(step)}`
+              )
+              return [payload.stdout, payload.stderr].filter(Boolean).join('\n')
+            }
+          })
         ] })
       : null
   ] })

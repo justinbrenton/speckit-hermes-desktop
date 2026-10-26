@@ -464,6 +464,12 @@ def list_processes(cwd: str = Query(..., description="Absolute project directory
 SPECIFY_TIMEOUT_MAX = 1800
 ARTIFACT_MAX_BYTES = 262_144
 
+#: What a gate carries inline. Enough to read while deciding; the whole stream is
+#: one request away at /workflows/{process}/runs/{run_id}/output.
+REVIEWED_STDOUT_PREVIEW = 6000
+REVIEWED_STDERR_PREVIEW = 2000
+STEP_OUTPUT_MAX_BYTES = 1_048_576
+
 #: Background dispatches, keyed by job id. The CLI's own run state lives under
 #: .specify/workflows/runs; this only tracks the process we spawned.
 JOBS: dict[str, dict[str, Any]] = {}
@@ -1727,6 +1733,32 @@ def browse(path: str = Query("", description="Directory to list; empty lists fil
     The plugin SDK exposes no folder dialog (checked: no showOpenDialog, no
     showDirectoryPicker), so the pane walks the filesystem through this route.
     """
+    allowed = _allowed_roots()
+
+    if allowed is not None:
+        # With a ceiling configured, browsing starts inside it and never leaves it.
+        # Listing drives and the home folder when an operator has fenced the backend
+        # hands out directory names they explicitly excluded.
+        if not allowed:
+            raise HTTPException(
+                status_code=403,
+                detail="SPECKIT_ALLOWED_ROOTS is set but names no directory, so nothing can be browsed",
+            )
+        if not path.strip():
+            entries = [
+                {
+                    "name": str(root),
+                    "path": str(root),
+                    "has_specify": (root / ".specify").is_dir(),
+                }
+                for root in allowed
+            ]
+            return {"path": "", "parent": None, "entries": entries}
+        resolved = Path(path).expanduser().resolve()
+        if not _within_allowed(resolved, allowed):
+            raise HTTPException(status_code=403, detail=f"outside SPECKIT_ALLOWED_ROOTS: {resolved}")
+        path = str(resolved)
+
     if not path.strip():
         roots: list[dict[str, Any]] = []
         if os.name == "nt":
@@ -1769,6 +1801,9 @@ def browse(path: str = Query("", description="Directory to list; empty lists fil
         except OSError:
             continue
     parent = str(base.parent) if base.parent != base else None
+    if allowed is not None and parent is not None and not _within_allowed(Path(parent).resolve(), allowed):
+        # Do not offer a step that would be refused.
+        parent = None
     return {"path": str(base), "parent": parent, "entries": entries[:500]}
 
 
@@ -2008,9 +2043,18 @@ def _run_view(process: str, run: dict[str, Any], root: Path) -> dict[str, Any]:
                 reviewed_id, reviewed = previous, candidate
         if reviewed:
             output_block = reviewed.get("output") or {}
+            stdout = output_block.get("stdout") or ""
+            stderr = output_block.get("stderr") or ""
             gate["reviewed_step"] = reviewed_id
-            gate["reviewed_stdout"] = (output_block.get("stdout") or "")[-6000:]
-            gate["reviewed_stderr"] = (output_block.get("stderr") or "")[-2000:]
+            gate["reviewed_stdout"] = stdout[-REVIEWED_STDOUT_PREVIEW:]
+            gate["reviewed_stderr"] = stderr[-REVIEWED_STDERR_PREVIEW:]
+            # Say when this is a tail: a findings list that starts at the top must
+            # not silently disappear from the review.
+            gate["reviewed_stdout_bytes"] = len(stdout)
+            gate["reviewed_stderr_bytes"] = len(stderr)
+            gate["reviewed_truncated"] = (
+                len(stdout) > REVIEWED_STDOUT_PREVIEW or len(stderr) > REVIEWED_STDERR_PREVIEW
+            )
     return {
         "process": process,
         "run_id": run["run_id"],
@@ -2044,6 +2088,48 @@ def workflow_latest(process: str, cwd: str = Query(..., description="Absolute pr
     if run is None:
         return {"process": process, "status": "none", "run_id": None, "gate": None, "nodes": []}
     return _run_view(process, run, root)
+
+
+@router.get("/workflows/{process}/runs/{run_id}/output")
+def run_step_output(
+    process: str,
+    run_id: str,
+    step: str = Query(..., description="Step id whose output to return"),
+    cwd: str = Query(..., description="Absolute project directory"),
+) -> dict[str, Any]:
+    """The complete stdout and stderr of one step in a run.
+
+    A gate carries a preview so the pane can render without loading megabytes. When
+    that preview is a tail, the reviewer needs the whole thing, and this is where
+    they get it.
+    """
+    root = _project_root(cwd)
+    _process_data(root, process)
+    if not RUN_ID_RE.fullmatch(run_id or ""):
+        raise HTTPException(status_code=400, detail=f"invalid run id: {run_id!r}")
+    state_file = root / ".specify" / "workflows" / "runs" / run_id / "state.json"
+    if not state_file.is_file():
+        raise HTTPException(status_code=404, detail=f"no such run: {run_id}")
+    try:
+        state = json.loads(state_file.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        raise HTTPException(status_code=500, detail="run state is not readable JSON")
+    results = state.get("step_results") or {}
+    if step not in results:
+        raise HTTPException(status_code=404, detail=f"no step {step!r} in run {run_id}")
+    output = results[step].get("output") or {}
+    stdout = output.get("stdout") or ""
+    stderr = output.get("stderr") or ""
+    truncated = len(stdout) + len(stderr) > STEP_OUTPUT_MAX_BYTES
+    return {
+        "run_id": run_id,
+        "step": step,
+        "stdout": stdout[:STEP_OUTPUT_MAX_BYTES],
+        "stderr": stderr[:STEP_OUTPUT_MAX_BYTES],
+        "stdout_bytes": len(stdout),
+        "stderr_bytes": len(stderr),
+        "truncated": truncated,
+    }
 
 
 @router.get("/workflows/{process}/runs/{run_id}")
