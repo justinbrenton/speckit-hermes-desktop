@@ -383,11 +383,29 @@ function StartCard({ process, values, onChange, onStart, busy, error }) {
 }
 
 function GateCard({ run, busy, onDecide, error }) {
+  const [showOutput, setShowOutput] = useState(false)
   const gate = run.gate || {}
   const options = gate.options && gate.options.length ? gate.options : ['approve', 'reject']
+  const stdout = __str(gate.reviewed_stdout)
+  const stderr = __str(gate.reviewed_stderr)
+  // A command can report only on stderr, so either stream opens the panel.
+  const output = [stdout, stderr].filter(Boolean).join('\n')
   return jsxs('div', { className: 'flex flex-col gap-2 rounded border sk-accent p-2', children: [
     jsx('p', { className: 'sk-small sk-medium', children: gate.message || 'Review before continuing' }),
     jsx('p', { className: 'sk-tiny sk-faint', children: 'Edit the file below if it needs work, then approve.' }),
+    output
+      ? jsxs('div', { className: 'flex flex-col gap-1', children: [
+          jsxs('div', { className: 'flex items-center justify-between', children: [
+            jsx('span', { className: 'sk-tiny sk-medium sk-dim', children: `Output from ${titleCase(__str(gate.reviewed_step))}` }),
+            jsx(Button, { size: 'xs', variant: 'ghost', onClick: () => setShowOutput(value => !value), children: showOutput ? 'Hide' : 'Show' })
+          ] }),
+          showOutput
+            ? jsx(ScrollArea, { className: 'max-h-48', children:
+                jsx('pre', { className: 'whitespace-pre-wrap p-2 sk-tiny leading-relaxed sk-dim', children: output })
+              })
+            : null
+        ] })
+      : null,
     error ? jsx('p', { className: 'sk-small sk-err', children: error }) : null,
     jsxs('div', { className: 'flex flex-wrap gap-2', children: options.map(option =>
       jsx(Button, {

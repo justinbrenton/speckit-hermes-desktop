@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 import shutil
@@ -49,10 +50,41 @@ ALLOWED_PATHS: tuple[str, ...] = ("spec.md", "memory/constitution.md", "tasks.md
 #: Prefix for the Kanban idempotency keys that mark a card as spec-kit generated.
 KANBAN_KEY_PREFIX = "speckit"
 
+logger = logging.getLogger(__name__)
+
 
 # ---------------------------------------------------------------------------
 # paths
 # ---------------------------------------------------------------------------
+
+
+def _allowed_roots() -> Optional[list[Path]]:
+    """Optional ceiling on where this plugin will work, from SPECKIT_ALLOWED_ROOTS.
+
+    The pane is a local tool whose whole job is to open the project folder the
+    user picks, so nothing is restricted by default. An operator who wants the
+    backend fenced in sets this to a list of directories (``os.pathsep`` between
+    them) and every project root must live under one of them.
+    """
+    raw = os.environ.get("SPECKIT_ALLOWED_ROOTS", "")
+    if not raw.strip():
+        # Unset means "no ceiling". Set to only separators means the operator
+        # tried to configure one: that returns an empty list, which denies.
+        return None
+    roots: list[Path] = []
+    for part in raw.split(os.pathsep):
+        part = part.strip()
+        if not part:
+            continue
+        try:
+            roots.append(Path(part).expanduser().resolve())
+        except OSError:
+            continue
+    return roots
+
+
+def _within_allowed(path: Path, roots: list[Path]) -> bool:
+    return any(path == base or base in path.parents for base in roots)
 
 
 def _project_root(cwd: str) -> Path:
@@ -62,9 +94,18 @@ def _project_root(cwd: str) -> Path:
     root = Path(cwd).expanduser()
     if not root.is_absolute():
         raise HTTPException(status_code=400, detail=f"cwd must be absolute: {cwd!r}")
+    # resolve() removes ".." segments and follows links before anything touches it
     root = root.resolve()
     if not root.is_dir():
         raise HTTPException(status_code=400, detail=f"cwd is not a directory: {root}")
+    allowed = _allowed_roots()
+    if allowed is not None and not _within_allowed(root, allowed):
+        if not allowed:
+            raise HTTPException(
+                status_code=403,
+                detail="SPECKIT_ALLOWED_ROOTS is set but names no directory, so nothing is allowed",
+            )
+        raise HTTPException(status_code=403, detail=f"cwd is outside SPECKIT_ALLOWED_ROOTS: {root}")
     return root
 
 
@@ -379,7 +420,8 @@ def list_processes(cwd: str = Query(..., description="Absolute project directory
         try:
             data = _load_yaml(wf_file) or {}
         except Exception as exc:  # a broken workflow must not take the pane down
-            errors.append({"file": str(wf_file), "error": str(exc)})
+            logger.warning("workflow %s could not be parsed: %s", wf_file, exc)
+            errors.append({"file": str(wf_file), "error": "workflow could not be parsed"})
             continue
         if not isinstance(data, dict):
             errors.append({"file": str(wf_file), "error": "not a mapping"})
@@ -397,7 +439,8 @@ def list_processes(cwd: str = Query(..., description="Absolute project directory
         try:
             data = yaml.safe_load(_process_yaml(process_id))
         except Exception as exc:
-            errors.append({"file": process_id, "error": str(exc)})
+            logger.warning("generated workflow %s is unusable: %s", process_id, exc)
+            errors.append({"file": process_id, "error": "generated workflow is unusable"})
             continue
         entry = build_entry(data, "", False)
         if entry:
@@ -502,6 +545,11 @@ def _run_state_status(root: Path, run_id: str) -> Optional[str]:
         return (json.loads(path.read_text(encoding="utf-8")) or {}).get("status")
     except (OSError, ValueError):
         return None
+
+
+#: A gate we answered seconds ago can still show "paused" on disk. Killing the
+#: process in that window kills the step that just started, so wait it out.
+GATE_TAKEOVER_GRACE = 20.0
 
 
 def _active_key(root: Path, process: str) -> tuple[str, str]:
@@ -866,7 +914,12 @@ def workflow_run(process: str, payload: WorkflowRunRequest) -> dict[str, Any]:
             _snapshot_file(root, run_id).write_text(json.dumps(before_artifacts), encoding="utf-8")
         except OSError:
             pass
-    ACTIVE_RUNS[key] = {"proc": JOBS.get(job["job_id"], {}).get("proc"), "run_id": run_id, "kind": "run"}
+    ACTIVE_RUNS[key] = {
+        "proc": JOBS.get(job["job_id"], {}).get("proc"),
+        "run_id": run_id,
+        "kind": "run",
+        "started_at": time.time(),
+    }
     return {
         "process": process,
         "run_id": run_id,
@@ -904,7 +957,16 @@ def workflow_resume(process: str, run_id: str, payload: WorkflowResumeRequest) -
         # file says paused. That process has nothing left to do: the run is on
         # disk, so answering the gate now is safe and must not be refused. A run
         # that is genuinely executing still gets the 409.
-        if _run_state_status(root, run_id) == "paused":
+        entry = ACTIVE_RUNS[key]
+        age = time.time() - float(entry.get("started_at") or 0)
+        # Only a *resume* can be the step that a second answer would kill. A fresh
+        # run that parked quickly must be answerable at once, so the window does
+        # not apply to it.
+        just_answered = entry.get("kind") == "resume" and age <= GATE_TAKEOVER_GRACE
+        # And the active job must be the run being answered: naming an older run
+        # must not kill whatever newer run is in flight.
+        same_run = str(entry.get("run_id") or "") == run_id
+        if _run_state_status(root, run_id) == "paused" and same_run and not just_answered:
             parked = ACTIVE_RUNS.pop(key, {})
             proc = parked.get("proc")
             if proc is not None and proc.poll() is None:
@@ -919,7 +981,12 @@ def workflow_resume(process: str, run_id: str, payload: WorkflowResumeRequest) -
             )
     _write_snapshot(root, run_id)
     job = _start_job(args, root, max(30, min(payload.timeout, SPECIFY_TIMEOUT_MAX)))
-    ACTIVE_RUNS[key] = {"proc": JOBS.get(job["job_id"], {}).get("proc"), "run_id": run_id, "kind": "resume"}
+    ACTIVE_RUNS[key] = {
+        "proc": JOBS.get(job["job_id"], {}).get("proc"),
+        "run_id": run_id,
+        "kind": "resume",
+        "started_at": time.time(),
+    }
     return {"process": process, "run_id": run_id, "job_id": job["job_id"], "running": True}
 
 
@@ -1085,14 +1152,24 @@ def install_extension(payload: ExtensionRequest) -> dict[str, Any]:
 
 
 #: step id -> gate key, because the step is `specify` and its gate is `review-spec`
-GATE_FOR = {"constitution": "constitution", "specify": "spec", "clarify": "clarify", "plan": "plan", "tasks": "tasks"}
+GATE_FOR = {
+    "constitution": "constitution",
+    "specify": "spec",
+    "clarify": "clarify",
+    "plan": "plan",
+    "checklist": "checklist",
+    "tasks": "tasks",
+    "analyze": "analyze",
+}
 
 GATES = {
     "constitution": "Review the constitution before specifying.",
     "spec": "Review the spec before planning.",
     "clarify": "Review the clarifications folded into the spec.",
     "plan": "Review the plan before generating tasks.",
+    "checklist": "Review the checklist gaps before breaking down tasks.",
     "tasks": "Review the task breakdown before implementing.",
+    "analyze": "Review the cross-artifact findings before implementing.",
 }
 
 #: Optional inputs carry a default: the integration drops ``-q`` when a step's
@@ -1699,7 +1776,27 @@ def browse(path: str = Query("", description="Directory to list; empty lists fil
 # clarification interview
 # ---------------------------------------------------------------------------
 
-CLARIFICATION = re.compile(r"\[NEEDS CLARIFICATION:\s*([^\]]*)\]")
+#: spec-kit's marker. Parsed with plain string scans, not a regex: any pattern
+#: that has to backtrack over the body is quadratic on input with many prefixes
+#: and no closing bracket, and this text comes from a file the model wrote.
+CLARIFICATION_PREFIX = "[NEEDS CLARIFICATION:"
+
+
+def clarification_markers(text: str) -> list[tuple[int, int, str]]:
+    """(start, end, body) for every complete `[NEEDS CLARIFICATION: ...]` marker."""
+    markers: list[tuple[int, int, str]] = []
+    search_from = 0
+    while True:
+        start = text.find(CLARIFICATION_PREFIX, search_from)
+        if start < 0:
+            break
+        body_from = start + len(CLARIFICATION_PREFIX)
+        close = text.find("]", body_from)
+        if close < 0:
+            break
+        markers.append((start, close + 1, text[body_from:close]))
+        search_from = close + 1
+    return markers
 
 
 def _read_confined(root: Path, path: str) -> Path:
@@ -1730,8 +1827,8 @@ def list_questions(
         raise HTTPException(status_code=404, detail=f"not found: {path}")
     text = _read_text(target)
     questions = [
-        {"index": index, "text": match.group(1).strip()}
-        for index, match in enumerate(CLARIFICATION.finditer(text))
+        {"index": index, "text": body.strip()}
+        for index, (_, _, body) in enumerate(clarification_markers(text))
     ]
     return {"path": path, "questions": questions, "count": len(questions)}
 
@@ -1751,23 +1848,23 @@ def answer_questions(payload: AnswerRequest) -> dict[str, Any]:
         raise HTTPException(status_code=404, detail=f"not found: {payload.path}")
 
     text = _read_text(target)
-    matches = list(CLARIFICATION.finditer(text))
+    markers = clarification_markers(text)
     answered = 0
     out: list[str] = []
     cursor = 0
-    for index, match in enumerate(matches):
+    for index, (start, end, _) in enumerate(markers):
         answer = (payload.answers.get(str(index)) or "").strip()
-        out.append(text[cursor:match.start()])
+        out.append(text[cursor:start])
         if answer:
             out.append(answer)
             answered += 1
         else:
-            out.append(match.group(0))
-        cursor = match.end()
+            out.append(text[start:end])
+        cursor = end
     out.append(text[cursor:])
     updated = "".join(out)
 
-    remaining = len(CLARIFICATION.findall(updated))
+    remaining = len(clarification_markers(updated))
     if answered:
         _write_text_atomic(target, updated)
     return {
@@ -1892,6 +1989,28 @@ def _run_view(process: str, run: dict[str, Any], root: Path) -> dict[str, Any]:
             "verdict_input": current.get("verdict_input") or f"gate_{step_id.replace('-', '_')}",
             "show_file": output.get("show_file"),
         }
+        # Some steps produce no artifact, `analyze` above all: its findings are
+        # the command's own output. Carry the reviewed step's output into the gate
+        # so the reviewer can read what they are approving.
+        # Workflow order, not results order: a custom workflow can put a gate or a
+        # non-command step between the command and its review.
+        reviewed_id = ""
+        reviewed: dict[str, Any] = {}
+        try:
+            ordered = [str(step.get("id") or "") for step in (_process_data(root, process).get("steps") or [])]
+        except HTTPException:
+            ordered = []
+        if step_id in ordered:
+            position = ordered.index(step_id)
+            previous = ordered[position - 1] if position > 0 else ""
+            candidate = results.get(previous) or {}
+            if candidate.get("type") == "command":
+                reviewed_id, reviewed = previous, candidate
+        if reviewed:
+            output_block = reviewed.get("output") or {}
+            gate["reviewed_step"] = reviewed_id
+            gate["reviewed_stdout"] = (output_block.get("stdout") or "")[-6000:]
+            gate["reviewed_stderr"] = (output_block.get("stderr") or "")[-2000:]
     return {
         "process": process,
         "run_id": run["run_id"],

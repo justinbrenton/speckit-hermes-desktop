@@ -860,3 +860,212 @@ def test_an_unknown_process_is_still_a_404(client, project, cli):
     assert response.status_code == 404
     assert "no such process" in response.json()["detail"]
 
+
+def test_the_full_path_reviews_the_checklist_and_the_analysis(client, project):
+    """Both steps produce findings nobody reads unless a gate stops the run."""
+    body = client.post(f"{PREFIX}/workflow/shape", json={"cwd": str(project), "mode": "full"}).json()
+    assert "review-checklist" in body["steps"]
+    assert "review-analyze" in body["steps"]
+
+    workflow = (project / ".specify" / "workflows" / "speckit" / "workflow.yml").read_text(encoding="utf-8")
+    assert "verdict_input: gate_review_checklist" in workflow
+    assert "verdict_input: gate_review_analyze" in workflow
+    assert "  gate_review_checklist:" in workflow
+    assert "  gate_review_analyze:" in workflow
+
+
+def test_the_short_path_has_no_checklist_or_analyze_gate(client, project):
+    body = client.post(f"{PREFIX}/workflow/shape", json={"cwd": str(project), "mode": "short"}).json()
+    assert "review-checklist" not in body["steps"]
+    assert "review-analyze" not in body["steps"]
+
+
+def test_resume_does_not_kill_the_step_it_just_started(client, project, cli):
+    """A gate answered seconds ago still reads "paused" on disk for a moment."""
+    run_dir = project / ".specify" / "workflows" / "runs" / "fresh1"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "state.json").write_text(json.dumps({"workflow_id": "speckit", "status": "paused"}), encoding="utf-8")
+
+    proc = ParkedProc()
+    plugin_api.ACTIVE_RUNS[(str(project).lower(), "speckit")] = {
+        "proc": proc, "run_id": "fresh1", "kind": "resume", "started_at": time.time()
+    }
+    try:
+        response = client.post(
+            f"{PREFIX}/workflows/speckit/runs/fresh1/resume",
+            json={"cwd": str(project), "answers": {"gate_review_spec": "approve"}},
+        )
+        assert response.status_code == 409, response.text
+        assert proc.killed is False, "a step that just started must not be killed"
+    finally:
+        plugin_api.ACTIVE_RUNS.clear()
+
+
+def test_a_fresh_run_can_be_answered_as_soon_as_it_parks(client, project, cli):
+    """The grace window protects a resume, not a run that just parked."""
+    run_dir = project / ".specify" / "workflows" / "runs" / "parked2"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "state.json").write_text(json.dumps({"workflow_id": "speckit", "status": "paused"}), encoding="utf-8")
+
+    proc = ParkedProc()
+    plugin_api.ACTIVE_RUNS[(str(project).lower(), "speckit")] = {
+        "proc": proc, "run_id": "parked2", "kind": "run", "started_at": time.time()
+    }
+    try:
+        response = client.post(
+            f"{PREFIX}/workflows/speckit/runs/parked2/resume",
+            json={"cwd": str(project), "answers": {"gate_review_spec": "approve"}},
+        )
+        assert response.status_code == 200, response.text
+    finally:
+        plugin_api.ACTIVE_RUNS.clear()
+
+
+def test_a_gate_carries_the_output_of_the_step_it_reviews(client, project, cli):
+    """`analyze` writes no artifact; its findings are the command output."""
+    # The gate is matched against the workflow's own step order, so shape the
+    # full path first (it is the one that contains analyze).
+    client.post(f"{PREFIX}/workflow/shape", json={"cwd": str(project), "mode": "full"})
+    run_dir = project / ".specify" / "workflows" / "runs" / "gate1"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    state = {
+        "workflow_id": "speckit",
+        "status": "paused",
+        "current_step_id": "review-analyze",
+        "step_results": {
+            "analyze": {"type": "command", "status": "completed",
+                        "output": {"stdout": "Two findings: plan and tasks disagree on scope."}},
+            "review-analyze": {"type": "gate", "status": "paused",
+                               "output": {"message": "Review the findings", "options": ["approve", "reject"]}},
+        },
+    }
+    (run_dir / "state.json").write_text(json.dumps(state), encoding="utf-8")
+
+    view = client.get(f"{PREFIX}/workflows/speckit/runs/gate1", params={"cwd": str(project)}).json()
+    gate = view["gate"]
+    assert gate["reviewed_step"] == "analyze"
+    assert "Two findings" in gate["reviewed_stdout"]
+
+
+def test_clarification_markers_do_not_backtrack_on_long_space_runs(client, project, cli):
+    """Two overlapping quantifiers made matching quadratic; the regex no longer has them."""
+    artifact = project / ".specify" / "specs" / "001-demo" / "spec.md"
+    artifact.write_text("[NEEDS CLARIFICATION:" + " " * 20000 + "x]\n", encoding="utf-8")
+
+    started = time.time()
+    body = client.get(f"{PREFIX}/questions", params={"cwd": str(project), "path": ".specify/specs/001-demo/spec.md"}).json()
+    elapsed = time.time() - started
+    assert body["count"] == 1
+    assert body["questions"][0]["text"] == "x"
+    assert elapsed < 1.0, f"matching took {elapsed:.2f}s on 20k spaces"
+
+
+def test_workflow_parse_errors_do_not_leak_internals(client, tmp_path):
+    root = tmp_path / "proj"
+    wf = root / ".specify" / "workflows" / "broken"
+    wf.mkdir(parents=True)
+    (wf / "workflow.yml").write_text("workflow: [unclosed\n", encoding="utf-8")
+
+    body = client.get(f"{PREFIX}/processes", params={"cwd": str(root)}).json()
+    assert body["errors"], "a broken workflow is still reported"
+    message = body["errors"][0]["error"]
+    assert message == "workflow could not be parsed"
+    assert "line" not in message.lower() and "yaml" not in message.lower()
+
+
+def test_marker_parsing_is_literal_and_survives_bad_input():
+    text = "A [NEEDS CLARIFICATION: which store?] B [NEEDS CLARIFICATION: which host?]"
+    bodies = [body.strip() for _, _, body in plugin_api.clarification_markers(text)]
+    assert bodies == ["which store?", "which host?"]
+
+    # No closing bracket anywhere: nothing is returned, and it returns immediately.
+    unterminated = "[NEEDS CLARIFICATION:" + " " * 50000
+    started = time.time()
+    assert plugin_api.clarification_markers(unterminated) == []
+    assert time.time() - started < 0.5
+
+
+def test_answering_questions_replaces_only_the_answered_marker(client, project, cli):
+    artifact = project / ".specify" / "specs" / "001-demo" / "spec.md"
+    artifact.write_text(
+        "# Spec\n[NEEDS CLARIFICATION: which store?]\nKeep this.\n[NEEDS CLARIFICATION: which host?]\n",
+        encoding="utf-8",
+    )
+    body = client.post(
+        f"{PREFIX}/clarify",
+        json={"cwd": str(project), "path": ".specify/specs/001-demo/spec.md", "answers": {"0": "SQLite"}},
+    ).json()
+    assert body["answered"] == 1
+    assert body["remaining"] == 1
+    assert "SQLite" in body["content"]
+    assert "Keep this." in body["content"]
+    assert "[NEEDS CLARIFICATION: which host?]" in body["content"]
+
+
+def test_answering_an_old_gate_does_not_kill_a_newer_run(client, project, cli):
+    old = project / ".specify" / "workflows" / "runs" / "older1"
+    old.mkdir(parents=True, exist_ok=True)
+    (old / "state.json").write_text(json.dumps({"workflow_id": "speckit", "status": "paused"}), encoding="utf-8")
+
+    proc = ParkedProc()
+    plugin_api.ACTIVE_RUNS[(str(project).lower(), "speckit")] = {
+        "proc": proc, "run_id": "newer2", "kind": "run", "started_at": time.time() - 600
+    }
+    try:
+        response = client.post(
+            f"{PREFIX}/workflows/speckit/runs/older1/resume",
+            json={"cwd": str(project), "answers": {"gate_review_spec": "approve"}},
+        )
+        assert response.status_code == 409, response.text
+        assert proc.killed is False, "a different run must not be killed"
+    finally:
+        plugin_api.ACTIVE_RUNS.clear()
+
+
+def test_an_allowlist_that_names_nothing_denies_everything(client, project, cli, monkeypatch):
+    # Only separators: configured, with no usable entry.
+    monkeypatch.setenv("SPECKIT_ALLOWED_ROOTS", os.pathsep.join(["", "", ""]))
+    response = client.get(f"{PREFIX}/processes", params={"cwd": str(project)})
+    assert response.status_code == 403
+    assert "names no directory" in response.json()["detail"]
+
+
+def test_an_unset_allowlist_restricts_nothing(client, project, cli, monkeypatch):
+    monkeypatch.delenv("SPECKIT_ALLOWED_ROOTS", raising=False)
+    assert client.get(f"{PREFIX}/processes", params={"cwd": str(project)}).status_code == 200
+
+
+def test_the_reviewed_step_is_the_one_before_the_gate(client, project, cli):
+    """A gate after a non-command step must not borrow an earlier command's output."""
+    wf = project / ".specify" / "workflows" / "custom"
+    wf.mkdir(parents=True, exist_ok=True)
+    (wf / "workflow.yml").write_text(
+        'schema_version: "1.0"\n'
+        "workflow:\n  id: custom\n  name: Custom\n"
+        "steps:\n"
+        "  - id: analyze\n    command: speckit.analyze\n"
+        "  - id: wait\n    type: gate\n    message: intermediate\n    options: [approve, reject]\n"
+        "  - id: other\n    command: speckit.tasks\n"
+        "  - id: review-other\n    type: gate\n    message: Review tasks\n    options: [approve, reject]\n",
+        encoding="utf-8",
+    )
+    run_dir = project / ".specify" / "workflows" / "runs" / "order1"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    state = {
+        "workflow_id": "custom",
+        "status": "paused",
+        "current_step_id": "review-other",
+        "step_results": {
+            "analyze": {"type": "command", "status": "completed", "output": {"stdout": "analysis findings"}},
+            "wait": {"type": "gate", "status": "completed", "output": {"choice": "approve"}},
+            "other": {"type": "command", "status": "completed", "output": {"stdout": "task list"}},
+            "review-other": {"type": "gate", "status": "paused", "output": {"message": "Review tasks"}},
+        },
+    }
+    (run_dir / "state.json").write_text(json.dumps(state), encoding="utf-8")
+
+    view = client.get(f"{PREFIX}/workflows/custom/runs/order1", params={"cwd": str(project)}).json()
+    gate = view["gate"]
+    assert gate["reviewed_step"] == "other"
+    assert gate["reviewed_stdout"] == "task list"
+
