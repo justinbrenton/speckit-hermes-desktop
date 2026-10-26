@@ -18,8 +18,14 @@ rather than skipping them, so its pass count is every test it executed.
 ```
 npm install
 npm test
+
+python -m pip install -r requirements-dev.txt
 python -m pytest tests/backend -q -m "not hermes"
 ```
+
+`requirements-dev.txt` is fastapi, pydantic, PyYAML, pytest, httpx and defusedxml.
+CI installs it before pytest for the same reason: the suite does not run without
+them, and a fresh checkout does not have them.
 
 72 backend tests and 40 node tests, 77 backend tests in total once the Hermes ones are included. Nothing skips; `pytest.ini` sets `--strict-markers`,
 so a mistyped marker is an error rather than a silently ignored test.
@@ -37,8 +43,8 @@ The tests create their own throwaway `HERMES_HOME`, so they never touch a real b
 
 ## What CI runs
 
-- `node` on Ubuntu and Windows (the installer's path logic is JavaScript, and the one
-  POSIX bug found so far came from porting, not from reading).
+- `node` on Ubuntu, macOS and Windows (the installer's path logic is JavaScript, and the
+  one POSIX bug found so far came from porting, not from reading).
 - `backend (router)` on Ubuntu, macOS and Windows, plus Python 3.13 on Ubuntu.
 - `backend (hermes integration)` on Ubuntu, against a pinned Hermes commit.
 - `manifests`, which parses every manifest and fails if they disagree.
