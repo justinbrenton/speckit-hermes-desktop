@@ -66,7 +66,9 @@ jobs:
       # Must satisfy plugin.yaml's requires_hermes floor. This is the commit this
       # plugin is developed against; bump both together.
       HERMES_COMMIT: bda3a363e969
-      HERMES_SRC: ${{ runner.temp }}/hermes-agent
+      # A literal path: the runner context is not available in a job-level env
+      # block, and GitHub rejects the whole workflow when it is used there.
+      HERMES_SRC: /tmp/hermes-agent
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
