@@ -26,6 +26,7 @@ Security: every path is resolved inside ``<cwd>/.specify`` and must be one of
 from __future__ import annotations
 
 import hashlib
+import itertools
 import json
 import logging
 import os
@@ -558,6 +559,11 @@ def _clip_bytes(text: str, limit: int) -> tuple[str, bool]:
 #: Guards run admission: the "is a run live?" check and the reservation that
 #: answers it have to be one step, or two requests arriving together both pass.
 ACTIVE_LOCK = threading.Lock()
+_RESERVATION = itertools.count(1)
+
+
+def _reservation_token() -> int:
+    return next(_RESERVATION)
 
 #: Background dispatches, keyed by job id. The CLI's own run state lives under
 #: .specify/workflows/runs; this only tracks the process we spawned.
@@ -647,7 +653,7 @@ def _run_state_status(root: Path, run_id: str) -> Optional[str]:
 GATE_TAKEOVER_GRACE = 20.0
 
 
-def _admit_resume(root: Path, process: str, run_id: str) -> tuple[str]:
+def _admit_resume(root: Path, process: str, run_id: str) -> tuple[tuple[str], int]:
     """Decide whether this resume may run, and claim the slot if so.
 
     Same check-and-claim problem as a start, plus a takeover: answering the gate of
@@ -661,6 +667,13 @@ def _admit_resume(root: Path, process: str, run_id: str) -> tuple[str]:
             # file says paused. That process has nothing left to do: the run is on
             # disk, so answering the gate now is safe and must not be refused.
             entry = ACTIVE_RUNS[key]
+            if entry.get("kind") == "starting":
+                # Another request is mid-dispatch. Taking over now would start a
+                # second job behind it.
+                raise HTTPException(
+                    status_code=409,
+                    detail=f"a {process} run is already starting in this project",
+                )
             age = time.time() - float(entry.get("started_at") or 0)
             # Only a *resume* can be the step a second answer would kill. A fresh run
             # that parked quickly must be answerable at once.
@@ -681,17 +694,55 @@ def _admit_resume(root: Path, process: str, run_id: str) -> tuple[str]:
                     status_code=409,
                     detail=f"a {process} run is already in progress in this project",
                 )
+        token = _reservation_token()
         ACTIVE_RUNS[key] = {
             "proc": None,
             "run_id": run_id,
             "process": _canonical_process(process),
-            "kind": "resume",
+            "kind": "starting",
+            "intent": "resume",
+            "token": token,
             "started_at": time.time(),
         }
-    return key
+    return key, token
 
 
-def _reserve_run(root: Path, process: str) -> tuple[str]:
+def _claim_dispatch(key: tuple[str], token: int, job: dict[str, Any], run_id: Optional[str], kind: str, process: str) -> None:
+    """Turn a reservation into the live entry, unless someone cancelled it.
+
+    Between reserving the slot and finishing the dispatch, a stop can remove the
+    reservation and another start can claim the slot. Overwriting that newer entry
+    here would leave the new run untracked, so the token decides.
+    """
+    with ACTIVE_LOCK:
+        current = ACTIVE_RUNS.get(key)
+        if current is None or current.get("token") != token:
+            cancelled = True
+        else:
+            cancelled = False
+            ACTIVE_RUNS[key] = {
+                "proc": JOBS.get(job["job_id"], {}).get("proc"),
+                "run_id": run_id,
+                "process": _canonical_process(process),
+                "kind": kind,
+                "token": token,
+                "started_at": time.time(),
+            }
+    if cancelled:
+        entry = JOBS.get(job["job_id"], {})
+        proc = entry.get("proc")
+        if proc is not None and proc.poll() is None:
+            try:
+                proc.kill()
+            except OSError:
+                pass
+        raise HTTPException(
+            status_code=409,
+            detail="the run was stopped before it started",
+        )
+
+
+def _reserve_run(root: Path, process: str) -> tuple[tuple[str], int]:
     """Claim this project's single run slot, or refuse.
 
     Reading "is a run live?" and recording "this run is live" must happen under one
@@ -707,14 +758,17 @@ def _reserve_run(root: Path, process: str) -> tuple[str]:
                 status_code=409,
                 detail=f"a run of {running} is already in progress in this project",
             )
+        token = _reservation_token()
         ACTIVE_RUNS[key] = {
             "proc": None,
             "run_id": None,
             "process": _canonical_process(process),
             "kind": "starting",
+            "intent": "run",
+            "token": token,
             "started_at": time.time(),
         }
-    return key
+    return key, token
 
 
 def _active_key(root: Path, process: str = "") -> tuple[str]:
@@ -730,6 +784,8 @@ def _release_finished_jobs() -> None:
     for key, entry in list(ACTIVE_RUNS.items()):
         if entry.get("kind") == "starting":
             # Reserved but nothing dispatched yet, so there is no process to inspect.
+            # A pending resume is a reservation too: reaping it here let a second
+            # answer dispatch while the first was still starting.
             continue
         proc = entry.get("proc")
         if proc is None or proc.poll() is not None:
@@ -1097,7 +1153,7 @@ def workflow_run(process: str, payload: WorkflowRunRequest) -> dict[str, Any]:
         if value is not None and str(value) != "":
             args += ["-i", f"{key}={value}"]
     args.append("--json")
-    key = _reserve_run(root, process)
+    key, token = _reserve_run(root, process)
     before = _run_ids(root)
     before_artifacts = _artifact_index(root)
     try:
@@ -1114,14 +1170,7 @@ def workflow_run(process: str, payload: WorkflowRunRequest) -> dict[str, Any]:
             _snapshot_file(root, run_id).write_text(json.dumps(before_artifacts), encoding="utf-8")
         except OSError:
             pass
-    with ACTIVE_LOCK:
-        ACTIVE_RUNS[key] = {
-            "proc": JOBS.get(job["job_id"], {}).get("proc"),
-            "run_id": run_id,
-            "process": _canonical_process(process),
-            "kind": "run",
-            "started_at": time.time(),
-        }
+    _claim_dispatch(key, token, job, run_id, "run", process)
     return {
         "process": process,
         "run_id": run_id,
@@ -1152,7 +1201,7 @@ def workflow_resume(process: str, run_id: str, payload: WorkflowResumeRequest) -
         if value is not None and str(value) != "":
             args += ["-i", f"{key}={value}"]
     args.append("--json")
-    key = _admit_resume(root, process, run_id)
+    key, token = _admit_resume(root, process, run_id)
     _write_snapshot(root, run_id)
     try:
         job = _start_job(args, root, max(30, min(payload.timeout, SPECIFY_TIMEOUT_MAX)))
@@ -1161,14 +1210,7 @@ def workflow_resume(process: str, run_id: str, payload: WorkflowResumeRequest) -
         with ACTIVE_LOCK:
             ACTIVE_RUNS.pop(key, None)
         raise
-    with ACTIVE_LOCK:
-        ACTIVE_RUNS[key] = {
-            "proc": JOBS.get(job["job_id"], {}).get("proc"),
-            "run_id": run_id,
-            "process": _canonical_process(process),
-            "kind": "resume",
-            "started_at": time.time(),
-        }
+    _claim_dispatch(key, token, job, run_id, "resume", process)
     return {"process": process, "run_id": run_id, "job_id": job["job_id"], "running": True}
 
 
@@ -1199,7 +1241,13 @@ def stop_run(process: str, run_id: str, payload: WorkflowResumeRequest) -> dict[
         except (OSError, subprocess.SubprocessError):
             continue
     _release_finished_jobs()
-    ACTIVE_RUNS.pop(_active_key(root, process), None)
+    key = _active_key(root, process)
+    with ACTIVE_LOCK:
+        entry = ACTIVE_RUNS.get(key)
+        # The slot belongs to the project, so stopping must name the run: popping
+        # whatever is in the slot untracked a newer run (or a reservation).
+        if entry is not None and entry.get("run_id") == run_id:
+            ACTIVE_RUNS.pop(key, None)
     return {"run_id": run_id, "stopped": bool(killed), "pids": killed}
 
 

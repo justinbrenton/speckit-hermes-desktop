@@ -1500,3 +1500,98 @@ def test_a_failed_dispatch_releases_the_reservation(client, project, monkeypatch
 
     assert plugin_api.ACTIVE_RUNS == {}, f"a dead dispatch left a reservation: {plugin_api.ACTIVE_RUNS}"
 
+
+def test_two_simultaneous_resumes_cannot_both_dispatch(client, project, monkeypatch):
+    """A pending resume is a reservation: a second answer must not dispatch."""
+    import threading
+
+    run_dir = project / ".specify" / "workflows" / "runs" / "gate1"
+    run_dir.mkdir(parents=True, exist_ok=True)
+    (run_dir / "state.json").write_text(json.dumps({"status": "paused"}), encoding="utf-8")
+
+    entered = threading.Event()
+    release = threading.Event()
+
+    def slow_job(args, cwd, timeout=None):
+        entered.set()
+        assert release.wait(5), "the first resume never finished"
+        plugin_api.JOBS["r"] = {"proc": None, "id": "r"}
+        return {"job_id": "r", "id": "r", "pid": 0, "stdout_file": ""}
+
+    monkeypatch.setattr(plugin_api, "_start_job", slow_job)
+    plugin_api.ACTIVE_RUNS.clear()
+    plugin_api.JOBS.clear()
+
+    first = {}
+
+    def answer():
+        first["response"] = client.post(
+            f"{PREFIX}/workflows/speckit/runs/gate1/resume",
+            json={"cwd": str(project), "answers": {"gate_review_spec": "approve"}},
+        )
+
+    worker = threading.Thread(target=answer)
+    worker.start()
+    try:
+        assert entered.wait(5), "the first resume never reached the dispatcher"
+        second = client.post(
+            f"{PREFIX}/workflows/speckit/runs/gate1/resume",
+            json={"cwd": str(project), "answers": {"gate_review_spec": "approve"}},
+        )
+        assert second.status_code == 409, f"both resumes dispatched: {second.status_code}"
+    finally:
+        release.set()
+        worker.join(10)
+        plugin_api.ACTIVE_RUNS.clear()
+        plugin_api.JOBS.clear()
+
+    assert first["response"].status_code == 200, first["response"].text
+
+
+def test_a_stopped_startup_does_not_overwrite_a_newer_claim(client, project, monkeypatch):
+    """If the reservation is removed mid-dispatch, the late registration must not win."""
+    import threading
+
+    entered = threading.Event()
+    release = threading.Event()
+
+    def slow_job(args, cwd, timeout=None):
+        entered.set()
+        assert release.wait(5), "the start never finished"
+        plugin_api.JOBS["s"] = {"proc": None, "id": "s"}
+        return {"job_id": "s", "id": "s", "pid": 0, "stdout_file": ""}
+
+    monkeypatch.setattr(plugin_api, "_start_job", slow_job)
+    monkeypatch.setattr(plugin_api, "_await_new_run", lambda root_, before, timeout=25.0: "run-s")
+    plugin_api.ACTIVE_RUNS.clear()
+    plugin_api.JOBS.clear()
+
+    outcome = {}
+
+    def start():
+        try:
+            outcome["response"] = client.post(
+                f"{PREFIX}/workflows/bugfix/run", json={"cwd": str(project), "inputs": {"report": "x"}}
+            )
+        except Exception as exc:  # the endpoint may raise before the client sees a status
+            outcome["error"] = exc
+
+    worker = threading.Thread(target=start)
+    worker.start()
+    try:
+        assert entered.wait(5), "the start never reached the dispatcher"
+        # someone else takes the slot while the first dispatch is still running
+        with plugin_api.ACTIVE_LOCK:
+            plugin_api.ACTIVE_RUNS.clear()
+            plugin_api.ACTIVE_RUNS[plugin_api._active_key(project, "assess")] = {
+                "proc": None, "run_id": "newer", "process": "assess", "kind": "run", "token": 999, "started_at": 0
+            }
+    finally:
+        release.set()
+        worker.join(10)
+
+    entry = plugin_api.ACTIVE_RUNS.get(plugin_api._active_key(project, "assess"), {})
+    assert entry.get("run_id") == "newer", f"the late registration overwrote a newer run: {entry}"
+    plugin_api.ACTIVE_RUNS.clear()
+    plugin_api.JOBS.clear()
+
