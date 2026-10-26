@@ -81,15 +81,17 @@ jobs:
           python-version: "3.12"
       - uses: astral-sh/setup-uv@v5
       - name: Stage Hermes at the pinned commit
-        # Nothing pip-installable provides this version: PyPI stops at 0.19.0, and
-        # the project's setup.py refuses to build a wheel or sdist on purpose. Its
-        # uv.lock still gives the dependency set, so sync the environment without
-        # installing the project and put the source on PYTHONPATH.
+        # A git fetch rather than the codeload tarball: codeload rate-limits by IP,
+        # and a busy afternoon of pushes returned 429 here. Fetching one commit is
+        # just as deterministic and does not share that quota.
         run: |
           mkdir -p "$HERMES_SRC"
-          curl -sSL --fail "https://codeload.github.com/NousResearch/hermes-agent/tar.gz/${HERMES_COMMIT}" \
-            | tar xz -C "$HERMES_SRC" --strip-components=1
           cd "$HERMES_SRC"
+          git init -q .
+          git remote add origin https://github.com/NousResearch/hermes-agent.git
+          git fetch -q --depth 1 origin "$HERMES_COMMIT"
+          git checkout -q FETCH_HEAD
+          echo "staged $(git rev-parse --short HEAD)"
           uv sync --frozen --no-install-project
           uv pip install --python "$HERMES_SRC/.venv/bin/python" -r "$GITHUB_WORKSPACE/requirements-dev.txt"
       - name: Confirm Hermes really imports
