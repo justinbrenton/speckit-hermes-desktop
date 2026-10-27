@@ -193,3 +193,11 @@ test('every var() in SK_CSS names a fallback', () => {
   const bare = [...skCss().matchAll(/var\((--[a-z0-9-]+)\)/g)].map(match => match[1])
   assert.deepEqual([...new Set(bare)], [], `no fallback: ${[...new Set(bare)].join(', ')}`)
 })
+
+test('the version the pane shows is the version the package ships', async () => {
+  // A pane displaying a stale plugin.js is the only way to tell the renderer
+  // loaded an old build, so the number has to be the real one.
+  const pkg = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'))
+  const shown = SOURCE.match(/const VERSION = '([^']+)'/)[1]
+  assert.equal(shown, pkg.version)
+})

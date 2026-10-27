@@ -73,12 +73,13 @@ const SK_CSS = `
 .sk-truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sk-bar { height: 4px; border-radius: 999px; overflow: hidden; background: var(--ui-bg-tertiary, #1a1e24); }
 .sk-bar-fill { height: 100%; border-radius: 999px; background: var(--ui-accent, #6ea8fe); transition: width .2s ease; }
-.sk-hover:hover { background: var(--ui-row-hover-background, #2a2f36); }
-/* One row of a choice list: the fill carries hover, the left edge carries selection. */
-.sk-choice { cursor: pointer; border-left: 2px solid transparent; transition: background .12s ease, border-color .12s ease; }
-.sk-choice:hover { background: var(--ui-row-hover-background, #2a2f36); border-left-color: var(--ui-accent, #6ea8fe); }
-.sk-choice:focus-visible { outline: 2px solid var(--ui-accent, #6ea8fe); outline-offset: -2px; }
-.sk-choice + .sk-choice { border-top: 1px solid var(--color-border, #343a41); }
+/* Hover on generic rows (browser, artifacts) — explicit fallback, no var dependency */
+.sk-root .sk-hover:hover { background: #2a2f36; }
+/* Choice list rows: fill + 2px accent edge, explicit colours so hover never disappears */
+.sk-root .sk-choice { cursor: pointer; border-left: 2px solid transparent; transition: background .12s ease, border-color .12s ease; }
+.sk-root .sk-choice:hover { background: #2a2f36; border-left-color: #6ea8fe; }
+.sk-root .sk-choice:focus-visible { outline: 2px solid #6ea8fe; outline-offset: -2px; }
+.sk-root .sk-choice + .sk-choice { border-top: 1px solid var(--color-border, #343a41); }
 .sk-frame { border: 1px solid var(--color-border, #343a41); border-radius: 6px; overflow: hidden; }
 /* Status is a dot and a word: legible at 10px and it cannot be mistaken for a button. */
 .sk-pill { display: inline-flex; align-items: center; gap: 5px; font-size: 10px; font-weight: 500; white-space: nowrap; color: var(--ui-text-secondary, #9aa2ae); }
@@ -134,6 +135,10 @@ function titleCase(id) {
 }
 
 const GATE_LABELS = { approve: 'Approve', reject: 'Reject' }
+
+// Shown in the pane. A stale plugin.js is otherwise invisible: this pane looked
+// broken for hours because the renderer had loaded the previous build.
+const VERSION = '0.1.4'
 
 /** The three entry points spec-kit documents, in its own words. */
 const PROCESS_COPY = [
@@ -960,6 +965,7 @@ function SpecKitPane() {
       jsx(ProcessChoice, { processes, onPick: pickProcess, onInstall: installExtension, error, busy }),
       jsxs('div', { className: 'flex items-center justify-between gap-2 border-t sk-border pt-2', children: [
         jsx('span', { className: 'sk-truncate sk-tiny sk-faint sk-mono', children: folder }),
+        jsx('span', { className: 'sk-tiny sk-faint shrink-0', children: `v${VERSION}` }),
         jsx(Button, { size: 'xs', variant: 'ghost', onClick: () => setFolder(''), children: 'Change folder' })
       ] })
     ] })
