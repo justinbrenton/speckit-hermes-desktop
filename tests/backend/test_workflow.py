@@ -1782,3 +1782,59 @@ def test_the_slot_stays_taken_until_the_kill_finishes(client, project, monkeypat
         worker.join(10)
         plugin_api.ACTIVE_RUNS.clear()
         plugin_api.JOBS.clear()
+
+
+def test_stopping_an_old_run_does_not_cancel_a_startup(client, project, monkeypatch):
+    """A state file on disk is not proof that a reservation owns that run."""
+    import threading
+
+    class Proc:
+        pid = 9090
+
+        def __init__(self):
+            self.killed = False
+
+        def poll(self):
+            return None
+
+        def kill(self):
+            self.killed = True
+
+    proc = Proc()
+    old = project / ".specify" / "workflows" / "runs" / "old"
+    old.mkdir(parents=True, exist_ok=True)
+    (old / "state.json").write_text(json.dumps({"status": "completed"}), encoding="utf-8")
+
+    entered = threading.Event()
+    release = threading.Event()
+
+    def job(args, cwd, timeout=None):
+        plugin_api.JOBS["s2"] = {"proc": proc, "id": "s2", "cwd": str(cwd), "argv": args}
+        return {"job_id": "s2", "id": "s2", "pid": 9090, "stdout_file": ""}
+
+    def blocked_await(root_, before, timeout=25.0):
+        entered.set()
+        assert release.wait(5), "the dispatcher never resumed"
+        return None
+
+    monkeypatch.setattr(plugin_api, "_start_job", job)
+    monkeypatch.setattr(plugin_api, "_await_new_run", blocked_await)
+    plugin_api.ACTIVE_RUNS.clear()
+    plugin_api.JOBS.clear()
+
+    worker = threading.Thread(target=lambda: client.post(
+        f"{PREFIX}/workflows/bugfix/run", json={"cwd": str(project), "inputs": {"report": "x"}}))
+    worker.start()
+    try:
+        assert entered.wait(5), "the dispatcher never ran"
+        body = client.post(f"{PREFIX}/workflows/bugfix/runs/old/stop", json={"cwd": str(project)}).json()
+        assert body["stopped"] is False, f"stopping a historical run touched the startup: {body}"
+        assert proc.killed is False, "the starting process was killed by an unrelated stop"
+        with plugin_api.ACTIVE_LOCK:
+            assert plugin_api._active_key(project, "bugfix") in plugin_api.ACTIVE_RUNS, "the reservation was released"
+    finally:
+        release.set()
+        worker.join(10)
+        plugin_api.ACTIVE_RUNS.clear()
+        plugin_api.JOBS.clear()
+

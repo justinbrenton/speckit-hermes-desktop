@@ -1170,6 +1170,12 @@ def workflow_run(process: str, payload: WorkflowRunRequest) -> dict[str, Any]:
     args.append("--json")
     key, token = _reserve_run(root, process)
     before = _run_ids(root)
+    # Which runs already existed when this reservation was made: a stop one second
+    # later must not confuse a historical run with the one being dispatched now.
+    with ACTIVE_LOCK:
+        entry = ACTIVE_RUNS.get(key)
+        if entry is not None and entry.get("token") == token:
+            entry["before_ids"] = set(before)
     before_artifacts = _artifact_index(root)
     try:
         job = _start_job(args, root, max(30, min(payload.timeout, SPECIFY_TIMEOUT_MAX)))
@@ -1256,9 +1262,10 @@ def stop_run(process: str, run_id: str, payload: WorkflowResumeRequest) -> dict[
             if entry.get("run_id") == run_id:
                 owned = entry
             elif entry.get("kind") == "starting" and entry.get("run_id") is None:
-                # The dispatcher has not recorded an id yet, but the run it created
-                # may already exist on disk. That is this reservation's run.
-                if _run_state_status(root, run_id) is not None:
+                # The dispatcher has not recorded an id yet. A run that did not exist
+                # when this reservation was made is the one it created; a run that
+                # predates it is somebody's old run and must be left alone.
+                if run_id not in (entry.get("before_ids") or set()) and _run_state_status(root, run_id) is not None:
                     owned = entry
                     startup = True
         if owned is not None:
