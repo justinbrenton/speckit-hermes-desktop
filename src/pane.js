@@ -389,24 +389,27 @@ const PATHS = [
   }
 ]
 
-function PathChoice({ onPick, busy }) {
-  return jsxs('div', { className: 'flex flex-col gap-2', children: [
-    jsx('p', { className: 'sk-small sk-medium', children: 'Which approach?' }),
-    jsx('p', { className: 'sk-tiny sk-dim', children: 'Both run the same process. The full path adds clarify, checklist and analyze.' }),
-    ...PATHS.map(path => jsxs('div', {
-      role: 'button',
-      tabIndex: 0,
-      onClick: () => { if (!busy) onPick(path.id) },
-      className: 'flex cursor-pointer flex-col gap-1 rounded border sk-border p-2 hover:sk-accent',
-      children: [
-        jsxs('span', { className: 'flex items-center gap-2', children: [
-          jsx('span', { className: 'sk-body sk-medium', children: path.title }),
-          jsx(Badge, { variant: 'secondary', children: path.id })
-        ] }),
-        jsx('span', { className: 'sk-small sk-faint', children: path.for }),
-        jsx('span', { className: 'sk-tiny sk-faint', children: path.steps.join(' → ') })
-      ]
-    }, path.id))
+function PathChoice({ onPick, busy, selected }) {
+  return jsxs('div', { className: 'sk-frame flex flex-col', children: [
+    jsx('p', { className: 'sk-small sk-medium p-3 border-b sk-border', children: 'Which approach?' }),
+    jsx('p', { className: 'sk-tiny sk-dim px-3 py-2', children: 'Both run the same process. The full path adds clarify, checklist and analyze.' }),
+    ...PATHS.map(path => {
+      const isSelected = selected === path.id
+      return jsx('button', {
+        type: 'button',
+        disabled: busy,
+        onClick: () => { if (!busy) onPick(path.id) },
+        className: 'sk-choice flex flex-col gap-1 px-3 py-2 text-left' + (isSelected ? ' bg-[var(--ui-row-hover-background,#2a2f36)]' : ''),
+        children: [
+          jsxs('span', { className: 'flex min-w-0 items-baseline gap-2', children: [
+            jsx('span', { className: 'sk-truncate sk-body sk-medium', children: path.title }),
+            isSelected ? jsx('span', { className: 'sk-pill sk-pill-ready ml-auto shrink-0', children: 'selected' }) : null
+          ] }),
+          jsx('span', { className: 'sk-small sk-faint', children: path.for }),
+          jsx('span', { className: 'sk-tiny sk-faint', children: path.steps.join(' → ') })
+        ]
+      }, path.id)
+    })
   ] })
 }
 
@@ -992,6 +995,7 @@ function SpecKitPane() {
       ? (process.id === 'speckit' && !pathChosen
           ? jsx(PathChoice, {
               busy,
+              selected: mode,
               onPick: async choice => {
               setMode(choice)
               setPathChosen(true)
