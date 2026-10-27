@@ -206,12 +206,12 @@ function ProcessChoice({ processes, onPick, onInstall, error, busy }) {
     return rank(a.id) - rank(b.id)
   })
   const STATUS = {
-    ready: ['sk-pill-ready', 'Ready'],
-    setup: ['sk-pill-setup', 'Sets up on first run'],
-    missing: ['sk-pill-missing', 'Needs an extension'],
-    broken: ['sk-pill-missing', 'Commands missing'],
-    absent: ['sk-pill-missing', 'Not available here']
-  }
+      ready: ['sk-pill-ready', 'Ready'],
+      setup: ['sk-pill-setup', 'Sets up on first run'],
+      missing: ['sk-pill-missing', 'Needs an extension'],
+      broken: ['sk-pill-broken', 'Commands missing'],
+      absent: ['sk-pill-absent', 'Not available here']
+    }
   return jsxs('div', { className: 'sk-root flex h-full flex-col gap-3 p-3', children: [
     jsx('h2', { className: 'sk-body sk-medium', children: 'Choose your process' }),
     jsx('p', { className: 'sk-small sk-dim', children: 'Each one is its own workflow, not a phase of the others.' }),
