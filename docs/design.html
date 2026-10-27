@@ -330,7 +330,7 @@ specify bundle add    --dev ./bundles/hermes-desktop</code></pre>
 </ul>
 <p>ran, and a pre-commit hook runs it.</p>
 <ul>
-<li>52 node tests, and 129 backend tests: 124 that need only FastAPI and 5 that need Hermes.</li>
+<li>52 node tests, and 147 backend tests: 142 that need only FastAPI and 5 that need Hermes.</li>
 </ul>
 <p>Next, in the order I would do them:</p>
 <ol>
@@ -390,7 +390,7 @@ specify bundle add    --dev ./bundles/hermes-desktop</code></pre>
 <tr><td>The deployed plugin matches the build</td><td><code>cmp desktop/plugin.js ~/.hermes/desktop-plugins/spec-kit-hermes/plugin.js</code></td><td>identical</td></tr>
 <tr><td>The config edit adds one line, not a duplicate key</td><td>feed the live <code>config.yaml</code> through <code>config-enable.mjs</code></td><td>1 line added, <code>plugins.enabled</code> contains <code>spec-kit-hermes</code> once, file parses</td></tr>
 <tr><td>Backend half is installed</td><td><code>ls ~/.hermes/plugins/spec-kit-hermes/dashboard/</code></td><td><code>plugin_api.py</code>, <code>manifest.json</code>, <code>index.js</code></td></tr>
-<tr><td>Backend tests pass</td><td><code>python -m pytest tests/backend -q -m &quot;not hermes&quot;</code></td><td>124 passed, 5 deselected; the 5 need Hermes and run in their own CI job</td></tr>
+<tr><td>Backend tests pass</td><td><code>python -m pytest tests/backend -q -m &quot;not hermes&quot;</code></td><td>142 passed, 5 deselected; the 5 need Hermes and run in their own CI job</td></tr>
 <tr><td>Process discovery is data-driven</td><td><code>tests/backend/test_processes.py</code></td><td>a bugfix workflow becomes inputs + command steps + a gate; skills resolved and flagged</td></tr>
 <tr><td>A gate pauses and resumes</td><td><code>POST /run</code> then <code>POST /runs/&lt;id&gt;/resume</code> with <code>gate_review_spec=approve</code></td><td>paused at review-spec; <code>choice= approve</code>; engine ran <code>plan</code> and paused at review-plan</td></tr>
 <tr><td>Artifacts are listed and readable</td><td><code>GET /artifacts</code>, <code>GET /artifact</code></td><td>7 artifacts in the demo project, <code>spec.md</code> read back at 1,829 chars</td></tr>

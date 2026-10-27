@@ -635,8 +635,25 @@ def _output_check(root: Path, run_id: str) -> dict[str, Any]:
     }
 
 
-#: (cwd, process) currently holding a run, so two Starts cannot race.
-ACTIVE_RUNS: dict[tuple[str, str], dict[str, Any]] = {}
+#: (cwd, process) currently holding a run, so two Starts cannot race.# ---------------------------------------------------------------------------
+# Run admission: one run per project, as one explicit state machine
+#
+#   (none) --admit_start--> starting --claim--> running --begin_stop--> stopping
+#                                |                                   |
+#                                +--release (dispatch failed)--------+--> (none)
+#
+# Rules that make it hold together:
+#   * every transition happens under ACTIVE_LOCK, so no two requests interleave
+#   * a slot in `starting` or `stopping` occupies the project: nothing else may
+#     admit, and the reaper never clears it
+#   * every admission carries a token; only the owner may claim, release or stop
+# ---------------------------------------------------------------------------
+
+#: project key -> the one run occupying it. A tuple key keeps it a dict, which the
+#: tests and the stop path both reach into.
+ACTIVE_RUNS: dict[tuple[str], dict[str, Any]] = {}
+ACTIVE_LOCK = threading.RLock()
+_TOKENS = itertools.count(1)
 
 
 def _run_state_status(root: Path, run_id: str) -> Optional[str]:
@@ -652,159 +669,210 @@ def _run_state_status(root: Path, run_id: str) -> Optional[str]:
 #: process in that window kills the step that just started, so wait it out.
 GATE_TAKEOVER_GRACE = 20.0
 
-
-def _admit_resume(root: Path, process: str, run_id: str) -> tuple[tuple[str], int]:
-    """Decide whether this resume may run, and claim the slot if so.
-
-    Same check-and-claim problem as a start, plus a takeover: answering the gate of
-    a run whose dispatched process is still alive means killing that process first.
-    """
-    key = _active_key(root, process)
-    with ACTIVE_LOCK:
-        _release_finished_jobs()
-        if key in ACTIVE_RUNS:
-            # A job parked at a gate can still be alive for a moment after the state
-            # file says paused. That process has nothing left to do: the run is on
-            # disk, so answering the gate now is safe and must not be refused.
-            entry = ACTIVE_RUNS[key]
-            if entry.get("kind") == "starting":
-                # Another request is mid-dispatch. Taking over now would start a
-                # second job behind it.
-                raise HTTPException(
-                    status_code=409,
-                    detail=f"a {process} run is already starting in this project",
-                )
-            age = time.time() - float(entry.get("started_at") or 0)
-            # Only a *resume* can be the step a second answer would kill. A fresh run
-            # that parked quickly must be answerable at once.
-            just_answered = entry.get("kind") == "resume" and age <= GATE_TAKEOVER_GRACE
-            # And the active job must be the run being answered: naming an older run
-            # must not kill whatever newer run is in flight.
-            same_run = str(entry.get("run_id") or "") == run_id
-            if _run_state_status(root, run_id) == "paused" and same_run and not just_answered:
-                parked = ACTIVE_RUNS.pop(key, {})
-                proc = parked.get("proc")
-                if proc is not None and proc.poll() is None:
-                    try:
-                        proc.kill()
-                    except OSError:
-                        pass
-            else:
-                raise HTTPException(
-                    status_code=409,
-                    detail=f"a {process} run is already in progress in this project",
-                )
-        token = _reservation_token()
-        ACTIVE_RUNS[key] = {
-            "proc": None,
-            "run_id": run_id,
-            "process": _canonical_process(process),
-            "kind": "starting",
-            "intent": "resume",
-            "token": token,
-            "started_at": time.time(),
-        }
-    return key, token
-
-
-def _release_reservation(key: tuple[str], token: int) -> None:
-    """Drop a reservation we still own, and nothing else.
-
-    A dispatch that fails must free the slot — but only if the slot is still ours.
-    If it was stopped and re-claimed while we were starting, the entry belongs to
-    that newer run, and popping it would untrack a live process.
-    """
-    with ACTIVE_LOCK:
-        if (ACTIVE_RUNS.get(key) or {}).get("token") == token:
-            ACTIVE_RUNS.pop(key, None)
-
-
-def _claim_dispatch(key: tuple[str], token: int, job: dict[str, Any], run_id: Optional[str], kind: str, process: str) -> None:
-    """Turn a reservation into the live entry, unless someone cancelled it.
-
-    Between reserving the slot and finishing the dispatch, a stop can remove the
-    reservation and another start can claim the slot. Overwriting that newer entry
-    here would leave the new run untracked, so the token decides.
-    """
-    with ACTIVE_LOCK:
-        current = ACTIVE_RUNS.get(key)
-        # A stop marks the entry cancelled before removing it: either way this
-        # dispatch must not be registered or left running.
-        if current is None or current.get("token") != token or current.get("cancelled"):
-            cancelled = True
-        else:
-            cancelled = False
-            ACTIVE_RUNS[key] = {
-                "proc": JOBS.get(job["job_id"], {}).get("proc"),
-                "run_id": run_id,
-                "process": _canonical_process(process),
-                "kind": kind,
-                "token": token,
-                "started_at": time.time(),
-            }
-    if cancelled:
-        entry = JOBS.get(job["job_id"], {})
-        proc = entry.get("proc")
-        if proc is not None and proc.poll() is None:
-            try:
-                proc.kill()
-            except OSError:
-                pass
-        raise HTTPException(
-            status_code=409,
-            detail="the run was stopped before it started",
-        )
-
-
-def _reserve_run(root: Path, process: str) -> tuple[tuple[str], int]:
-    """Claim this project's single run slot, or refuse.
-
-    Reading "is a run live?" and recording "this run is live" must happen under one
-    lock. Without it two requests that arrive together both see an empty slot, both
-    dispatch, and one of the two runs is left executing with nothing tracking it.
-    """
-    key = _active_key(root, process)
-    with ACTIVE_LOCK:
-        _release_finished_jobs()
-        if key in ACTIVE_RUNS:
-            running = ACTIVE_RUNS[key].get("process") or "another process"
-            raise HTTPException(
-                status_code=409,
-                detail=f"a run of {running} is already in progress in this project",
-            )
-        token = _reservation_token()
-        ACTIVE_RUNS[key] = {
-            "proc": None,
-            "run_id": None,
-            "process": _canonical_process(process),
-            "kind": "starting",
-            "intent": "run",
-            "token": token,
-            "started_at": time.time(),
-        }
-    return key, token
+#: States that occupy the project and are never reaped on their own.
+HELD_STATES = ("starting", "stopping")
 
 
 def _active_key(root: Path, process: str = "") -> tuple[str]:
-    """One live run per project, not per process.
-
-    Two workflows writing artifacts into the same `.specify/` tree at once is what
-    the documented rule forbids, and a per-process key allowed exactly that.
-    """
+    """The slot key. One run per project, whatever process asks."""
     return (str(root).lower(),)
 
 
+def _slot(root: Path) -> Optional[dict[str, Any]]:
+    return ACTIVE_RUNS.get(_active_key(root))
+
+
+def _alive(proc: Any) -> bool:
+    return proc is not None and proc.poll() is None
+
+
+def _kill_proc(proc: Any) -> Optional[int]:
+    """Terminate a dispatched process' tree. Returns its pid, or None."""
+    if not _alive(proc):
+        return None
+    pid = proc.pid
+    try:
+        if os.name == "nt":
+            # taskkill takes the whole tree, which is what a CLI that spawned
+            # helpers needs; fall back to the handle if it is somehow still alive.
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], capture_output=True, timeout=30)
+            if _alive(proc):
+                proc.kill()
+        else:
+            proc.kill()
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return pid
+
+
+def _reap() -> None:
+    """Forget runs whose process is gone. Held states are left to their owner."""
+    with ACTIVE_LOCK:
+        for key, entry in list(ACTIVE_RUNS.items()):
+            if entry.get("state") in HELD_STATES:
+                continue
+            if not _alive(entry.get("proc")):
+                ACTIVE_RUNS.pop(key, None)
+
+
 def _release_finished_jobs() -> None:
-    for key, entry in list(ACTIVE_RUNS.items()):
-        if entry.get("kind") in {"starting", "stopping"}:
-            # Reserved but nothing dispatched yet, or being killed right now: the
-            # slot must stay occupied until the request that owns it says otherwise.
-            # A pending resume is a reservation too: reaping it here let a second
-            # answer dispatch while the first was still starting.
-            continue
-        proc = entry.get("proc")
-        if proc is None or proc.poll() is not None:
-            ACTIVE_RUNS.pop(key, None)
+    """Old name for the reaper; kept because the endpoints call it."""
+    _reap()
+
+
+def _conflict(root: Path, detail: Optional[str] = None) -> HTTPException:
+    entry = _slot(root) or {}
+    running = entry.get("process") or "another process"
+    return HTTPException(
+        status_code=409,
+        detail=detail or f"a run of {running} is already in progress in this project",
+    )
+
+
+def _admit_start(root: Path, process: str) -> int:
+    """Claim the project for a new run. Raises 409 if anything occupies it."""
+    with ACTIVE_LOCK:
+        _reap()
+        if _slot(root) is not None:
+            raise _conflict(root)
+        token = next(_TOKENS)
+        ACTIVE_RUNS[_active_key(root)] = {
+            "state": "starting",
+            "token": token,
+            "process": _canonical_process(process),
+            "run_id": None,
+            "kind": "run",
+            "proc": None,
+            "job_id": None,
+            "before_ids": set(),
+            "cancelled": False,
+            "started_at": time.time(),
+        }
+        return token
+
+
+def _note_before(root: Path, token: int, before: set[str]) -> None:
+    """Remember which runs already existed, so a later stop can tell them apart."""
+    with ACTIVE_LOCK:
+        entry = _slot(root)
+        if entry is not None and entry.get("token") == token:
+            entry["before_ids"] = set(before)
+
+
+def _attach_job(root: Path, token: int, job: dict[str, Any]) -> None:
+    """Attach the dispatched process before the run id is known."""
+    with ACTIVE_LOCK:
+        entry = _slot(root)
+        if entry is not None and entry.get("token") == token:
+            entry["proc"] = (JOBS.get(job.get("job_id", "")) or {}).get("proc")
+            entry["job_id"] = job.get("job_id")
+
+
+def _claim(root: Path, token: int, run_id: Optional[str], kind: str, process: str) -> None:
+    """Turn the reservation into the running entry, unless it was cancelled."""
+    with ACTIVE_LOCK:
+        entry = _slot(root)
+        if entry is None or entry.get("token") != token or entry.get("cancelled"):
+            # Someone stopped this run, or the slot moved on. Kill what we started
+            # and say so, rather than registering a run nobody is tracking.
+            _kill_proc((entry or {}).get("proc"))
+            raise HTTPException(status_code=409, detail="the run was stopped before it started")
+        entry["state"] = "running"
+        entry["run_id"] = run_id
+        entry["kind"] = kind
+        entry["process"] = _canonical_process(process)
+        entry["started_at"] = time.time()
+
+
+def _admit_resume(root: Path, process: str, run_id: str) -> int:
+    """Claim the project for a resume, taking over the parked run if that is what it is."""
+    with ACTIVE_LOCK:
+        _reap()
+        entry = _slot(root)
+        if entry is not None:
+            state = entry.get("state") or "running"
+            if state == "starting":
+                raise _conflict(root, f"a {process} run is already starting in this project")
+            if state == "stopping":
+                raise _conflict(root, f"a {process} run is already stopping in this project")
+            if str(entry.get("run_id") or "") != run_id:
+                raise _conflict(root)
+            age = time.time() - float(entry.get("started_at") or 0)
+            if entry.get("kind") == "resume" and age <= GATE_TAKEOVER_GRACE:
+                # The step we just started is still alive; answering again would
+                # kill it. Wait for it.
+                raise _conflict(root)
+            if _run_state_status(root, run_id) != "paused":
+                raise _conflict(root)
+            # Parked: the dispatched process has nothing left to do, so end it and
+            # reuse the slot for the resume.
+            _kill_proc(entry.get("proc"))
+            entry.update(
+                state="starting",
+                token=next(_TOKENS),
+                proc=None,
+                job_id=None,
+                kind="resume",
+                cancelled=False,
+                started_at=time.time(),
+            )
+            return entry["token"]
+        token = next(_TOKENS)
+        ACTIVE_RUNS[_active_key(root)] = {
+            "state": "starting",
+            "token": token,
+            "process": _canonical_process(process),
+            "run_id": run_id,
+            "kind": "resume",
+            "proc": None,
+            "job_id": None,
+            "before_ids": set(),
+            "cancelled": False,
+            "started_at": time.time(),
+        }
+        return token
+
+
+def _release(root: Path, token: int) -> None:
+    """Free the slot after a dispatch that never happened — if it is still ours."""
+    with ACTIVE_LOCK:
+        entry = _slot(root)
+        if entry is not None and entry.get("token") == token:
+            ACTIVE_RUNS.pop(_active_key(root), None)
+
+
+def _begin_stop(root: Path, run_id: str) -> tuple[Optional[dict[str, Any]], Any]:
+    """Mark the named run as stopping and hand back the process to kill.
+
+    Returns (entry, proc). entry is None when this project has no run matching the
+    id, which is the case the caller answers with ``stopped: False``.
+    """
+    with ACTIVE_LOCK:
+        entry = _slot(root)
+        if entry is None:
+            return None, None
+        state = entry.get("state") or "running"
+        owned = False
+        if str(entry.get("run_id") or "") == run_id:
+            owned = True
+        elif state == "starting" and entry.get("run_id") is None:
+            # The dispatcher has not recorded an id yet. Only a run that did not
+            # exist when this reservation was made can be the one it created.
+            if run_id not in (entry.get("before_ids") or set()) and _run_state_status(root, run_id) is not None:
+                owned = True
+        if not owned:
+            return None, None
+        entry["cancelled"] = True
+        if state != "starting":
+            entry["state"] = "stopping"
+        return entry, entry.get("proc")
+
+
+def _end_stop(root: Path, entry: dict[str, Any]) -> None:
+    """Release the slot once the kill has been attempted."""
+    with ACTIVE_LOCK:
+        if _slot(root) is entry:
+            ACTIVE_RUNS.pop(_active_key(root), None)
 
 
 def _run_ids(root: Path) -> set[str]:
@@ -1168,28 +1236,17 @@ def workflow_run(process: str, payload: WorkflowRunRequest) -> dict[str, Any]:
         if value is not None and str(value) != "":
             args += ["-i", f"{key}={value}"]
     args.append("--json")
-    key, token = _reserve_run(root, process)
+
+    token = _admit_start(root, process)
     before = _run_ids(root)
-    # Which runs already existed when this reservation was made: a stop one second
-    # later must not confuse a historical run with the one being dispatched now.
-    with ACTIVE_LOCK:
-        entry = ACTIVE_RUNS.get(key)
-        if entry is not None and entry.get("token") == token:
-            entry["before_ids"] = set(before)
+    _note_before(root, token, before)
     before_artifacts = _artifact_index(root)
     try:
         job = _start_job(args, root, max(30, min(payload.timeout, SPECIFY_TIMEOUT_MAX)))
-        # Attach the process now: the run id is not known until the state file
-        # appears, and a stop arriving in between still has to reach this job.
-        with ACTIVE_LOCK:
-            entry = ACTIVE_RUNS.get(key)
-            if entry is not None and entry.get("token") == token:
-                entry["proc"] = JOBS.get(job["job_id"], {}).get("proc")
-                entry["job_id"] = job["job_id"]
+        _attach_job(root, token, job)
         run_id = _await_new_run(root, before)
     except BaseException:
-        # Nothing was dispatched, so the reservation must not outlive the request.
-        _release_reservation(key, token)
+        _release(root, token)
         raise
     if run_id:
         try:
@@ -1197,7 +1254,7 @@ def workflow_run(process: str, payload: WorkflowRunRequest) -> dict[str, Any]:
             _snapshot_file(root, run_id).write_text(json.dumps(before_artifacts), encoding="utf-8")
         except OSError:
             pass
-    _claim_dispatch(key, token, job, run_id, "run", process)
+    _claim(root, token, run_id, "run", process)
     return {
         "process": process,
         "run_id": run_id,
@@ -1206,7 +1263,6 @@ def workflow_run(process: str, payload: WorkflowRunRequest) -> dict[str, Any]:
         "running": True,
         "stdout_file": job["stdout_file"],
     }
-
 
 
 @router.get("/workflows")
@@ -1228,15 +1284,16 @@ def workflow_resume(process: str, run_id: str, payload: WorkflowResumeRequest) -
         if value is not None and str(value) != "":
             args += ["-i", f"{key}={value}"]
     args.append("--json")
-    key, token = _admit_resume(root, process, run_id)
+
+    token = _admit_resume(root, process, run_id)
     _write_snapshot(root, run_id)
     try:
         job = _start_job(args, root, max(30, min(payload.timeout, SPECIFY_TIMEOUT_MAX)))
+        _attach_job(root, token, job)
     except BaseException:
-        # Nothing was dispatched, so the reservation must not outlive the request.
-        _release_reservation(key, token)
+        _release(root, token)
         raise
-    _claim_dispatch(key, token, job, run_id, "resume", process)
+    _claim(root, token, run_id, "resume", process)
     return {"process": process, "run_id": run_id, "job_id": job["job_id"], "running": True}
 
 
@@ -1248,33 +1305,12 @@ def stop_run(process: str, run_id: str, payload: WorkflowResumeRequest) -> dict[
     if not RUN_ID_RE.fullmatch(run_id or ""):
         raise HTTPException(status_code=400, detail=f"invalid run id: {run_id!r}")
 
-    key = _active_key(root, process)
+    # The slot is released only after the kill is attempted, so a start that arrives
+    # mid-kill still sees the project as occupied.
+    entry, proc = _begin_stop(root, run_id)
     killed: list[int] = []
-    startup = False
 
-    # Claim the right to stop first, then kill, then free the slot. Freeing the slot
-    # before the process is dead lets a start claim it and run alongside the one
-    # still being killed.
-    with ACTIVE_LOCK:
-        entry = ACTIVE_RUNS.get(key)
-        owned = None
-        if entry is not None:
-            if entry.get("run_id") == run_id:
-                owned = entry
-            elif entry.get("kind") == "starting" and entry.get("run_id") is None:
-                # The dispatcher has not recorded an id yet. A run that did not exist
-                # when this reservation was made is the one it created; a run that
-                # predates it is somebody's old run and must be left alone.
-                if run_id not in (entry.get("before_ids") or set()) and _run_state_status(root, run_id) is not None:
-                    owned = entry
-                    startup = True
-        if owned is not None:
-            owned["cancelled"] = True
-            if not startup:
-                owned["kind"] = "stopping"
-        tracked = (owned or {}).get("proc")
-
-    targets = [tracked] if tracked is not None else [
+    targets = [proc] if proc is not None else [
         job.get("proc")
         for job in list(JOBS.values())
         if job.get("proc") is not None
@@ -1282,23 +1318,13 @@ def stop_run(process: str, run_id: str, payload: WorkflowResumeRequest) -> dict[
         and run_id in " ".join(job.get("argv") or [])
     ]
 
-    for proc in targets:
-        if proc is None or proc.poll() is not None:
-            continue
-        pid = proc.pid
-        try:
-            if os.name == "nt":
-                subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], capture_output=True, timeout=30)
-            else:
-                proc.kill()
+    for target in targets:
+        pid = _kill_proc(target)
+        if pid is not None:
             killed.append(pid)
-        except (OSError, subprocess.SubprocessError):
-            continue
 
-    with ACTIVE_LOCK:
-        current = ACTIVE_RUNS.get(key)
-        if current is not None and current is owned:
-            ACTIVE_RUNS.pop(key, None)
+    if entry is not None:
+        _end_stop(root, entry)
     return {"run_id": run_id, "stopped": bool(killed), "pids": killed}
 
 
