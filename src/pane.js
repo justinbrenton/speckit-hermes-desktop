@@ -46,36 +46,52 @@ function __str(x) {
  *  sources used them. These classes bind to the app's theme variables instead,
  *  so the pane follows whatever theme is set in Settings. */
 const SK_CSS = `
-.sk-root { color: var(--ui-text-primary, var(--foreground)); font-size: 12px; }
-.sk-ink { color: var(--ui-text-primary, var(--foreground)); }
-.sk-dim { color: var(--ui-text-secondary, var(--muted-foreground)); }
-.sk-faint { color: var(--ui-text-tertiary, var(--muted-foreground)); opacity: .85; }
-.sk-err { color: var(--ui-danger, #e5484d); }
-.sk-ok { color: var(--ui-success, #30a46c); }
+/* Tokens: the desktop app defines --ui-* (text, bg, accent, green, orange, red,
+   row-hover-background) plus --color-border and --color-destructive. It does not
+   define --ui-border, --border, --card, --primary or --muted-foreground, and a
+   var() chain whose every link is undefined drops the declaration silently, so
+   every colour below ends in a literal. */
+.sk-root { color: var(--ui-text-primary, #e7e9ec); font-size: 12px; }
+.sk-ink { color: var(--ui-text-primary, #e7e9ec); }
+.sk-dim { color: var(--ui-text-secondary, #9aa2ae); }
+.sk-faint { color: var(--ui-text-tertiary, #6f767f); opacity: .85; }
+.sk-err { color: var(--color-destructive, #e5484d); }
+.sk-ok { color: var(--ui-green, #30a46c); }
 .sk-body { font-size: 13px; }
 .sk-small { font-size: 11px; }
 .sk-tiny { font-size: 10px; }
 .sk-medium { font-weight: 500; }
-.sk-mono { font-family: var(--ui-sk-mono, ui-monospace, SFMono-Regular, Menlo, monospace); }
-.sk-panel { background: var(--ui-bg-tertiary, var(--card)); }
-.sk-card { background: var(--ui-bg-card, var(--card)); }
-.sk-border { border-color: var(--ui-border, var(--border)); }
-.sk-border-b { border-bottom: 1px solid var(--ui-border, var(--border)); }
-.sk-border-t { border-top: 1px solid var(--ui-border, var(--border)); }
-.sk-accent { border-color: var(--ui-accent, var(--primary)); }
-.sk-accent-bg { background: var(--ui-accent, var(--primary)); }
-.sk-hr { height: 1px; background: var(--ui-border, var(--border)); }
+.sk-mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.sk-panel { background: var(--ui-bg-tertiary, #1a1e24); }
+.sk-card { background: var(--ui-bg-card, #191d24); }
+.sk-border { border-color: var(--color-border, #343a41); }
+.sk-border-b { border-bottom: 1px solid var(--color-border, #343a41); }
+.sk-border-t { border-top: 1px solid var(--color-border, #343a41); }
+.sk-accent { border-color: var(--ui-accent, #6ea8fe); }
+.sk-accent-bg { background: var(--ui-accent, #6ea8fe); }
+.sk-hr { height: 1px; background: var(--color-border, #343a41); }
 .sk-truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.sk-bar { height: 4px; border-radius: 999px; overflow: hidden; background: var(--ui-bg-tertiary, var(--card)); }
-.sk-bar-fill { height: 100%; border-radius: 999px; background: var(--ui-accent, var(--primary)); transition: width .2s ease; }
-.sk-hover:hover { background: var(--ui-bg-tertiary, var(--card)); }
-.sk-card-btn { cursor: pointer; transition: border-color .15s ease, background .15s ease; }
-.sk-card-btn:hover { border-color: var(--ui-accent, var(--primary)); }
-.sk-card-btn:focus-visible { outline: 2px solid var(--ui-accent, var(--primary)); outline-offset: 2px; }
-.sk-pill { display: inline-flex; align-items: center; padding: 1px 6px; border-radius: 999px; font-size: 10px; font-weight: 500; white-space: nowrap; }
-.sk-pill-ready { color: var(--ui-success, #30a46c); box-shadow: inset 0 0 0 1px var(--ui-success, #30a46c); }
-.sk-pill-setup { color: var(--ui-text-secondary, var(--muted-foreground)); box-shadow: inset 0 0 0 1px var(--ui-border, var(--border)); }
-.sk-pill-missing { color: var(--ui-danger, #e5484d); box-shadow: inset 0 0 0 1px var(--ui-danger, #e5484d); }
+.sk-bar { height: 4px; border-radius: 999px; overflow: hidden; background: var(--ui-bg-tertiary, #1a1e24); }
+.sk-bar-fill { height: 100%; border-radius: 999px; background: var(--ui-accent, #6ea8fe); transition: width .2s ease; }
+/* Hover on generic rows (browser, artifacts) — explicit fallback, no var dependency */
+.sk-root .sk-hover:hover { background: #2a2f36; }
+/* Choice list rows: fill + 2px accent edge, explicit colours so hover never disappears */
+.sk-root .sk-choice { cursor: pointer; border-left: 2px solid transparent; transition: background .12s ease, border-color .12s ease; }
+.sk-root .sk-choice:hover { background: #2a2f36; border-left-color: #6ea8fe; }
+.sk-root .sk-choice:focus-visible { outline: 2px solid #6ea8fe; outline-offset: -2px; }
+/* Non-runnable rows are plain divs, not buttons — no pointer/hover cue */
+.sk-root .sk-choice:not(button) { cursor: default; }
+.sk-root .sk-choice:not(button):hover { background: transparent; border-left-color: transparent; }
+.sk-root .sk-choice + .sk-choice { border-top: 1px solid var(--color-border, #343a41); }
+.sk-frame { border: 1px solid var(--color-border, #343a41); border-radius: 6px; overflow: hidden; }
+/* Status is a dot and a word: legible at 10px and it cannot be mistaken for a button. */
+.sk-pill { display: inline-flex; align-items: center; gap: 5px; font-size: 10px; font-weight: 500; white-space: nowrap; color: var(--ui-text-secondary, #9aa2ae); }
+.sk-pill::before { content: ''; width: 5px; height: 5px; border-radius: 50%; background: currentColor; flex: none; }
+.sk-pill-ready { color: var(--ui-green, #30a46c); }
+.sk-pill-setup { color: var(--ui-orange, #e0a458); }
+.sk-pill-missing { color: var(--ui-text-tertiary, #6f767f); }
+.sk-pill-broken { color: var(--color-destructive, #e5484d); }
+.sk-pill-absent { color: var(--ui-text-tertiary, #6f767f); }
 .sk-click { cursor: pointer; }
 .sk-fade { opacity: .55; }
 `
@@ -122,6 +138,10 @@ function titleCase(id) {
 }
 
 const GATE_LABELS = { approve: 'Approve', reject: 'Reject' }
+
+// Shown in the pane. A stale plugin.js is otherwise invisible: this pane looked
+// broken for hours because the renderer had loaded the previous build.
+const VERSION = '0.1.4'
 
 /** The three entry points spec-kit documents, in its own words. */
 const PROCESS_COPY = [
@@ -186,19 +206,19 @@ function ProcessChoice({ processes, onPick, onInstall, error, busy }) {
     return rank(a.id) - rank(b.id)
   })
   const STATUS = {
-    ready: ['sk-pill-ready', 'Ready'],
-    setup: ['sk-pill-setup', 'Sets up on first run'],
-    missing: ['sk-pill-missing', 'Needs an extension'],
-    broken: ['sk-pill-missing', 'Commands missing'],
-    absent: ['sk-pill-missing', 'Not available here']
-  }
+      ready: ['sk-pill-ready', 'Ready'],
+      setup: ['sk-pill-setup', 'Sets up on first run'],
+      missing: ['sk-pill-missing', 'Needs an extension'],
+      broken: ['sk-pill-broken', 'Commands missing'],
+      absent: ['sk-pill-absent', 'Not available here']
+    }
   return jsxs('div', { className: 'sk-root flex h-full flex-col gap-3 p-3', children: [
     jsx('h2', { className: 'sk-body sk-medium', children: 'Choose your process' }),
-    jsx('p', { className: 'sk-small sk-dim', children: 'Three ways into spec-kit. Each one is its own workflow, not a phase of the others.' }),
+    jsx('p', { className: 'sk-small sk-dim', children: 'Each one is its own workflow, not a phase of the others.' }),
     error ? jsx('p', { className: 'sk-small sk-err', children: error }) : null,
     jsx(ScrollArea, { className: 'min-h-0 flex-1', children:
       cards.length
-        ? jsx('div', { className: 'flex flex-col gap-2', children: cards.map(entry => {
+        ? jsx('div', { className: 'sk-frame flex flex-col', children: cards.map(entry => {
         const copy = copyFor(entry)
         const commands = ((entry && entry.steps) || []).filter(step => step.type === 'command')
         // The extension's commands must be installed before the process can run;
@@ -214,9 +234,9 @@ function ProcessChoice({ processes, onPick, onInstall, error, busy }) {
 
         const dim = runnable ? '' : ' sk-fade'
         const body = [
-          jsxs('span', { className: 'flex min-w-0 items-center gap-2', children: [
+          jsxs('span', { className: 'flex min-w-0 items-baseline gap-2', children: [
             jsx('span', { className: `sk-truncate sk-body sk-medium${dim}`, children: copy.title }),
-            jsx('span', { className: `sk-pill ${pillClass} shrink-0`, children: pillText })
+            jsx('span', { className: `sk-pill ${pillClass} ml-auto shrink-0`, children: pillText })
           ] }),
           jsx('span', { className: `sk-small sk-dim${dim}`, children: copy.need }),
           copy.get ? jsx('span', { className: `sk-tiny sk-faint${dim}`, children: copy.get }) : null,
@@ -245,11 +265,11 @@ function ProcessChoice({ processes, onPick, onInstall, error, busy }) {
               type: 'button',
               disabled: busy,
               onClick: () => onPick(entry),
-              className: 'sk-card-btn flex flex-col gap-1 rounded border sk-border p-2 text-left',
+              className: 'sk-choice flex flex-col gap-1 px-3 py-2 text-left',
               children: body
             }, entry.id)
           : jsx('div', {
-              className: 'flex flex-col gap-1 rounded border sk-border p-2',
+              className: 'sk-choice flex flex-col gap-1 px-3 py-2',
               children: body
             }, entry.id)
       }) })
@@ -372,24 +392,27 @@ const PATHS = [
   }
 ]
 
-function PathChoice({ onPick, busy }) {
-  return jsxs('div', { className: 'flex flex-col gap-2', children: [
-    jsx('p', { className: 'sk-small sk-medium', children: 'Which approach?' }),
-    jsx('p', { className: 'sk-tiny sk-dim', children: 'Both run the same process. The full path adds clarify, checklist and analyze.' }),
-    ...PATHS.map(path => jsxs('div', {
-      role: 'button',
-      tabIndex: 0,
-      onClick: () => { if (!busy) onPick(path.id) },
-      className: 'flex cursor-pointer flex-col gap-1 rounded border sk-border p-2 hover:sk-accent',
-      children: [
-        jsxs('span', { className: 'flex items-center gap-2', children: [
-          jsx('span', { className: 'sk-body sk-medium', children: path.title }),
-          jsx(Badge, { variant: 'secondary', children: path.id })
-        ] }),
-        jsx('span', { className: 'sk-small sk-faint', children: path.for }),
-        jsx('span', { className: 'sk-tiny sk-faint', children: path.steps.join(' → ') })
-      ]
-    }, path.id))
+function PathChoice({ onPick, busy, selected }) {
+  return jsxs('div', { className: 'sk-frame flex flex-col', children: [
+    jsx('p', { className: 'sk-small sk-medium p-3 border-b sk-border', children: 'Which approach?' }),
+    jsx('p', { className: 'sk-tiny sk-dim px-3 py-2', children: 'Both run the same process. The full path adds clarify, checklist and analyze.' }),
+    ...PATHS.map(path => {
+      const isSelected = selected === path.id
+      return jsx('button', {
+        type: 'button',
+        disabled: busy,
+        onClick: () => { if (!busy) onPick(path.id) },
+        className: 'sk-choice flex flex-col gap-1 px-3 py-2 text-left' + (isSelected ? ' bg-[var(--ui-row-hover-background,#2a2f36)]' : ''),
+        children: [
+          jsxs('span', { className: 'flex min-w-0 items-baseline gap-2', children: [
+            jsx('span', { className: 'sk-truncate sk-body sk-medium', children: path.title }),
+            isSelected ? jsx('span', { className: 'sk-pill sk-pill-ready ml-auto shrink-0', children: 'selected' }) : null
+          ] }),
+          jsx('span', { className: 'sk-small sk-faint', children: path.for }),
+          jsx('span', { className: 'sk-tiny sk-faint', children: path.steps.join(' → ') })
+        ]
+      }, path.id)
+    })
   ] })
 }
 
@@ -946,8 +969,9 @@ function SpecKitPane() {
     return jsxs('div', { className: 'sk-root flex h-full min-h-0 flex-col gap-2 p-3', children: [
       jsx(IntegrationBanner, { ok: integrationOk, busy, onRepair: repairIntegration }),
       jsx(ProcessChoice, { processes, onPick: pickProcess, onInstall: installExtension, error, busy }),
-      jsxs('div', { className: 'flex items-center justify-between gap-2', children: [
-        jsx('span', { className: 'sk-truncate sk-tiny sk-faint', children: folder }),
+      jsxs('div', { className: 'flex items-center justify-between gap-2 border-t sk-border pt-2', children: [
+        jsx('span', { className: 'sk-truncate sk-tiny sk-faint sk-mono', children: folder }),
+        jsx('span', { className: 'sk-tiny sk-faint shrink-0', children: `v${VERSION}` }),
         jsx(Button, { size: 'xs', variant: 'ghost', onClick: () => setFolder(''), children: 'Change folder' })
       ] })
     ] })
@@ -974,6 +998,7 @@ function SpecKitPane() {
       ? (process.id === 'speckit' && !pathChosen
           ? jsx(PathChoice, {
               busy,
+              selected: mode,
               onPick: async choice => {
               setMode(choice)
               setPathChosen(true)
