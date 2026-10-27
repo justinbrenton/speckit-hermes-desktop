@@ -728,7 +728,9 @@ def _claim_dispatch(key: tuple[str], token: int, job: dict[str, Any], run_id: Op
     """
     with ACTIVE_LOCK:
         current = ACTIVE_RUNS.get(key)
-        if current is None or current.get("token") != token:
+        # A stop marks the entry cancelled before removing it: either way this
+        # dispatch must not be registered or left running.
+        if current is None or current.get("token") != token or current.get("cancelled"):
             cancelled = True
         else:
             cancelled = False
@@ -794,8 +796,9 @@ def _active_key(root: Path, process: str = "") -> tuple[str]:
 
 def _release_finished_jobs() -> None:
     for key, entry in list(ACTIVE_RUNS.items()):
-        if entry.get("kind") == "starting":
-            # Reserved but nothing dispatched yet, so there is no process to inspect.
+        if entry.get("kind") in {"starting", "stopping"}:
+            # Reserved but nothing dispatched yet, or being killed right now: the
+            # slot must stay occupied until the request that owns it says otherwise.
             # A pending resume is a reservation too: reaping it here let a second
             # answer dispatch while the first was still starting.
             continue
@@ -1170,6 +1173,13 @@ def workflow_run(process: str, payload: WorkflowRunRequest) -> dict[str, Any]:
     before_artifacts = _artifact_index(root)
     try:
         job = _start_job(args, root, max(30, min(payload.timeout, SPECIFY_TIMEOUT_MAX)))
+        # Attach the process now: the run id is not known until the state file
+        # appears, and a stop arriving in between still has to reach this job.
+        with ACTIVE_LOCK:
+            entry = ACTIVE_RUNS.get(key)
+            if entry is not None and entry.get("token") == token:
+                entry["proc"] = JOBS.get(job["job_id"], {}).get("proc")
+                entry["job_id"] = job["job_id"]
         run_id = _await_new_run(root, before)
     except BaseException:
         # Nothing was dispatched, so the reservation must not outlive the request.
@@ -1231,17 +1241,30 @@ def stop_run(process: str, run_id: str, payload: WorkflowResumeRequest) -> dict[
     _process_data(root, process)
     if not RUN_ID_RE.fullmatch(run_id or ""):
         raise HTTPException(status_code=400, detail=f"invalid run id: {run_id!r}")
-    killed: list[int] = []
-    key = _active_key(root, process)
 
-    # Prefer the tracked entry: it names exactly one run, so stopping cannot reach a
-    # different run's process. The argv scan is only a fallback for a run we no
-    # longer track (a restart), and it must match the run id itself.
+    key = _active_key(root, process)
+    killed: list[int] = []
+    startup = False
+
+    # Claim the right to stop first, then kill, then free the slot. Freeing the slot
+    # before the process is dead lets a start claim it and run alongside the one
+    # still being killed.
     with ACTIVE_LOCK:
         entry = ACTIVE_RUNS.get(key)
-        owned = entry if entry is not None and entry.get("run_id") == run_id else None
+        owned = None
+        if entry is not None:
+            if entry.get("run_id") == run_id:
+                owned = entry
+            elif entry.get("kind") == "starting" and entry.get("run_id") is None:
+                # The dispatcher has not recorded an id yet, but the run it created
+                # may already exist on disk. That is this reservation's run.
+                if _run_state_status(root, run_id) is not None:
+                    owned = entry
+                    startup = True
         if owned is not None:
-            ACTIVE_RUNS.pop(key, None)
+            owned["cancelled"] = True
+            if not startup:
+                owned["kind"] = "stopping"
         tracked = (owned or {}).get("proc")
 
     targets = [tracked] if tracked is not None else [
@@ -1264,6 +1287,11 @@ def stop_run(process: str, run_id: str, payload: WorkflowResumeRequest) -> dict[
             killed.append(pid)
         except (OSError, subprocess.SubprocessError):
             continue
+
+    with ACTIVE_LOCK:
+        current = ACTIVE_RUNS.get(key)
+        if current is not None and current is owned:
+            ACTIVE_RUNS.pop(key, None)
     return {"run_id": run_id, "stopped": bool(killed), "pids": killed}
 
 

@@ -1663,3 +1663,121 @@ def test_stop_only_reaches_the_run_it_names(client, project, monkeypatch):
     assert not stopped(theirs), f"stop reached another run's process: {taskkilled}"
     plugin_api.ACTIVE_RUNS.clear()
     plugin_api.JOBS.clear()
+
+
+def test_a_new_run_can_be_stopped_during_startup(client, project, monkeypatch):
+    """Before the dispatcher knows the run id, a stop must still reach the job."""
+    import threading
+
+    class Proc:
+        pid = 4242
+
+        def __init__(self):
+            self.killed = False
+
+        def poll(self):
+            return None
+
+        def kill(self):
+            self.killed = True
+
+    proc = Proc()
+    dispatch_returned = threading.Event()
+    release = threading.Event()
+
+    def job(args, cwd, timeout=None):
+        plugin_api.JOBS["s1"] = {"proc": proc, "id": "s1", "cwd": str(cwd), "argv": args}
+        dispatch_returned.set()
+        return {"job_id": "s1", "id": "s1", "pid": 4242, "stdout_file": ""}
+
+    def slow_await(root_, before, timeout=25.0):
+        # the run becomes visible while the dispatcher is still waiting for it
+        run_dir = project / ".specify" / "workflows" / "runs" / "fresh"
+        run_dir.mkdir(parents=True, exist_ok=True)
+        (run_dir / "state.json").write_text(json.dumps({"status": "running"}), encoding="utf-8")
+        assert release.wait(5), "the dispatcher never resumed"
+        return "fresh"
+
+    monkeypatch.setattr(plugin_api, "_start_job", job)
+    monkeypatch.setattr(plugin_api, "_await_new_run", slow_await)
+    taskkilled: list[str] = []
+    monkeypatch.setattr(plugin_api.subprocess, "run", lambda argv, **kw: taskkilled.append(argv[-1]))
+    plugin_api.ACTIVE_RUNS.clear()
+    plugin_api.JOBS.clear()
+
+    outcome = {}
+
+    def start():
+        try:
+            outcome["response"] = client.post(
+                f"{PREFIX}/workflows/bugfix/run", json={"cwd": str(project), "inputs": {"report": "x"}}
+            )
+        except Exception as exc:
+            outcome["error"] = exc
+
+    worker = threading.Thread(target=start)
+    worker.start()
+    try:
+        assert dispatch_returned.wait(5), "the dispatcher never ran"
+        body = client.post(f"{PREFIX}/workflows/bugfix/runs/fresh/stop", json={"cwd": str(project)}).json()
+        assert body["stopped"] is True, f"the startup was not stopped: {body}"
+        assert proc.killed or "4242" in taskkilled, "the dispatched process was left running"
+    finally:
+        release.set()
+        worker.join(10)
+        plugin_api.ACTIVE_RUNS.clear()
+        plugin_api.JOBS.clear()
+
+    # the dispatch that was cancelled must not report success
+    assert outcome.get("response") is not None
+    assert outcome["response"].status_code == 409, outcome["response"].text
+
+
+def test_the_slot_stays_taken_until_the_kill_finishes(client, project, monkeypatch):
+    """A start arriving mid-kill must not run alongside the process being stopped."""
+    import threading
+
+    class Proc:
+        pid = 777
+
+        def poll(self):
+            return None
+
+        def kill(self):
+            pass
+
+    proc = Proc()
+    plugin_api.ACTIVE_RUNS.clear()
+    plugin_api.JOBS.clear()
+    with plugin_api.ACTIVE_LOCK:
+        plugin_api.ACTIVE_RUNS[plugin_api._active_key(project, "bugfix")] = {
+            "proc": proc, "run_id": "live", "process": "bugfix", "kind": "run", "token": 7, "started_at": 0
+        }
+    plugin_api.JOBS["j1"] = {"proc": proc, "id": "j1", "cwd": str(project), "argv": ["workflow", "run", "live"]}
+
+    entered = threading.Event()
+    release = threading.Event()
+
+    def slow_kill(argv, **kwargs):
+        entered.set()
+        assert release.wait(5), "the kill never finished"
+
+    monkeypatch.setattr(plugin_api.subprocess, "run", slow_kill)
+    result = {}
+
+    def stop():
+        result["body"] = client.post(f"{PREFIX}/workflows/bugfix/runs/live/stop", json={"cwd": str(project)}).json()
+
+    worker = threading.Thread(target=stop)
+    worker.start()
+    try:
+        assert entered.wait(5), "the kill never started"
+        with plugin_api.ACTIVE_LOCK:
+            still_there = plugin_api._active_key(project, "bugfix") in plugin_api.ACTIVE_RUNS
+        assert still_there, "the slot was freed before the process was dead"
+    finally:
+        release.set()
+        worker.join(10)
+        plugin_api.ACTIVE_RUNS.clear()
+        plugin_api.JOBS.clear()
+
