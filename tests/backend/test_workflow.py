@@ -332,12 +332,16 @@ def test_stop_kills_the_matching_job(client, project, monkeypatch):
     class FakeProc:
         pid = 5150
 
+        def __init__(self):
+            self.alive = True
+
         def poll(self):
-            return None
+            return None if self.alive else 0
 
         def kill(self):
             # The POSIX path signals the Popen directly; Windows shells out to taskkill.
             signalled.append(self.pid)
+            self.alive = False
 
     monkeypatch.setattr(plugin_api, "JOBS", {
         "j1": {"proc": FakeProc(), "argv": ["workflow", "resume", "abc123"], "cwd": str(project)}
@@ -709,12 +713,14 @@ class ParkedProc:
     def __init__(self):
         self.pid = 4242
         self.killed = False
+        self.alive = True
 
     def poll(self):
-        return None
+        return None if self.alive else 0
 
     def kill(self):
         self.killed = True
+        self.alive = False
 
 
 def test_resume_takes_over_a_run_that_is_still_parked(client, project, cli):
@@ -1674,12 +1680,14 @@ def test_a_new_run_can_be_stopped_during_startup(client, project, monkeypatch):
 
         def __init__(self):
             self.killed = False
+            self.alive = True
 
         def poll(self):
-            return None
+            return None if self.alive else 0
 
         def kill(self):
             self.killed = True
+            self.alive = False
 
     proc = Proc()
     dispatch_returned = threading.Event()
@@ -1837,4 +1845,81 @@ def test_stopping_an_old_run_does_not_cancel_a_startup(client, project, monkeypa
         worker.join(10)
         plugin_api.ACTIVE_RUNS.clear()
         plugin_api.JOBS.clear()
+
+
+def test_a_dispatch_without_a_run_id_is_refused(client, project, monkeypatch):
+    """No run id means no way to address the run, so do not register one."""
+    class Proc:
+        pid = 616
+
+        def __init__(self):
+            self.alive = True
+            self.killed = False
+
+        def poll(self):
+            return None if self.alive else 0
+
+        def kill(self):
+            self.killed = True
+            self.alive = False
+
+    proc = Proc()
+    taskkilled: list[str] = []
+
+    monkeypatch.setattr(plugin_api, "_start_job",
+                        lambda args, cwd, timeout=None: (
+                            plugin_api.JOBS.__setitem__("j", {"proc": proc, "id": "j"}) or
+                            {"job_id": "j", "id": "j", "pid": proc.pid, "stdout_file": ""}))
+    monkeypatch.setattr(plugin_api, "_await_new_run", lambda root_, before, timeout=25.0: None)
+    monkeypatch.setattr(plugin_api.subprocess, "run", lambda argv, **kw: taskkilled.append(argv[-1]))
+    plugin_api.ACTIVE_RUNS.clear()
+    plugin_api.JOBS.clear()
+
+    response = client.post(f"{PREFIX}/workflows/bugfix/run", json={"cwd": str(project), "inputs": {"report": "x"}})
+
+    assert response.status_code == 504, response.text
+    assert plugin_api.ACTIVE_RUNS == {}, "the project must not stay occupied"
+    assert proc.killed or "616" in taskkilled, "the dispatched process must not be left running"
+    plugin_api.ACTIVE_RUNS.clear()
+    plugin_api.JOBS.clear()
+
+
+def test_an_error_while_awaiting_the_run_kills_the_dispatch(client, project, monkeypatch):
+    """A raise after _start_job must not leave a live process and a free slot."""
+    class Proc:
+        pid = 717
+
+        def __init__(self):
+            self.alive = True
+            self.killed = False
+
+        def poll(self):
+            return None if self.alive else 0
+
+        def kill(self):
+            self.killed = True
+            self.alive = False
+
+    proc = Proc()
+
+    def job(args, cwd, timeout=None):
+        plugin_api.JOBS["j2"] = {"proc": proc, "id": "j2"}
+        return {"job_id": "j2", "id": "j2", "pid": proc.pid, "stdout_file": ""}
+
+    def boom(root_, before, timeout=25.0):
+        raise RuntimeError("await failed")
+
+    monkeypatch.setattr(plugin_api, "_start_job", job)
+    monkeypatch.setattr(plugin_api, "_await_new_run", boom)
+    monkeypatch.setattr(plugin_api.subprocess, "run", lambda argv, **kw: None)
+    plugin_api.ACTIVE_RUNS.clear()
+    plugin_api.JOBS.clear()
+
+    with pytest.raises(RuntimeError):
+        client.post(f"{PREFIX}/workflows/bugfix/run", json={"cwd": str(project), "inputs": {"report": "x"}})
+
+    assert plugin_api.ACTIVE_RUNS == {}, "the reservation survived a failed dispatch"
+    assert proc.killed is True, "a dispatched process was orphaned"
+    plugin_api.ACTIVE_RUNS.clear()
+    plugin_api.JOBS.clear()
 

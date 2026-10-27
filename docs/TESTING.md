@@ -27,8 +27,8 @@ python -m pytest tests/backend -q -m "not hermes"
 CI installs it before pytest for the same reason: the suite does not run without
 them, and a fresh checkout does not have them.
 
-146 backend tests that need only FastAPI, and 5 that need Hermes, 151 in total. With the 52
-node tests that is 203, and nothing skips: `pytest.ini` sets `--strict-markers`, so a mistyped
+150 backend tests that need only FastAPI, and 5 that need Hermes, 155 in total. With the 52
+node tests that is 207, and nothing skips: `pytest.ini` sets `--strict-markers`, so a mistyped
 marker is an error rather than a silently ignored test.
 
 ## Running with Hermes

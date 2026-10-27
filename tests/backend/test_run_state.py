@@ -37,6 +37,7 @@ class Proc:
 
     def kill(self):
         self.killed = True
+        self.alive = False
 
 
 @pytest.fixture(autouse=True)
@@ -267,18 +268,24 @@ def test_a_stale_claim_kills_its_own_job_not_the_new_one(root):
     assert theirs.killed is False, "the newer run's process was killed by a stale claim"
 
 
-def test_a_failed_run_listing_releases_the_reservation(root, monkeypatch):
-    """_run_ids runs inside the guarded block, so an OSError cannot pin the project."""
+def test_a_failed_run_listing_releases_the_reservation(root):
+    """_run_ids runs before the reservation now, so it cannot pin the project."""
+    calls = []
+
     def boom(_root):
+        calls.append(1)
         raise OSError("cannot list runs")
 
-    monkeypatch.setattr(plugin_api, "_run_ids", boom)
-    token = plugin_api._admit_start(root, "bugfix")
+    original = plugin_api._run_ids
+    plugin_api._run_ids = boom
     try:
-        before = plugin_api._run_ids(root)
-    except OSError:
-        plugin_api._release(root, token)
-    assert slot(root) is None
+        with pytest.raises(OSError):
+            plugin_api._admit_start(root, "bugfix", plugin_api._run_ids(root))
+    finally:
+        plugin_api._run_ids = original
+
+    assert calls, "the failure path was exercised"
+    assert slot(root) is None, "a failed listing must not leave a reservation"
 
 
 def test_a_second_stop_owns_nothing(root):
@@ -295,23 +302,81 @@ def test_a_second_stop_owns_nothing(root):
 
 
 def test_a_takeover_does_not_hold_the_lock_while_killing(root):
-    """taskkill can take seconds; other projects must still be admitted meanwhile."""
+    """taskkill can take seconds; another project must be able to admit meanwhile.
+
+    Checked from a second thread: an RLock is reentrant, so a same-thread probe
+    would acquire it even while the lock is held.
+    """
+    import threading
+
     run_dir(root, "r1", "paused")
     token = plugin_api._admit_start(root, "bugfix")
     plugin_api._claim(root, token, "r1", "run", "bugfix")
 
-    acquired = {}
+    seen = {}
 
     class SlowProc(Proc):
         def kill(self):
-            # the lock must be free here, or every other project stalls
-            got = plugin_api.ACTIVE_LOCK.acquire(timeout=0.5)
-            acquired["lock"] = got
-            if got:
-                plugin_api.ACTIVE_LOCK.release()
+            def probe():
+                got = plugin_api.ACTIVE_LOCK.acquire(timeout=0.6)
+                seen["other_thread"] = got
+                if got:
+                    plugin_api.ACTIVE_LOCK.release()
+
+            worker = threading.Thread(target=probe)
+            worker.start()
+            worker.join(2)
             self.killed = True
+            self.alive = False
 
     slot(root)["proc"] = SlowProc()
     plugin_api._admit_resume(root, "bugfix", "r1")
-    assert acquired.get("lock") is True, "the lock was held across the kill"
 
+    assert seen.get("other_thread") is True, "the lock was held across the kill"
+
+
+def test_a_kill_that_fails_keeps_the_slot(root):
+    """If the process survives, the project stays occupied rather than admitting another."""
+    token = plugin_api._admit_start(root, "bugfix")
+    plugin_api._claim(root, token, "r1", "run", "bugfix")
+
+    class Immortal(Proc):
+        def kill(self):
+            self.killed = True          # asked, but stayed alive
+
+    slot(root)["proc"] = Immortal()
+    entry, proc = plugin_api._begin_stop(root, "r1")
+    gone, _pid = plugin_api._kill_proc(proc)
+
+    assert gone is False, "a failed kill must report itself"
+    assert entry is not None
+    assert slot(root) is not None, "the slot must stay held while the process lives"
+
+
+def test_a_second_stop_during_startup_owns_nothing(root):
+    run_dir(root, "fresh")
+    token = plugin_api._admit_start(root, "bugfix", set())
+    proc = Proc()
+    plugin_api.JOBS["j"] = {"proc": proc, "id": "j"}
+    plugin_api._attach_job(root, token, {"job_id": "j", "pid": proc.pid})
+
+    first_entry, _ = plugin_api._begin_stop(root, "fresh")
+    second_entry, second_proc = plugin_api._begin_stop(root, "fresh")
+
+    assert first_entry is not None
+    assert second_entry is None and second_proc is None
+
+
+@pytest.fixture(autouse=True)
+def no_real_kills(monkeypatch):
+    """Fake pids must never reach taskkill on the developer's machine."""
+    calls = []
+
+    class FakeRun:
+        @staticmethod
+        def run(argv, **kwargs):
+            calls.append(argv)
+            return None
+
+    monkeypatch.setattr(plugin_api.subprocess, "run", FakeRun.run)
+    return calls
