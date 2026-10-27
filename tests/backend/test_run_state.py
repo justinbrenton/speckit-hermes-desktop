@@ -461,3 +461,31 @@ def test_a_takeover_stops_if_the_slot_is_taken_during_the_kill(root):
     assert caught.value.status_code == 409
     assert slot(root) is None, "the resume must not re-create a slot it lost"
 
+
+def test_a_surviving_parked_process_stays_reachable_when_the_slot_is_lost(root):
+    """If the kill failed and a stop took the slot, the process must not be orphaned."""
+    run_dir(root, "r1", "paused")
+    token = plugin_api._admit_start(root, "bugfix")
+    plugin_api._claim(root, token, "r1", "run", "bugfix")
+
+    class Survivor(Proc):
+        def kill(self):
+            # the kill fails, and a stop wins the slot in the meantime
+            with plugin_api.ACTIVE_LOCK:
+                plugin_api.ACTIVE_RUNS.clear()
+            self.killed = True          # asked, still alive
+
+    survivor = Survivor()
+    slot(root)["proc"] = survivor
+
+    with pytest.raises(HTTPException) as caught:
+        plugin_api._admit_resume(root, "bugfix", "r1")
+    assert caught.value.status_code == 409
+    assert slot(root) is None
+
+    reachable = [
+        job for job in plugin_api.JOBS.values()
+        if job.get("proc") is survivor and "r1" in " ".join(job.get("argv") or [])
+    ]
+    assert reachable, "the surviving process is unreachable by stop"
+

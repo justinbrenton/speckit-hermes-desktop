@@ -849,6 +849,16 @@ def _admit_resume(root: Path, process: str, run_id: str) -> int:
         if current is None or current.get("token") != token or current.get("cancelled"):
             # A stop got in during the kill, or the slot moved on: do not dispatch
             # a resume on top of whatever is there now.
+            if not gone:
+                # The parked process survived and no longer belongs to a slot, so
+                # nothing would ever reap or reach it. Keep it addressable by stop.
+                logger.warning("parked process %s survived a takeover that lost its slot", parked.pid)
+                JOBS[f"orphan-{token}"] = {
+                    "proc": parked,
+                    "id": f"orphan-{token}",
+                    "cwd": str(root),
+                    "argv": ["workflow", "resume", run_id],
+                }
             raise HTTPException(status_code=409, detail="the run was stopped before it started")
         if not gone:
             # The parked process survived: put the entry back exactly as it was so an
