@@ -1737,6 +1737,9 @@ def test_the_slot_stays_taken_until_the_kill_finishes(client, project, monkeypat
     """A start arriving mid-kill must not run alongside the process being stopped."""
     import threading
 
+    entered = threading.Event()
+    release = threading.Event()
+
     class Proc:
         pid = 777
 
@@ -1744,7 +1747,9 @@ def test_the_slot_stays_taken_until_the_kill_finishes(client, project, monkeypat
             return None
 
         def kill(self):
-            pass
+            # the POSIX branch: block here so the window can be inspected
+            entered.set()
+            assert release.wait(5), "the kill never finished"
 
     proc = Proc()
     plugin_api.ACTIVE_RUNS.clear()
@@ -1755,18 +1760,15 @@ def test_the_slot_stays_taken_until_the_kill_finishes(client, project, monkeypat
         }
     plugin_api.JOBS["j1"] = {"proc": proc, "id": "j1", "cwd": str(project), "argv": ["workflow", "run", "live"]}
 
-    entered = threading.Event()
-    release = threading.Event()
-
     def slow_kill(argv, **kwargs):
+        # the Windows branch: taskkill is the kill, so block there instead
         entered.set()
         assert release.wait(5), "the kill never finished"
 
     monkeypatch.setattr(plugin_api.subprocess, "run", slow_kill)
-    result = {}
 
     def stop():
-        result["body"] = client.post(f"{PREFIX}/workflows/bugfix/runs/live/stop", json={"cwd": str(project)}).json()
+        client.post(f"{PREFIX}/workflows/bugfix/runs/live/stop", json={"cwd": str(project)})
 
     worker = threading.Thread(target=stop)
     worker.start()
@@ -1780,4 +1782,3 @@ def test_the_slot_stays_taken_until_the_kill_finishes(client, project, monkeypat
         worker.join(10)
         plugin_api.ACTIVE_RUNS.clear()
         plugin_api.JOBS.clear()
-
