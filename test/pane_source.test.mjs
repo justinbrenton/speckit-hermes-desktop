@@ -106,13 +106,19 @@ test('every sk- class the pane uses is defined in SK_CSS', () => {
 const SELECTOR = /^\.[a-z][a-z0-9-]*(:{1,2}[a-z-]+(\([^)]*\))?)*$/
 
 function deadSelectors(css) {
+  // Comments sit before rules and would otherwise be read as part of a selector.
+  css = css.replace(/\/\*[\s\S]*?\*\//g, '')
   const dead = []
   for (const match of css.matchAll(/^\s*([^\s{@][^{]*)\{/gm)) {
     // A rule's selector list is comma separated: one bad entry drops the whole rule,
     // so each part is checked, not the joined string.
     for (const part of match[1].split(',')) {
       const selector = part.trim()
-      if (!SELECTOR.test(selector)) dead.push(selector)
+      // A compound may be joined to another by a descendant space or a combinator,
+      // and each compound has to stand on its own: `.a + .b` is fine, `.a + ***` is not.
+      const compounds = selector.split(/[\s>+~]+/).filter(Boolean)
+      const bad = compounds.length === 0 || compounds.some(compound => !SELECTOR.test(compound))
+      if (bad) dead.push(selector)
     }
   }
   return dead
@@ -128,6 +134,8 @@ test('a malformed selector in a list is caught, not waved through', () => {
   // browser drops the entire rule, which is why checking only the first token misses it.
   assert.deepEqual(deadSelectors('.sk-truncate, .*** { overflow: hidden; }'), ['.***'])
   assert.deepEqual(deadSelectors('.sk-a, .sk-b:hover { color: red; }'), [])
+  assert.deepEqual(deadSelectors('.sk-a + .sk-b { color: red; }'), [])
+  assert.deepEqual(deadSelectors('.sk-a > .*** { color: red; }'), ['.sk-a > .***'])
   assert.deepEqual(deadSelectors('.sk-a::before { content: ""; }'), [])
 })
 
@@ -153,4 +161,35 @@ test('every component that calls useState imports it', () => {
   const calls = SOURCE.match(/= useState\(/g) || []
   if (calls.length === 0) return
   assert.match(SOURCE, /import \{[^}]*useState[^}]*\} from 'react'/, 'useState is used but not imported')
+})
+
+// Every token below is defined by the desktop app's own stylesheets (read from
+// hermes-agent/apps/desktop/src on 2026-10-27, app 0.22.2). A var() naming a token
+// that is not defined resolves to nothing and the declaration is dropped silently:
+// that is exactly how --ui-border made every border in this pane fall back to
+// currentColor, which in turn made the card hover invisible.
+const APP_TOKENS = new Set([
+  '--ui-text-primary',
+  '--ui-text-secondary',
+  '--ui-text-tertiary',
+  '--ui-bg-tertiary',
+  '--ui-bg-card',
+  '--ui-accent',
+  '--ui-green',
+  '--ui-orange',
+  '--ui-row-hover-background',
+  '--color-border',
+  '--color-destructive'
+])
+
+test('SK_CSS only reads tokens the desktop app defines', () => {
+  const used = [...skCss().matchAll(/var\((--[a-z0-9-]+)/g)].map(match => match[1])
+  const unknown = [...new Set(used)].filter(token => !APP_TOKENS.has(token))
+  assert.deepEqual(unknown, [], `the app does not define: ${unknown.join(', ')}`)
+})
+
+test('every var() in SK_CSS names a fallback', () => {
+  // A chain of undefined tokens is not a near miss, it is a dropped property.
+  const bare = [...skCss().matchAll(/var\((--[a-z0-9-]+)\)/g)].map(match => match[1])
+  assert.deepEqual([...new Set(bare)], [], `no fallback: ${[...new Set(bare)].join(', ')}`)
 })

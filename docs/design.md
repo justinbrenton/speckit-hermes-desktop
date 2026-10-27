@@ -463,7 +463,7 @@ Shipped:
   workflow omits that declaration, so its gates accept a resume and discard it.
 - A claim gate: every test count stated in the docs is compared with the suites that just
   ran, and a pre-commit hook runs it.
-- 52 node tests, and 160 backend tests: 155 that need only FastAPI and 5 that need Hermes.
+- 54 node tests, and 160 backend tests: 155 that need only FastAPI and 5 that need Hermes.
 
 Next, in the order I would do them:
 
@@ -530,7 +530,7 @@ SDK export. `Fragment` comes from React.
 
 | Claim | Command | Observed |
 |---|---|---|
-| Node tests pass | `npm test` | 52 tests, 52 pass, 0 fail |
+| Node tests pass | `npm test` | 54 tests, 54 pass, 0 fail |
 | The built plugin loads like the runtime loads it | `node --test test/plugin-smoke.test.mjs` | default export present, `id: spec-kit-hermes`, one pane and one status item registered |
 | The deployed plugin matches the build | `cmp desktop/plugin.js ~/.hermes/desktop-plugins/spec-kit-hermes/plugin.js` | identical |
 | The config edit adds one line, not a duplicate key | feed the live `config.yaml` through `config-enable.mjs` | 1 line added, `plugins.enabled` contains `spec-kit-hermes` once, file parses |
