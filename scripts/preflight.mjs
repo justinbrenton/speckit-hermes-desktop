@@ -69,13 +69,21 @@ function numbers(output, patterns) {
 run('build', process.execPath, [join(ROOT, 'scripts', 'build.mjs')])
 
 const nodeOut = run('node tests', process.execPath, ['--test', join(ROOT, 'test') + '/'])
-const node = (nodeOut.match(/^# pass (\d+)/m) || nodeOut.match(/ℹ pass (\d+)/) || [])[1]
+// The total, not the pass count: node's TAP summary counts a parent test and its
+// subtests differently, so `# pass` read 51 for a run of 52 on CI while `# tests`
+// and the spec reporter both said 52.
+const node = (nodeOut.match(/^# tests (\d+)/m) || nodeOut.match(/ℹ tests (\d+)/) || [])[1]
 const nodeTotal = node == null ? null : Number(node)
 const nodeFails = (nodeOut.match(/^# fail (\d+)/m) || nodeOut.match(/ℹ fail (\d+)/) || [])[1]
-if (nodeFails != null && Number(nodeFails) > 0) {
-  process.stdout.write(`node reported ${nodeFails} failures\n`)
-  failed = true
-  steps.push({ name: 'node tests clean', ok: false })
+const nodeCancelled = (nodeOut.match(/^# cancelled (\d+)/m) || nodeOut.match(/ℹ cancelled (\d+)/) || [])[1]
+const nodeSkipped = (nodeOut.match(/^# skipped (\d+)/m) || nodeOut.match(/ℹ skipped (\d+)/) || [])[1]
+for (const [label, value] of [['failures', nodeFails], ['cancellations', nodeCancelled], ['skips', nodeSkipped]]) {
+  if (value != null && Number(value) > 0) {
+    process.stdout.write(`node reported ${value} ${label}\n`)
+    failed = true
+    steps.push({ name: 'node tests clean', ok: false })
+    break
+  }
 }
 
 const routerOut = run('backend: router suite', PY, [
