@@ -65,10 +65,17 @@ const SK_CSS = `
 .sk-accent { border-color: var(--ui-accent, var(--primary)); }
 .sk-accent-bg { background: var(--ui-accent, var(--primary)); }
 .sk-hr { height: 1px; background: var(--ui-border, var(--border)); }
-.sk-sk-truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.sk-truncate { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .sk-bar { height: 4px; border-radius: 999px; overflow: hidden; background: var(--ui-bg-tertiary, var(--card)); }
 .sk-bar-fill { height: 100%; border-radius: 999px; background: var(--ui-accent, var(--primary)); transition: width .2s ease; }
 .sk-hover:hover { background: var(--ui-bg-tertiary, var(--card)); }
+.sk-card-btn { cursor: pointer; transition: border-color .15s ease, background .15s ease; }
+.sk-card-btn:hover { border-color: var(--ui-accent, var(--primary)); }
+.sk-card-btn:focus-visible { outline: 2px solid var(--ui-accent, var(--primary)); outline-offset: 2px; }
+.sk-pill { display: inline-flex; align-items: center; padding: 1px 6px; border-radius: 999px; font-size: 10px; font-weight: 500; white-space: nowrap; }
+.sk-pill-ready { color: var(--ui-success, #30a46c); box-shadow: inset 0 0 0 1px var(--ui-success, #30a46c); }
+.sk-pill-setup { color: var(--ui-text-secondary, var(--muted-foreground)); box-shadow: inset 0 0 0 1px var(--ui-border, var(--border)); }
+.sk-pill-missing { color: var(--ui-danger, #e5484d); box-shadow: inset 0 0 0 1px var(--ui-danger, #e5484d); }
 .sk-click { cursor: pointer; }
 .sk-fade { opacity: .55; }
 `
@@ -123,21 +130,18 @@ const PROCESS_COPY = [
     title: 'Spec-Driven Development',
     need: 'Build a feature or application',
     get: 'A specification carried through planning, implementation and convergence',
-    banner: 'Ships in core'
   },
   {
     id: 'bugfix',
     title: 'Bug fixing',
     need: 'Diagnose and repair broken behavior',
     get: 'An assessed cause, a scoped fix, and recorded verification',
-    banner: 'Extension'
   },
   {
     id: 'assess',
     title: 'Idea assessment',
     need: 'Decide whether an idea deserves investment',
     get: 'An evidence-backed go, clarify or stop decision',
-    banner: 'Extension'
   }
 ]
 
@@ -165,59 +169,91 @@ function ProgressHeader({ steps, run }) {
 }
 
 function ProcessChoice({ processes, onPick, onInstall, error, busy }) {
-  const byId = {}
-  for (const item of processes || []) byId[item.id] = item
+  // Render what discovery found, not a hard-coded list: a project can install its
+  // own workflow, and three fixed names hid every one of those.
+  const KNOWN_ORDER = PROCESS_COPY.map(copy => copy.id)
+  const copyFor = entry => {
+    const known = PROCESS_COPY.find(copy => copy.id === entry.id)
+    return known || {
+      id: entry.id,
+      title: entry.name || entry.id,
+      need: entry.description || 'A workflow installed in this project',
+      get: ''
+    }
+  }
+  const cards = [...(processes || [])].sort((a, b) => {
+    const rank = id => { const at = KNOWN_ORDER.indexOf(id); return at < 0 ? KNOWN_ORDER.length : at }
+    return rank(a.id) - rank(b.id)
+  })
+  const STATUS = {
+    ready: ['sk-pill-ready', 'Ready'],
+    setup: ['sk-pill-setup', 'Sets up on first run'],
+    missing: ['sk-pill-missing', 'Needs an extension'],
+    broken: ['sk-pill-missing', 'Commands missing'],
+    absent: ['sk-pill-missing', 'Not available here']
+  }
   return jsxs('div', { className: 'sk-root flex h-full flex-col gap-3 p-3', children: [
     jsx('h2', { className: 'sk-body sk-medium', children: 'Choose your process' }),
-    jsx('p', { className: 'sk-small sk-dim', children: 'Each one is an installed spec-kit workflow. They are independent entry points, not phases.' }),
+    jsx('p', { className: 'sk-small sk-dim', children: 'Three ways into spec-kit. Each one is its own workflow, not a phase of the others.' }),
     error ? jsx('p', { className: 'sk-small sk-err', children: error }) : null,
     jsx(ScrollArea, { className: 'min-h-0 flex-1', children:
-      jsx('div', { className: 'flex flex-col gap-2', children: PROCESS_COPY.map(copy => {
-        const entry = byId[copy.id]
-        const available = Boolean(entry)
+      cards.length
+        ? jsx('div', { className: 'flex flex-col gap-2', children: cards.map(entry => {
+        const copy = copyFor(entry)
         const commands = ((entry && entry.steps) || []).filter(step => step.type === 'command')
         // The extension's commands must be installed before the process can run;
         // the workflow file is written for us on Start.
-        const installed = available && commands.length > 0 && commands.every(step => step.skill_installed)
-        const needsSetup = installed && entry.installed === false
-        return jsxs('div', {
-          role: 'button',
-          tabIndex: installed ? 0 : -1,
-          onClick: () => { if (installed && !busy) onPick(entry) },
-          onKeyDown: event => {
-            if (!installed || busy) return
-            if (event.key === 'Enter' || event.key === ' ') {
-              event.preventDefault()
-              onPick(entry)
-            }
-          },
-          className: installed
-            ? 'flex flex-col gap-1 rounded border sk-border p-2 text-left hover:sk-accent'
-            : 'flex flex-col gap-1 rounded border sk-border p-2 text-left opacity-50',
-          children: [
-            jsxs('span', { className: 'flex items-center gap-2', children: [
-              jsx('span', { className: 'sk-body sk-medium', children: copy.title }),
-              jsx(Badge, { variant: 'secondary', children: copy.banner })
-            ] }),
-            jsx('span', { className: 'sk-small sk-dim', children: copy.need }),
-            jsx('span', { className: 'sk-tiny sk-faint', children: copy.get }),
-            installed
-              ? (needsSetup
-                  ? jsx('span', { className: 'sk-tiny sk-faint', children: 'Its workflow is written on first use.' })
-                  : null)
-              : jsxs('span', { className: 'flex items-center gap-2 sk-tiny sk-faint', children: [
-                  commands.length ? 'Commands not installed.' : 'Not installed.',
-                  jsx(Button, {
-                    size: 'xs',
-                    variant: 'outline',
-                    onClick: event => { event.stopPropagation(); onInstall(copy.id) },
-                    disabled: busy,
-                    children: `Install ${copy.id} extension`
-                  })
-                ] })
-          ]
-        }, copy.id)
+        const runnable = Boolean(entry) && commands.length > 0 && commands.every(step => step.skill_installed)
+        const needsSetup = runnable && entry.installed === false
+        // Only an extension the backend will actually install gets an Install action;
+        // a core process with missing commands needs a different answer entirely.
+        const extension = entry && entry.extension ? entry.extension : null
+        const [pillClass, pillText] = runnable
+          ? STATUS[needsSetup ? 'setup' : 'ready']
+          : STATUS[!commands.length ? 'absent' : extension ? 'missing' : 'broken']
+
+        const dim = runnable ? '' : ' sk-fade'
+        const body = [
+          jsxs('span', { className: 'flex min-w-0 items-center gap-2', children: [
+            jsx('span', { className: `sk-truncate sk-body sk-medium${dim}`, children: copy.title }),
+            jsx('span', { className: `sk-pill ${pillClass} shrink-0`, children: pillText })
+          ] }),
+          jsx('span', { className: `sk-small sk-dim${dim}`, children: copy.need }),
+          copy.get ? jsx('span', { className: `sk-tiny sk-faint${dim}`, children: copy.get }) : null,
+          runnable
+            ? (needsSetup
+                ? jsx('span', { className: 'sk-tiny sk-faint', children: 'Its workflow is written the first time you start it.' })
+                : null)
+            : jsxs('span', { className: 'mt-1 flex flex-col gap-1', children: [
+                jsx('span', { className: 'sk-tiny sk-faint', children: commands.length ? 'Commands not installed.' : 'Not installed.' }),
+                extension
+                  ? jsx(Button, {
+                      size: 'xs',
+                      variant: 'outline',
+                      onClick: event => { event.stopPropagation(); onInstall(extension) },
+                      disabled: busy,
+                      children: `Install the ${extension} extension`
+                    })
+                  : jsx('span', { className: 'sk-tiny sk-faint', children: 'Re-apply the Hermes integration above, then reopen this pane.' })
+              ] })
+        ]
+
+        // A real button when it does something, a plain container when it does not:
+        // an Install button nested inside a button role is not usable by keyboard.
+        return runnable
+          ? jsx('button', {
+              type: 'button',
+              disabled: busy,
+              onClick: () => onPick(entry),
+              className: 'sk-card-btn flex flex-col gap-1 rounded border sk-border p-2 text-left',
+              children: body
+            }, entry.id)
+          : jsx('div', {
+              className: 'flex flex-col gap-1 rounded border sk-border p-2',
+              children: body
+            }, entry.id)
       }) })
+        : jsx('p', { className: 'sk-small sk-dim', children: 'No workflows found in this folder yet. Initialise spec-kit here, or pick another folder.' })
     })
   ] })
 }
@@ -793,12 +829,16 @@ function SpecKitPane() {
     setBusy(true)
     setError('')
     try {
-      // Every process runs from a workflow file. speckit's needs the chosen path;
-      // bug and assess ship commands only, so their workflow is written here.
-      await rest('/workflow/shape', { method: 'POST', body: { cwd: folder, mode, process: process.id } })
-      const shaped = await rest(`/processes?cwd=${encodeURIComponent(folder)}`)
-      const updated = ((shaped && shaped.processes) || []).find(item => item.id === process.id)
-      if (updated) setProcess(updated)
+      // Shape only the workflows we generate: speckit needs the chosen path, and
+      // bugfix/assess ship commands only. A workflow the project installed itself
+      // already has its file, and asking the backend to shape it is an error.
+      const generated = !__str(process.source) || ['speckit', 'bugfix', 'assess'].includes(process.id)
+      if (generated) {
+        await rest('/workflow/shape', { method: 'POST', body: { cwd: folder, mode, process: process.id } })
+        const shaped = await rest(`/processes?cwd=${encodeURIComponent(folder)}`)
+        const updated = ((shaped && shaped.processes) || []).find(item => item.id === process.id)
+        if (updated) setProcess(updated)
+      }
       await rest(`/workflows/${encodeURIComponent(process.id)}/run`, {
         method: 'POST',
         body: { cwd: folder, inputs: values }

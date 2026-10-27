@@ -1,5 +1,5 @@
 name: "spec-kit-hermes"
-version: "0.1.3"
+version: "0.1.4"
 description: "Run spec-kit processes in Hermes Desktop: pick a process, describe the work, review each artifact at its gate, then approve."
 author: "Justin Brenton"
 license: "MIT"

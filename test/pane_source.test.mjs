@@ -75,6 +75,80 @@ test('the folder picker falls back to the allowed listing', () => {
   assert.match(slice, /setBrowseNotice\('\)?/, 'and must say why')
 })
 
+function skCss() {
+  const match = SOURCE.replace(/\r\n/g, '\n').match(/const SK_CSS = `([\s\S]*?)`\n/)
+  assert.ok(match, 'SK_CSS template literal not found')
+  return match[1]
+}
+
+test('every sk- class the pane uses is defined in SK_CSS', () => {
+  // The truncate rule was once written as `.***`, which a browser drops without a
+  // word: eight call sites did nothing and nothing failed. Classes that no rule
+  // defines are invisible, so check the two lists against each other.
+  const css = skCss()
+  const defined = new Set([...css.matchAll(/\.([a-z][a-z0-9-]*)\s*[:{,]/g)].map(m => m[1]))
+
+  // Every sk- token in a string literal or template: a class can reach className
+  // through a map (STATUS[...] returns one) and a literal-only scan misses it.
+  const used = new Set()
+  for (const match of SOURCE.matchAll(/'([^'\n]*)'|`([^`]*)`/g)) {
+    const text = match[1] ?? match[2] ?? ''
+    for (const token of text.split(/[\s${}]+/)) {
+      if (/^sk-[a-z0-9-]+$/.test(token)) used.add(token)
+    }
+  }
+
+  const missing = [...used].filter(name => !defined.has(name))
+  assert.deepEqual(missing, [], `styling classes with no rule: ${missing.join(', ')}`)
+})
+
+// One valid class selector, optionally with a pseudo-class or pseudo-element.
+const SELECTOR = /^\.[a-z][a-z0-9-]*(:{1,2}[a-z-]+(\([^)]*\))?)*$/
+
+function deadSelectors(css) {
+  const dead = []
+  for (const match of css.matchAll(/^\s*([^\s{@][^{]*)\{/gm)) {
+    // A rule's selector list is comma separated: one bad entry drops the whole rule,
+    // so each part is checked, not the joined string.
+    for (const part of match[1].split(',')) {
+      const selector = part.trim()
+      if (!SELECTOR.test(selector)) dead.push(selector)
+    }
+  }
+  return dead
+}
+
+test('every selector in SK_CSS can match an element', () => {
+  const dead = deadSelectors(skCss())
+  assert.deepEqual(dead, [], `these selectors cannot match anything: ${dead.join(', ')}`)
+})
+
+test('a malformed selector in a list is caught, not waved through', () => {
+  // The shape that shipped once: a valid class followed by a broken selector. The
+  // browser drops the entire rule, which is why checking only the first token misses it.
+  assert.deepEqual(deadSelectors('.sk-truncate, .*** { overflow: hidden; }'), ['.***'])
+  assert.deepEqual(deadSelectors('.sk-a, .sk-b:hover { color: red; }'), [])
+  assert.deepEqual(deadSelectors('.sk-a::before { content: ""; }'), [])
+})
+
+test('the chooser renders the workflows discovery returned', () => {
+  const body = componentBody('ProcessChoice')
+  // Hard-coding three names hid every workflow a project installed for itself.
+  assert.ok(!/children:\s*PROCESS_COPY\.map/.test(body), 'the chooser must not render from a fixed list')
+  assert.match(body, /cards\.map\(entry =>/, 'it must map the discovered processes')
+  assert.match(body, /entry\.name \|\| entry\.id/, 'an unknown workflow needs a fallback title')
+  assert.match(body, /No workflows found in this folder/, 'and an empty folder needs a state')
+})
+
+test('starting a workflow shapes only the workflows this plugin generates', () => {
+  const index = SOURCE.indexOf('const start = useCallback')
+  assert.ok(index >= 0, 'start is missing')
+  const slice = SOURCE.slice(index, index + 1600)
+  // A custom workflow already has its file; asking the backend to shape it is a 400.
+  assert.match(slice, /const generated = !__str\(process\.source\)/, 'the shape call needs a guard')
+  assert.match(slice, /if \(generated\) \{/, 'and must be behind it')
+})
+
 test('every component that calls useState imports it', () => {
   const calls = SOURCE.match(/= useState\(/g) || []
   if (calls.length === 0) return

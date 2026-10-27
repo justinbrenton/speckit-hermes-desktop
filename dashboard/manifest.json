@@ -3,7 +3,7 @@
   "label": "Spec Kit",
   "description": "Backend for the Spec Kit pane: workflow discovery, run control, artifacts, clarification answers",
   "icon": "BookMarked",
-  "version": "0.1.3",
+  "version": "0.1.4",
   "tab": {
     "path": "/spec-kit-hermes",
     "hidden": true

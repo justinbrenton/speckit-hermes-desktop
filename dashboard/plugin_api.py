@@ -26,6 +26,7 @@ Security: every path is resolved inside ``<cwd>/.specify`` and must be one of
 from __future__ import annotations
 
 import hashlib
+import itertools
 import json
 import logging
 import os
@@ -33,6 +34,7 @@ import re
 import shutil
 import subprocess
 import tempfile
+import threading
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -388,8 +390,11 @@ def list_processes(cwd: str = Query(..., description="Absolute project directory
     workflows_dir = root / ".specify" / "workflows"
     installed, skill_dirs = _installed_skills()
 
-    def build_entry(data: dict[str, Any], source: str, installed_process: bool) -> dict[str, Any] | None:
+    def build_entry(data: dict[str, Any], source: str, installed_process: bool, process_id: str = "") -> dict[str, Any] | None:
         wf = data.get("workflow") or {}
+        # A workflow file need not declare an id; the directory it lives in is the
+        # name the rest of this module resolves, so use that when it is missing.
+        _effective_id = str(process_id or wf.get("id") or "").strip()
         inputs = []
         for name, spec in (data.get("inputs") or {}).items():
             spec = spec or {}
@@ -446,6 +451,13 @@ def list_processes(cwd: str = Query(..., description="Absolute project directory
             "description": wf.get("description", ""),
             "source": source,
             "installed": installed_process,
+            "extension": (
+                PROCESS_SPECS.get(_effective_id)
+                or PROCESS_SPECS.get(_canonical_process(_effective_id))
+                or PROCESS_SPECS.get(process_id)
+                or PROCESS_SPECS.get(_canonical_process(process_id))
+                or {}
+            ).get("extension"),
             "inputs": inputs,
             "steps": steps,
             "ready": bool(command_steps) and all(s["skill_installed"] for s in command_steps),
@@ -464,10 +476,34 @@ def list_processes(cwd: str = Query(..., description="Absolute project directory
         if not isinstance(data, dict):
             errors.append({"file": str(wf_file), "error": "not a mapping"})
             continue
-        entry = build_entry(data, str(wf_file), True)
+        entry = build_entry(data, str(wf_file), True, wf_file.parent.name)
         if entry:
             entry["id"] = entry["id"] or wf_file.parent.name
+            # Which file this card came from. A shaped legacy file declares the
+            # canonical id, so the declared id cannot say whether this is the file
+            # a run would use.
+            entry["_dir"] = wf_file.parent.name
             processes.append(entry)
+
+    # Collapse ids that mean the same process: an older project has a `bug` tree
+    # beside the `bugfix` one we ship, and two cards for one process is worse than
+    # either alone. The canonical id wins; the alias is dropped, not deleted.
+    collapsed: list[dict[str, Any]] = []
+    winner_raw: dict[str, str] = {}
+    winner_at: dict[str, int] = {}
+    for entry in processes:
+        raw_id = entry.pop("_dir", "") or entry["id"]
+        canonical = _canonical_process(raw_id)
+        entry["id"] = canonical
+        if canonical not in winner_at:
+            winner_at[canonical] = len(collapsed)
+            winner_raw[canonical] = raw_id
+            collapsed.append(entry)
+        elif raw_id == canonical and winner_raw[canonical] != canonical:
+            # The canonical file wins over the legacy one, whatever order they arrive in.
+            collapsed[winner_at[canonical]] = entry
+            winner_raw[canonical] = raw_id
+    processes = collapsed
 
     known = {entry["id"] for entry in processes}
     has_specify = (root / ".specify").is_dir()
@@ -480,7 +516,7 @@ def list_processes(cwd: str = Query(..., description="Absolute project directory
             logger.warning("generated workflow %s is unusable: %s", process_id, exc)
             errors.append({"file": process_id, "error": "generated workflow is unusable"})
             continue
-        entry = build_entry(data, "", False)
+        entry = build_entry(data, "", False, process_id)
         if entry:
             processes.append(entry)
 
@@ -590,8 +626,25 @@ def _output_check(root: Path, run_id: str) -> dict[str, Any]:
     }
 
 
-#: (cwd, process) currently holding a run, so two Starts cannot race.
-ACTIVE_RUNS: dict[tuple[str, str], dict[str, Any]] = {}
+#: (cwd, process) currently holding a run, so two Starts cannot race.# ---------------------------------------------------------------------------
+# Run admission: one run per project, as one explicit state machine
+#
+#   (none) --admit_start--> starting --claim--> running --begin_stop--> stopping
+#                                |                                   |
+#                                +--release (dispatch failed)--------+--> (none)
+#
+# Rules that make it hold together:
+#   * every transition happens under ACTIVE_LOCK, so no two requests interleave
+#   * a slot in `starting` or `stopping` occupies the project: nothing else may
+#     admit, and the reaper never clears it
+#   * every admission carries a token; only the owner may claim, release or stop
+# ---------------------------------------------------------------------------
+
+#: project key -> the one run occupying it. A tuple key keeps it a dict, which the
+#: tests and the stop path both reach into.
+ACTIVE_RUNS: dict[tuple[str], dict[str, Any]] = {}
+ACTIVE_LOCK = threading.RLock()
+_TOKENS = itertools.count(1)
 
 
 def _run_state_status(root: Path, run_id: str) -> Optional[str]:
@@ -607,16 +660,289 @@ def _run_state_status(root: Path, run_id: str) -> Optional[str]:
 #: process in that window kills the step that just started, so wait it out.
 GATE_TAKEOVER_GRACE = 20.0
 
+#: States that occupy the project and are never reaped on their own.
+HELD_STATES = ("starting", "stopping")
 
-def _active_key(root: Path, process: str) -> tuple[str, str]:
-    return (str(root).lower(), process)
+
+def _active_key(root: Path, process: str = "") -> tuple[str]:
+    """The slot key. One run per project, whatever process asks."""
+    return (str(root).lower(),)
 
 
-def _release_finished_jobs() -> None:
-    for key, entry in list(ACTIVE_RUNS.items()):
-        proc = entry.get("proc")
-        if proc is None or proc.poll() is not None:
-            ACTIVE_RUNS.pop(key, None)
+def _slot(root: Path) -> Optional[dict[str, Any]]:
+    return ACTIVE_RUNS.get(_active_key(root))
+
+
+def _alive(proc: Any) -> bool:
+    return proc is not None and proc.poll() is None
+
+
+def _kill_proc(proc: Any) -> tuple[bool, Optional[int]]:
+    """Terminate a dispatched process' tree.
+
+    Returns (gone, pid). ``gone`` is True only when the process actually ended —
+    a caller that frees a slot must not treat "the kill failed" as success.
+    """
+    if proc is None:
+        return True, None
+    pid = proc.pid
+    if not _alive(proc):
+        return True, pid
+    try:
+        if os.name == "nt":
+            # taskkill takes the whole tree, which is what a CLI that spawned
+            # helpers needs; fall back to the handle if it is somehow still alive.
+            subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], capture_output=True, timeout=30)
+            if _alive(proc):
+                proc.kill()
+        else:
+            proc.kill()
+    except (OSError, subprocess.SubprocessError):
+        return False, pid
+    return (not _alive(proc)), pid
+
+
+def _reap() -> None:
+    """Forget runs whose process is gone.
+
+    A held state belongs to whoever created it, *unless* it has been cancelled or
+    is stopping and its process is provably dead — otherwise a failed kill would
+    block the project forever.
+    """
+    with ACTIVE_LOCK:
+        for key, entry in list(ACTIVE_RUNS.items()):
+            state = entry.get("state")
+            if state == "starting" and not entry.get("cancelled"):
+                continue
+            if state == "stopping" and _alive(entry.get("proc")):
+                continue
+            if not _alive(entry.get("proc")):
+                ACTIVE_RUNS.pop(key, None)
+
+
+def _conflict(root: Path, detail: Optional[str] = None) -> HTTPException:
+    entry = _slot(root) or {}
+    running = entry.get("process") or "another process"
+    return HTTPException(
+        status_code=409,
+        detail=detail or f"a run of {running} is already in progress in this project",
+    )
+
+
+def _admit_start(root: Path, process: str, before: Optional[set[str]] = None) -> int:
+    """Claim the project for a new run. Raises 409 if anything occupies it."""
+    with ACTIVE_LOCK:
+        _reap()
+        if _slot(root) is not None:
+            raise _conflict(root)
+        token = next(_TOKENS)
+        ACTIVE_RUNS[_active_key(root)] = {
+            "state": "starting",
+            "token": token,
+            "process": _canonical_process(process),
+            "run_id": None,
+            "kind": "run",
+            "proc": None,
+            "job_id": None,
+            "before_ids": set(before or ()),
+            "cancelled": False,
+            "stopping": False,
+            "started_at": time.time(),
+        }
+        return token
+
+
+def _note_before(root: Path, token: int, before: set[str]) -> None:
+    """Remember which runs already existed, so a later stop can tell them apart."""
+    with ACTIVE_LOCK:
+        entry = _slot(root)
+        if entry is not None and entry.get("token") == token:
+            entry["before_ids"] = set(before)
+
+
+def _attach_job(root: Path, token: int, job: dict[str, Any]) -> None:
+    """Attach the dispatched process before the run id is known."""
+    with ACTIVE_LOCK:
+        entry = _slot(root)
+        if entry is not None and entry.get("token") == token:
+            entry["proc"] = (JOBS.get(job.get("job_id", "")) or {}).get("proc")
+            entry["job_id"] = job.get("job_id")
+
+
+def _claim(root: Path, token: int, run_id: Optional[str], kind: str, process: str, job: Optional[dict[str, Any]] = None) -> None:
+    """Turn the reservation into the running entry, unless it was cancelled."""
+    rejected = False
+    with ACTIVE_LOCK:
+        entry = _slot(root)
+        if entry is None or entry.get("token") != token or entry.get("cancelled"):
+            rejected = True
+        else:
+            entry["state"] = "running"
+            entry["run_id"] = run_id
+            entry["kind"] = kind
+            entry["process"] = _canonical_process(process)
+            entry["stopping"] = False
+            entry["started_at"] = time.time()
+    if rejected:
+        # Kill the job this request started — never what now occupies the slot, and
+        # never while holding the lock: taskkill can take half a minute.
+        _kill_proc((JOBS.get((job or {}).get("job_id", "")) or {}).get("proc"))
+        # If the slot is still ours (cancelled, not replaced), it is finished with.
+        _release(root, token)
+        raise HTTPException(status_code=409, detail="the run was stopped before it started")
+
+
+def _admit_resume(root: Path, process: str, run_id: str) -> int:
+    """Claim the project for a resume, taking over the parked run if that is what it is."""
+    parked: Any = None
+    with ACTIVE_LOCK:
+        _reap()
+        entry = _slot(root)
+        if entry is None:
+            token = next(_TOKENS)
+            ACTIVE_RUNS[_active_key(root)] = {
+                "state": "starting",
+                "token": token,
+                "process": _canonical_process(process),
+                "run_id": run_id,
+                "kind": "resume",
+                "proc": None,
+                "job_id": None,
+                "before_ids": set(),
+                "cancelled": False,
+                "started_at": time.time(),
+            }
+        else:
+            state = entry.get("state") or "running"
+            if state == "starting":
+                raise _conflict(root, f"a {process} run is already starting in this project")
+            if state == "stopping":
+                raise _conflict(root, f"a {process} run is already stopping in this project")
+            if str(entry.get("run_id") or "") != run_id:
+                raise _conflict(root)
+            age = time.time() - float(entry.get("started_at") or 0)
+            if entry.get("kind") == "resume" and age <= GATE_TAKEOVER_GRACE:
+                # The step we just started is still alive; answering again would
+                # kill it. Wait for it.
+                raise _conflict(root)
+            if _run_state_status(root, run_id) != "paused":
+                raise _conflict(root)
+            # Parked: take the slot for this resume first, then kill the old process
+            # outside the lock. taskkill can take seconds, and holding the global
+            # lock through it would stall admissions in every other project.
+            parked = entry.get("proc")
+            previous = (entry.get("kind"), entry.get("started_at"), entry.get("state"))
+            entry.update(
+                state="starting",
+                token=next(_TOKENS),
+                proc=None,
+                job_id=None,
+                kind="resume",
+                cancelled=False,
+                stopping=False,
+                started_at=time.time(),
+            )
+            token = entry["token"]
+    gone, _pid = _kill_proc(parked)
+    with ACTIVE_LOCK:
+        current = _slot(root)
+        if current is None or current.get("token") != token or current.get("cancelled"):
+            # A stop got in during the kill, or the slot moved on: do not dispatch
+            # a resume on top of whatever is there now.
+            if not gone:
+                # The parked process survived and no longer belongs to a slot, so
+                # nothing would ever reap or reach it. Keep it addressable by stop.
+                logger.warning("parked process %s survived a takeover that lost its slot", parked.pid)
+                JOBS[f"orphan-{token}"] = {
+                    "proc": parked,
+                    "id": f"orphan-{token}",
+                    "cwd": str(root),
+                    "argv": ["workflow", "resume", run_id],
+                }
+            raise HTTPException(status_code=409, detail="the run was stopped before it started")
+        if not gone:
+            # The parked process survived: put the entry back exactly as it was so an
+            # immediate retry is not blocked by the recent-resume grace window.
+            current.update(
+                state=previous[2] or "running",
+                kind=previous[0],
+                started_at=previous[1] or time.time(),
+                proc=parked,
+                cancelled=False,
+                stopping=False,
+            )
+    if not gone:
+        raise HTTPException(
+            status_code=409,
+            detail="the paused run is still shutting down; try again",
+        )
+    return token
+
+
+def _release(root: Path, token: int) -> None:
+    """Free the slot after a dispatch that never happened — if it is still ours."""
+    with ACTIVE_LOCK:
+        entry = _slot(root)
+        if entry is not None and entry.get("token") == token:
+            ACTIVE_RUNS.pop(_active_key(root), None)
+
+
+def _abandon_start(root: Path, token: int, job: Optional[dict[str, Any]]) -> bool:
+    """Undo a dispatch that failed. Returns True when the slot was released.
+
+    A process that survives its kill keeps the project held: admitting another run
+    beside it is worse than a 409 on the next attempt, and the reaper clears the
+    slot as soon as the process actually exits.
+    """
+    gone = True
+    if job is not None:
+        gone, _pid = _kill_proc((JOBS.get(job.get("job_id", "")) or {}).get("proc"))
+    if gone:
+        _release(root, token)
+    else:
+        with ACTIVE_LOCK:
+            entry = _slot(root)
+            if entry is not None and entry.get("token") == token:
+                entry["cancelled"] = True
+                entry["state"] = "stopping"
+    return gone
+
+
+def _begin_stop(root: Path, run_id: str) -> tuple[Optional[dict[str, Any]], Any]:
+    """Mark the named run as stopping and hand back the process to kill.
+
+    Returns (entry, proc). entry is None when this project has no run matching the
+    id, which is the case the caller answers with ``stopped: False``.
+    """
+    with ACTIVE_LOCK:
+        entry = _slot(root)
+        if entry is None:
+            return None, None
+        state = entry.get("state") or "running"
+        owned = False
+        if str(entry.get("run_id") or "") == run_id:
+            owned = True
+        elif state == "starting" and entry.get("run_id") is None:
+            # The dispatcher has not recorded an id yet. Only a run that did not
+            # exist when this reservation was made can be the one it created.
+            if run_id not in (entry.get("before_ids") or set()) and _run_state_status(root, run_id) is not None:
+                owned = True
+        if not owned:
+            return None, None
+        # A retry is allowed on purpose: if the first kill failed, the project stays
+        # held, and refusing every later stop would trap it there.
+        entry["cancelled"] = True
+        entry["stopping"] = True
+        if state != "starting":
+            entry["state"] = "stopping"
+        return entry, entry.get("proc")
+
+
+def _end_stop(root: Path, entry: dict[str, Any]) -> None:
+    """Release the slot once the kill has been attempted."""
+    with ACTIVE_LOCK:
+        if _slot(root) is entry:
+            ACTIVE_RUNS.pop(_active_key(root), None)
 
 
 def _run_ids(root: Path) -> set[str]:
@@ -873,8 +1199,33 @@ def _run_specify(args: list[str], cwd: Path, timeout: int) -> dict[str, Any]:
     }
 
 
+#: Ids this plugin wrote before the workflow id and the extension id were separated.
+#: Older projects have a `.specify/workflows/bug/` tree, which must keep working.
+PROCESS_ALIASES: dict[str, str] = {"bug": "bugfix"}
+
+
+def _canonical_process(process_id: str) -> str:
+    pid = str(process_id or "").strip()
+    return PROCESS_ALIASES.get(pid, pid)
+
+
+def _resolve_process_id(root: Path, process_id: str) -> str:
+    """The id whose workflow file exists: the canonical one, else a legacy alias.
+
+    A project created before the rename has `workflows/bug/`, and both the read path
+    and the CLI's own `workflow run <id>` need that id, not the new one.
+    """
+    canonical = _canonical_process(process_id)
+    if (root / ".specify" / "workflows" / canonical / "workflow.yml").is_file():
+        return canonical
+    for alias, target in PROCESS_ALIASES.items():
+        if target == canonical and (root / ".specify" / "workflows" / alias / "workflow.yml").is_file():
+            return alias
+    return canonical
+
+
 def _process_workflow_file(root: Path, process_id: str) -> Path:
-    return root / ".specify" / "workflows" / process_id / "workflow.yml"
+    return root / ".specify" / "workflows" / _resolve_process_id(root, process_id) / "workflow.yml"
 
 
 def _ensure_process_workflow(root: Path, process_id: str) -> bool:
@@ -884,6 +1235,7 @@ def _ensure_process_workflow(root: Path, process_id: str) -> bool:
     after someone shapes the process. Reads must not depend on that ordering:
     picking a process in the pane asks for its latest run before Start is pressed.
     """
+    process_id = _canonical_process(process_id)
     if process_id not in PROCESS_SPECS:
         return False
     target = _process_workflow_file(root, process_id)
@@ -948,34 +1300,44 @@ def workflow_run(process: str, payload: WorkflowRunRequest) -> dict[str, Any]:
     """Start a workflow. Gates park; nothing executes synchronously."""
     root = _project_root(payload.cwd)
     _process_data(root, process)
-    args = ["workflow", "run", process]
+    # Ask the CLI for the id it can actually find: a pre-rename project has `bug/`.
+    args = ["workflow", "run", _resolve_process_id(root, process)]
     for key, value in payload.inputs.items():
         if value is not None and str(value) != "":
             args += ["-i", f"{key}={value}"]
     args.append("--json")
-    _release_finished_jobs()
-    key = _active_key(root, process)
-    if key in ACTIVE_RUNS:
-        raise HTTPException(
-            status_code=409,
-            detail=f"a {process} run is already in progress in this project",
-        )
+
+    # What already existed *before* the reservation, so a stop during startup can
+    # never mistake an older run for this one.
     before = _run_ids(root)
-    before_artifacts = _artifact_index(root)
-    job = _start_job(args, root, max(30, min(payload.timeout, SPECIFY_TIMEOUT_MAX)))
-    run_id = _await_new_run(root, before)
-    if run_id:
-        try:
-            _snapshot_file(root, run_id).parent.mkdir(parents=True, exist_ok=True)
-            _snapshot_file(root, run_id).write_text(json.dumps(before_artifacts), encoding="utf-8")
-        except OSError:
-            pass
-    ACTIVE_RUNS[key] = {
-        "proc": JOBS.get(job["job_id"], {}).get("proc"),
-        "run_id": run_id,
-        "kind": "run",
-        "started_at": time.time(),
-    }
+    token = _admit_start(root, process, before)
+    job: Optional[dict[str, Any]] = None
+    try:
+        before_artifacts = _artifact_index(root)
+        job = _start_job(args, root, max(30, min(payload.timeout, SPECIFY_TIMEOUT_MAX)))
+        _attach_job(root, token, job)
+        run_id = _await_new_run(root, before)
+    except BaseException:
+        # A dispatch that happened must not outlive the request either. The slot is
+        # freed only once that process is provably gone.
+        _abandon_start(root, token, job)
+        raise
+    if not run_id:
+        # The CLI exited without leaving a run behind. Kill it rather than register
+        # a run nobody can address.
+        gone = _abandon_start(root, token, job)
+        if not gone:
+            raise HTTPException(
+                status_code=504,
+                detail="spec-kit did not report a run, and its process would not stop",
+            )
+        raise HTTPException(status_code=504, detail="spec-kit did not start a run in time")
+    try:
+        _snapshot_file(root, run_id).parent.mkdir(parents=True, exist_ok=True)
+        _snapshot_file(root, run_id).write_text(json.dumps(before_artifacts), encoding="utf-8")
+    except OSError:
+        pass
+    _claim(root, token, run_id, "run", process, job)
     return {
         "process": process,
         "run_id": run_id,
@@ -984,7 +1346,6 @@ def workflow_run(process: str, payload: WorkflowRunRequest) -> dict[str, Any]:
         "running": True,
         "stdout_file": job["stdout_file"],
     }
-
 
 
 @router.get("/workflows")
@@ -1006,43 +1367,16 @@ def workflow_resume(process: str, run_id: str, payload: WorkflowResumeRequest) -
         if value is not None and str(value) != "":
             args += ["-i", f"{key}={value}"]
     args.append("--json")
-    _release_finished_jobs()
-    key = _active_key(root, process)
-    if key in ACTIVE_RUNS:
-        # A job parked at a gate can still be alive for a moment after the state
-        # file says paused. That process has nothing left to do: the run is on
-        # disk, so answering the gate now is safe and must not be refused. A run
-        # that is genuinely executing still gets the 409.
-        entry = ACTIVE_RUNS[key]
-        age = time.time() - float(entry.get("started_at") or 0)
-        # Only a *resume* can be the step that a second answer would kill. A fresh
-        # run that parked quickly must be answerable at once, so the window does
-        # not apply to it.
-        just_answered = entry.get("kind") == "resume" and age <= GATE_TAKEOVER_GRACE
-        # And the active job must be the run being answered: naming an older run
-        # must not kill whatever newer run is in flight.
-        same_run = str(entry.get("run_id") or "") == run_id
-        if _run_state_status(root, run_id) == "paused" and same_run and not just_answered:
-            parked = ACTIVE_RUNS.pop(key, {})
-            proc = parked.get("proc")
-            if proc is not None and proc.poll() is None:
-                try:
-                    proc.kill()
-                except OSError:
-                    pass
-        else:
-            raise HTTPException(
-                status_code=409,
-                detail=f"a {process} run is already in progress in this project",
-            )
+
+    token = _admit_resume(root, process, run_id)
     _write_snapshot(root, run_id)
-    job = _start_job(args, root, max(30, min(payload.timeout, SPECIFY_TIMEOUT_MAX)))
-    ACTIVE_RUNS[key] = {
-        "proc": JOBS.get(job["job_id"], {}).get("proc"),
-        "run_id": run_id,
-        "kind": "resume",
-        "started_at": time.time(),
-    }
+    try:
+        job = _start_job(args, root, max(30, min(payload.timeout, SPECIFY_TIMEOUT_MAX)))
+        _attach_job(root, token, job)
+    except BaseException:
+        _release(root, token)
+        raise
+    _claim(root, token, run_id, "resume", process, job)
     return {"process": process, "run_id": run_id, "job_id": job["job_id"], "running": True}
 
 
@@ -1053,27 +1387,35 @@ def stop_run(process: str, run_id: str, payload: WorkflowResumeRequest) -> dict[
     _process_data(root, process)
     if not RUN_ID_RE.fullmatch(run_id or ""):
         raise HTTPException(status_code=400, detail=f"invalid run id: {run_id!r}")
+
+    # The slot is released only once the kill has actually taken effect: a start
+    # that arrives mid-kill still sees the project as occupied.
+    entry, proc = _begin_stop(root, run_id)
     killed: list[int] = []
-    for job in list(JOBS.values()):
-        proc = job.get("proc")
-        if proc is None or proc.poll() is not None:
-            continue
-        argv = job.get("argv") or []
-        if str(job.get("cwd", "")).lower() != str(root).lower():
-            continue
-        if argv[:1] != ["workflow"] and run_id not in " ".join(argv):
-            continue
-        pid = proc.pid
-        try:
-            if os.name == "nt":
-                subprocess.run(["taskkill", "/F", "/T", "/PID", str(pid)], capture_output=True, timeout=30)
-            else:
-                proc.kill()
+    gone = True
+
+    targets = [proc] if proc is not None else [
+        job.get("proc")
+        for job in list(JOBS.values())
+        if job.get("proc") is not None
+        and str(job.get("cwd", "")).lower() == str(root).lower()
+        and run_id in " ".join(job.get("argv") or [])
+    ]
+
+    if entry is not None and not targets:
+        # A startup whose process has not been attached yet. Nothing to kill and
+        # nothing proven dead, so keep the slot: the reaper frees it when the
+        # process is gone, and the delayed dispatch frees it through _claim.
+        gone = False
+
+    for target in targets:
+        ended, pid = _kill_proc(target)
+        gone = gone and ended
+        if ended and pid is not None:
             killed.append(pid)
-        except (OSError, subprocess.SubprocessError):
-            continue
-    _release_finished_jobs()
-    ACTIVE_RUNS.pop(_active_key(root, process), None)
+
+    if entry is not None and gone:
+        _end_stop(root, entry)
     return {"run_id": run_id, "stopped": bool(killed), "pids": killed}
 
 
@@ -1196,6 +1538,10 @@ def install_extension(payload: ExtensionRequest) -> dict[str, Any]:
     """Install a bundled extension (bug, assess) and refresh workflow discovery."""
     root = _project_root(payload.cwd)
     ext_id = re.sub(r"[^a-z0-9_-]", "", (payload.id or "").lower())
+    # The process is called `bugfix` (the bundled workflow's own id), while the
+    # extension that provides its commands is `bug`. Accept either, so the pane can
+    # pass the process id it is showing.
+    ext_id = {"bugfix": "bug"}.get(ext_id, ext_id)
     if ext_id not in {"bug", "assess"}:
         raise HTTPException(status_code=400, detail=f"unknown extension: {payload.id!r}")
     result = _run_specify(["extension", "add", ext_id], root, 300)
@@ -1348,7 +1694,9 @@ def _workflow_yaml(mode: str, with_constitution: bool = True) -> str:
 #: extensions provide commands only, so their workflow is generated from the
 #: documented step order the first time the process is used.
 PROCESS_SPECS: dict[str, dict[str, Any]] = {
-    "bug": {
+    # Keyed by the id the bundled workflow uses. It has to match workflows/ on disk,
+    # or the same process appears twice: once installed, once generated.
+    "bugfix": {
         "name": "Bug fixing",
         "description": "Assess a report, apply the fix, verify it",
         "inputs": [("report", True, "Paste the bug report, or a URL to it")],
@@ -1360,12 +1708,14 @@ PROCESS_SPECS: dict[str, dict[str, Any]] = {
             ("test", "speckit.bug.test", None,
              "Verify the fix recorded for the most recent bug under .specify/bugs/."),
         ],
+        "extension": "bug",
         "gates": {
             "assess": "Review the assessment before applying a fix.",
             "test": "Review the verification before closing the bug.",
         },
     },
     "assess": {
+        "extension": "assess",
         "name": "Idea assessment",
         "description": "Intake, research, define, shape, then a go / clarify / kill decision",
         "inputs": [("idea", True, "Describe the idea")],
@@ -1457,21 +1807,23 @@ def shape_workflow(payload: ShapeRequest) -> dict[str, Any]:
     """Write the short or full documented SDD workflow into the project."""
     root = _project_root(payload.cwd)
     mode = "full" if str(payload.mode).lower() == "full" else "short"
-    process_id = str(payload.process or "speckit").strip()
+    process_id = _canonical_process(str(payload.process or "speckit").strip())
 
     if process_id != "speckit":
         # A process whose extension ships commands only: the workflow is ours to
         # write, and writing it is what makes the process runnable at all.
         if process_id not in PROCESS_SPECS:
             raise HTTPException(status_code=400, detail=f"unknown process: {process_id}")
-        target = root / ".specify" / "workflows" / process_id / "workflow.yml"
+        # Write over the file this process actually reads: a pre-rename project has
+        # workflows/bug/, and creating a second tree would silently shadow it.
+        target = _process_workflow_file(root, process_id)
         if not (root / ".specify").is_dir():
             raise HTTPException(status_code=404, detail="no .specify directory here")
         target.parent.mkdir(parents=True, exist_ok=True)
         with_constitution = False
         generated = _process_yaml(process_id)
     else:
-        target = root / ".specify" / "workflows" / "speckit" / "workflow.yml"
+        target = _process_workflow_file(root, process_id)
         if not (root / ".specify").is_dir():
             raise HTTPException(status_code=404, detail="no .specify directory here")
         # A project that never installed the CLI's bundle has no speckit workflow at
@@ -2048,7 +2400,8 @@ def _run_belongs(state: dict[str, Any], process: str) -> bool:
         str(state.get("installed_workflow_id") or "").strip(),
     }
     ids.discard("")
-    return process in ids
+    wanted = _canonical_process(process)
+    return any(_canonical_process(state_id) == wanted for state_id in ids)
 
 
 def _latest_run(root: Path, process: Optional[str] = None) -> Optional[dict[str, Any]]:
