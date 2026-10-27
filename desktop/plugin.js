@@ -209,6 +209,9 @@ const SK_CSS = `
 .sk-root .sk-choice { cursor: pointer; border-left: 2px solid transparent; transition: background .12s ease, border-color .12s ease; }
 .sk-root .sk-choice:hover { background: #2a2f36; border-left-color: #6ea8fe; }
 .sk-root .sk-choice:focus-visible { outline: 2px solid #6ea8fe; outline-offset: -2px; }
+/* Non-runnable rows are plain divs, not buttons — no pointer/hover cue */
+.sk-root .sk-choice:not(button) { cursor: default; }
+.sk-root .sk-choice:not(button):hover { background: transparent; border-left-color: transparent; }
 .sk-root .sk-choice + .sk-choice { border-top: 1px solid var(--color-border, #343a41); }
 .sk-frame { border: 1px solid var(--color-border, #343a41); border-radius: 6px; overflow: hidden; }
 /* Status is a dot and a word: legible at 10px and it cannot be mistaken for a button. */

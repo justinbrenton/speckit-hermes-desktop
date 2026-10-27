@@ -330,7 +330,7 @@ specify bundle add    --dev ./bundles/hermes-desktop</code></pre>
 </ul>
 <p>ran, and a pre-commit hook runs it.</p>
 <ul>
-<li>55 node tests, and 160 backend tests: 155 that need only FastAPI and 5 that need Hermes.</li>
+<li>59 node tests, and 160 backend tests: 155 that need only FastAPI and 5 that need Hermes.</li>
 </ul>
 <p>Next, in the order I would do them:</p>
 <ol>
@@ -385,7 +385,7 @@ specify bundle add    --dev ./bundles/hermes-desktop</code></pre>
 <div class="table-wrap"><table>
 <thead><tr><th>Claim</th><th>Command</th><th>Observed</th></tr></thead>
 <tbody>
-<tr><td>Node tests pass</td><td><code>npm test</code></td><td>55 tests, 55 pass, 0 fail</td></tr>
+<tr><td>Node tests pass</td><td><code>npm test</code></td><td>59 tests, 59 pass, 0 fail</td></tr>
 <tr><td>The built plugin loads like the runtime loads it</td><td><code>node --test test/plugin-smoke.test.mjs</code></td><td>default export present, <code>id: spec-kit-hermes</code>, one pane and one status item registered</td></tr>
 <tr><td>The deployed plugin matches the build</td><td><code>cmp desktop/plugin.js ~/.hermes/desktop-plugins/spec-kit-hermes/plugin.js</code></td><td>identical</td></tr>
 <tr><td>The config edit adds one line, not a duplicate key</td><td>feed the live <code>config.yaml</code> through <code>config-enable.mjs</code></td><td>1 line added, <code>plugins.enabled</code> contains <code>spec-kit-hermes</code> once, file parses</td></tr>

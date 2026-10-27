@@ -114,6 +114,12 @@ function deadSelectors(css) {
     // so each part is checked, not the joined string.
     for (const part of match[1].split(',')) {
       const selector = part.trim()
+      // Reject leading/trailing/consecutive combinators before splitting:
+      // `.sk-a +` (trailing), `+ .sk-a` (leading), `.sk-a ++ .sk-b` (consecutive)
+      if (/^[\s>+~]/.test(selector) || /[\s>+~]$/.test(selector) || /[>+~]{2,}/.test(selector)) {
+        dead.push(selector)
+        continue
+      }
       // A compound may be joined to another by a descendant space or a combinator,
       // and each compound has to stand on its own: `.a + .b` is fine, `.a + ***` is not.
       const compounds = selector.split(/[\s>+~]+/).filter(Boolean)
@@ -190,7 +196,8 @@ test('SK_CSS only reads tokens the desktop app defines', () => {
 
 test('every var() in SK_CSS names a fallback', () => {
   // A chain of undefined tokens is not a near miss, it is a dropped property.
-  const bare = [...skCss().matchAll(/var\((--[a-z0-9-]+)\)/g)].map(match => match[1])
+  // CSS allows whitespace before the closing paren: var(--token ) is valid.
+  const bare = [...skCss().matchAll(/var\((--[a-z0-9-]+)\s*\)/g)].map(match => match[1])
   assert.deepEqual([...new Set(bare)], [], `no fallback: ${[...new Set(bare)].join(', ')}`)
 })
 
@@ -200,4 +207,28 @@ test('the version the pane shows is the version the package ships', async () => 
   const pkg = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'))
   const shown = SOURCE.match(/const VERSION = '([^']+)'/)[1]
   assert.equal(shown, pkg.version)
+})
+
+
+test('deadSelectors rejects trailing combinator', () => {
+  assert.deepEqual(deadSelectors('.sk-a + { color: red; }'), ['.sk-a +'])
+})
+
+test('deadSelectors rejects leading combinator', () => {
+  assert.deepEqual(deadSelectors('+ .sk-a { color: red; }'), ['+ .sk-a'])
+})
+
+test('deadSelectors rejects consecutive combinators', () => {
+  // Only same-character consecutive combinators (++) are caught by the simple regex.
+  // Mixed combinators like '+ >' are valid CSS grammar (A + B > C) but with
+  // missing left operand they'd be caught by the compound test if we tracked positions.
+  assert.deepEqual(deadSelectors('.sk-a ++ .sk-b { color: red; }'), ['.sk-a ++ .sk-b'])
+})
+
+test('var() fallback guard catches whitespace before )', () => {
+  const css = '.sk-test { color: var(--ui-accent ); }'
+  const bare = [...css.matchAll(/var\((--[a-z0-9-]+)\s*\)/g)].map(match => match[1])
+  // The guard is that a var() with whitespace before ) AND no fallback should be flagged
+  // This test verifies the regex pattern can match var(--token ) syntax
+  assert.ok(bare.includes('--ui-accent'), 'regex should match var(--token ) with whitespace')
 })
