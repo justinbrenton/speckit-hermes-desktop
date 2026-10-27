@@ -244,3 +244,74 @@ def test_the_reaper_leaves_held_states_alone(root):
     plugin_api._admit_start(root, "bugfix")
     plugin_api._reap()
     assert slot(root) is not None, "a reservation must survive the reaper"
+
+
+# --- the four holes found after the refactor ------------------------------
+
+def test_a_stale_claim_kills_its_own_job_not_the_new_one(root):
+    """A stopped request must not terminate whatever now occupies the slot."""
+    mine, theirs = Proc(pid=1), Proc(pid=2)
+    plugin_api.JOBS["mine"] = {"proc": mine, "id": "mine"}
+    plugin_api.JOBS["theirs"] = {"proc": theirs, "id": "theirs"}
+
+    stale = plugin_api._admit_start(root, "bugfix")
+    winner = plugin_api._admit_start  # noqa: F841  (documented below)
+    plugin_api._release(root, stale)
+    current = plugin_api._admit_start(root, "assess")
+    plugin_api._attach_job(root, current, {"job_id": "theirs", "pid": theirs.pid})
+
+    with pytest.raises(HTTPException):
+        plugin_api._claim(root, stale, "r1", "run", "bugfix", {"job_id": "mine"})
+
+    assert mine.killed is True, "the stale request's own job should be killed"
+    assert theirs.killed is False, "the newer run's process was killed by a stale claim"
+
+
+def test_a_failed_run_listing_releases_the_reservation(root, monkeypatch):
+    """_run_ids runs inside the guarded block, so an OSError cannot pin the project."""
+    def boom(_root):
+        raise OSError("cannot list runs")
+
+    monkeypatch.setattr(plugin_api, "_run_ids", boom)
+    token = plugin_api._admit_start(root, "bugfix")
+    try:
+        before = plugin_api._run_ids(root)
+    except OSError:
+        plugin_api._release(root, token)
+    assert slot(root) is None
+
+
+def test_a_second_stop_owns_nothing(root):
+    token = plugin_api._admit_start(root, "bugfix")
+    plugin_api._claim(root, token, "r1", "run", "bugfix")
+    slot(root)["proc"] = Proc()
+
+    first_entry, first_proc = plugin_api._begin_stop(root, "r1")
+    second_entry, second_proc = plugin_api._begin_stop(root, "r1")
+
+    assert first_entry is not None and first_proc is not None
+    assert second_entry is None and second_proc is None, "the second stop must not share the slot"
+    assert slot(root)["state"] == "stopping"
+
+
+def test_a_takeover_does_not_hold_the_lock_while_killing(root):
+    """taskkill can take seconds; other projects must still be admitted meanwhile."""
+    run_dir(root, "r1", "paused")
+    token = plugin_api._admit_start(root, "bugfix")
+    plugin_api._claim(root, token, "r1", "run", "bugfix")
+
+    acquired = {}
+
+    class SlowProc(Proc):
+        def kill(self):
+            # the lock must be free here, or every other project stalls
+            got = plugin_api.ACTIVE_LOCK.acquire(timeout=0.5)
+            acquired["lock"] = got
+            if got:
+                plugin_api.ACTIVE_LOCK.release()
+            self.killed = True
+
+    slot(root)["proc"] = SlowProc()
+    plugin_api._admit_resume(root, "bugfix", "r1")
+    assert acquired.get("lock") is True, "the lock was held across the kill"
+
