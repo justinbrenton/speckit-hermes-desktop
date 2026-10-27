@@ -288,17 +288,30 @@ def test_a_failed_run_listing_releases_the_reservation(root):
     assert slot(root) is None, "a failed listing must not leave a reservation"
 
 
-def test_a_second_stop_owns_nothing(root):
+def test_a_stop_can_be_retried_after_a_failed_kill(root):
+    """Refusing every later stop would trap the project when a kill fails."""
     token = plugin_api._admit_start(root, "bugfix")
     plugin_api._claim(root, token, "r1", "run", "bugfix")
-    slot(root)["proc"] = Proc()
 
-    first_entry, first_proc = plugin_api._begin_stop(root, "r1")
+    class Immortal(Proc):
+        def kill(self):
+            self.killed = True          # asked, but stayed alive
+
+    slot(root)["proc"] = Immortal()
+
+    first_entry, _first_proc = plugin_api._begin_stop(root, "r1")
+    gone, _pid = plugin_api._kill_proc(first_entry.get("proc"))
+    assert gone is False
+    assert slot(root) is not None, "a failed kill keeps the slot"
+
+    # the process dies later; a retry must be able to finish the job
+    slot(root)["proc"].alive = False
     second_entry, second_proc = plugin_api._begin_stop(root, "r1")
-
-    assert first_entry is not None and first_proc is not None
-    assert second_entry is None and second_proc is None, "the second stop must not share the slot"
-    assert slot(root)["state"] == "stopping"
+    assert second_entry is not None, "a retry must still own the slot"
+    ended, _pid = plugin_api._kill_proc(second_proc)
+    assert ended is True
+    plugin_api._end_stop(root, second_entry)
+    assert slot(root) is None
 
 
 def test_a_takeover_does_not_hold_the_lock_while_killing(root):
@@ -353,30 +366,98 @@ def test_a_kill_that_fails_keeps_the_slot(root):
     assert slot(root) is not None, "the slot must stay held while the process lives"
 
 
-def test_a_second_stop_during_startup_owns_nothing(root):
+def test_a_startup_stop_holds_the_slot_until_the_process_is_known_dead(root):
+    """Nothing attached yet is not proof of death: keep the project and let the
+    delayed dispatch or the reaper release it."""
     run_dir(root, "fresh")
     token = plugin_api._admit_start(root, "bugfix", set())
-    proc = Proc()
+
+    entry, proc = plugin_api._begin_stop(root, "fresh")
+
+    assert entry is not None and proc is None
+    assert slot(root) is not None, "an unattached startup must not free the slot"
+    assert slot(root)["state"] == "starting"
+
+    # once the dispatch reaches its claim, it releases the slot it still owns
+    with pytest.raises(HTTPException):
+        plugin_api._claim(root, token, "fresh", "run", "bugfix", None)
+    assert slot(root) is None
+
+
+# --- failures that must not leave the project stuck or overlapped ----------
+
+def test_a_failed_start_cleanup_holds_the_slot_while_the_process_lives(root):
+    """Releasing here would let a second run dispatch beside the survivor."""
+    token = plugin_api._admit_start(root, "bugfix", set())
+
+    class Immortal(Proc):
+        def kill(self):
+            self.killed = True
+
+    proc = Immortal()
     plugin_api.JOBS["j"] = {"proc": proc, "id": "j"}
-    plugin_api._attach_job(root, token, {"job_id": "j", "pid": proc.pid})
 
-    first_entry, _ = plugin_api._begin_stop(root, "fresh")
-    second_entry, second_proc = plugin_api._begin_stop(root, "fresh")
+    gone = plugin_api._abandon_start(root, token, {"job_id": "j", "pid": proc.pid})
 
-    assert first_entry is not None
-    assert second_entry is None and second_proc is None
+    assert gone is False
+    assert slot(root) is not None, "the slot was freed while the process still lived"
+    assert slot(root)["state"] == "stopping"
 
 
-@pytest.fixture(autouse=True)
-def no_real_kills(monkeypatch):
-    """Fake pids must never reach taskkill on the developer's machine."""
-    calls = []
+def test_the_reaper_clears_a_stopping_slot_once_the_process_dies(root):
+    token = plugin_api._admit_start(root, "bugfix", set())
+    entry = slot(root)
+    entry.update(state="stopping", cancelled=True)
 
-    class FakeRun:
-        @staticmethod
-        def run(argv, **kwargs):
-            calls.append(argv)
-            return None
+    class Proc2(Proc):
+        pass
 
-    monkeypatch.setattr(plugin_api.subprocess, "run", FakeRun.run)
-    return calls
+    proc = Proc2()
+    entry["proc"] = proc
+    plugin_api._reap()
+    assert slot(root) is not None, "a live process keeps the slot"
+
+    proc.alive = False
+    plugin_api._reap()
+    assert slot(root) is None
+
+
+def test_a_failed_takeover_restores_the_entry_for_an_immediate_retry(root):
+    """The grace window must not be armed by a resume that never started."""
+    run_dir(root, "r1", "paused")
+    token = plugin_api._admit_start(root, "bugfix")
+    plugin_api._claim(root, token, "r1", "run", "bugfix")
+
+    class Immortal(Proc):
+        def kill(self):
+            self.killed = True
+
+    slot(root)["proc"] = Immortal()
+    with pytest.raises(HTTPException) as caught:
+        plugin_api._admit_resume(root, "bugfix", "r1")
+    assert caught.value.status_code == 409
+
+    entry = slot(root)
+    assert entry["kind"] == "run", "a failed takeover must not look like a finished resume"
+    assert entry["state"] == "running"
+
+
+def test_a_takeover_stops_if_the_slot_is_taken_during_the_kill(root):
+    """The kill happens outside the lock, so ownership must be re-checked after it."""
+    run_dir(root, "r1", "paused")
+    token = plugin_api._admit_start(root, "bugfix")
+    plugin_api._claim(root, token, "r1", "run", "bugfix")
+
+    class Sneaky(Proc):
+        def kill(self):
+            # a stop wins the slot while this kill is in flight
+            with plugin_api.ACTIVE_LOCK:
+                plugin_api.ACTIVE_RUNS.clear()
+            self.alive = False
+
+    slot(root)["proc"] = Sneaky()
+    with pytest.raises(HTTPException) as caught:
+        plugin_api._admit_resume(root, "bugfix", "r1")
+    assert caught.value.status_code == 409
+    assert slot(root) is None, "the resume must not re-create a slot it lost"
+
