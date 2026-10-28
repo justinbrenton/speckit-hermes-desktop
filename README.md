@@ -21,10 +21,6 @@ Spec Kit is GitHub's toolkit for specification-driven development. It ships skil
 
 Two things make it more than a launcher. The workflow stops at each review gate and opens the file it is reviewing, so you read and edit the spec before approving the plan. When a step produces nothing, the gate says so instead of reporting success.
 
-## Fork note
-
-This is a fork of [github/spec-kit](https://github.com/github/spec-kit) that adds a desktop pane for Hermes Desktop and a FastAPI backend. The plugin id `spec-kit-hermes` is distinct from upstream and does not collide. This project is not affiliated with GitHub or the Hermes team.
-
 ## Table of contents
 
 - [Screenshots](#screenshots)
@@ -41,6 +37,22 @@ This is a fork of [github/spec-kit](https://github.com/github/spec-kit) that add
 - [License](#license)
 
 ## Screenshots
+
+Spec Kit Plugin - Main Pane:
+
+![Spec Driven Development, Bug Fixing, Idea Assessment](docs/speckit-ss1.png?v=3)
+
+Spec Driven Development (Short/Full Paths):
+
+| Spec Driven Development (Short/Full Paths) | Spec Driven Development - Short |
+| --- | --- |
+| ![Spec Driven Development - Main](docs/speckit-ss2.png) | ![Pull request detail view](docs/speckit-ss3.png?v=3) |
+
+
+| Bug Fixing | Issues |
+| --- | --- |
+| ![Bug Fixing](docs/speckit-ss5.png) | ![Idea Assessment](docs/speckit-ss6.png) |
+
 
 <!--
   New in this fork. Upload these files to docs/ and delete the comment markers.
