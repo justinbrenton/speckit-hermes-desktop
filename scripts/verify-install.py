@@ -2,12 +2,26 @@
 
 Run after `node scripts/install.mjs`:
 
-    PYTHONPATH="$LOCALAPPDATA/hermes/hermes-agent" python scripts/verify-install.py [--profile codie]
+    # Windows (PowerShell)
+    $env:PYTHONPATH="$env:LOCALAPPDATA/hermes/hermes-agent"; python scripts/verify-install.py [--profile <your-profile>]
 
-It uses Hermes' own discovery + mount functions against the real Hermes home (not a
-temp copy), then drives the mounted router over HTTP: read the three files from a temp
-project, write one, and confirm the 409 conflict path. Exits non-zero on the first
-failed assertion, so it can be used as a post-install gate.
+    # Linux/macOS (bash/zsh)
+    PYTHONPATH="$HOME/.hermes/hermes-agent" python scripts/verify-install.py [--profile <your-profile>]
+
+The --home argument takes the **Hermes root home** (directory containing plugins/,
+desktop-plugins/, and profiles/), not a profile subdirectory. It defaults to:
+- Windows: %LOCALAPPDATA%\\hermes
+- Linux/macOS: ~/.hermes
+
+The --profile argument targets a specific profile for the consent check
+(plugins.enabled in that profile's config.yaml). If omitted, it auto-detects
+from the home path or falls back to 'default'.
+
+It uses Hermes' own discovery + mount functions against the real Hermes root
+home (not a temp copy), then drives the mounted router over HTTP: read the
+three files from a temp project, write one, and confirm the 409 conflict path.
+Exits non-zero on the first failed assertion, so it can be used as a
+post-install gate.
 """
 
 from __future__ import annotations
@@ -18,23 +32,40 @@ import sys
 import tempfile
 from pathlib import Path
 
-HERMES_HOME = Path(os.environ.get("HERMES_HOME") or Path(os.environ.get("LOCALAPPDATA", "")) / "hermes")
+HERMES_HOME = Path(os.environ.get("HERMES_HOME") or Path(os.environ.get("LOCALAPPDATA") or os.environ.get("HOME") or "") / "hermes")
 PLUGIN = "spec-kit-hermes"
+
+
+def _auto_detect_profile(home: Path) -> str:
+    """Extract profile from home path if it contains /profiles/<name>/."""
+    parts = home.parts
+    for i, part in enumerate(parts):
+        if part == "profiles" and i + 1 < len(parts):
+            return parts[i + 1]
+    # If home is the root hermes dir, check for exactly one profile in profiles/
+    profiles_dir = home / "profiles"
+    if profiles_dir.is_dir():
+        profiles = [p.name for p in profiles_dir.iterdir() if p.is_dir()]
+        if len(profiles) == 1:
+            return profiles[0]
+    return "default"
 
 
 def main() -> int:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--profile", default=os.environ.get("HERMES_PROFILE", "codie"))
+    parser.add_argument("--profile", default=None)
     parser.add_argument("--home", default=str(HERMES_HOME))
     args = parser.parse_args()
 
     home = Path(args.home)
     root = home
-    if root.name == args.profile and root.parent.name == "profiles":
+    # Auto-detect profile if not explicitly provided
+    profile = args.profile or os.environ.get("HERMES_PROFILE") or _auto_detect_profile(home)
+    if root.name == profile and root.parent.name == "profiles":
         root = root.parent.parent
 
     # Discovery resolves user plugins from the process home and the default root.
-    os.environ["HERMES_HOME"] = str(root / "profiles" / args.profile)
+    os.environ["HERMES_HOME"] = str(root / "profiles" / profile)
 
     from hermes_cli.web_server_dashboard import (
         _discover_dashboard_plugins,
@@ -60,7 +91,7 @@ def main() -> int:
     # Consent: the active profile's config must list the plugin. ruamel is what Hermes
     # itself parses config with, so prefer it and fail loudly on a duplicate key instead
     # of silently reading whichever copy wins.
-    config_path = root / "profiles" / args.profile / "config.yaml"
+    config_path = root / "profiles" / profile / "config.yaml"
     text = config_path.read_text(encoding="utf-8")
     try:
         from ruamel.yaml import YAML

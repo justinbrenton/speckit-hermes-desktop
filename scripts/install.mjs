@@ -1,21 +1,27 @@
 /**
- * Install the Spec Kit plugin into a Hermes home.
+ * Install the Spec Kit plugin into a Hermes root home.
  *
- *   node scripts/install.mjs [--profile codie] [--home <hermes home>] [--dry-run]
+ *   node scripts/install.mjs [--profile <your-profile>] [--home <hermes root home>] [--dry-run]
  *
  * Two halves, because that is what Hermes Desktop needs:
- *   1. desktop half  -> <home>/desktop-plugins/spec-kit-hermes/plugin.js
+ *   1. desktop half  -> <root home>/desktop-plugins/spec-kit-hermes/plugin.js
  *      (one pane; loaded by the app's runtime plugin loader)
- *   2. backend half  -> <home>/plugins/spec-kit-hermes/dashboard/{manifest.json,plugin_api.py}
+ *   2. backend half  -> <root home>/plugins/spec-kit-hermes/dashboard/{manifest.json,plugin_api.py}
  *      (FastAPI router mounted at /api/plugins/spec-kit-hermes, the namespace
  *      `ctx.rest` is scoped to)
  *
- * …plus the consent edit: the name goes into `plugins.enabled` of the profile's
- * config.yaml (a user plugin's Python is not imported without it).
+ * …plus the consent edit: the name goes into `plugins.enabled` of the target
+ * profile's config.yaml (a user plugin's Python is not imported without it).
+ *
+ * The <root home> is the directory containing `plugins/`, `desktop-plugins/`,
+ * and `profiles/` — not a profile subdirectory. The installer auto-detects it
+ * from `HERMES_HOME` (unwrapping profile paths), `LOCALAPPDATA` (Windows), or
+ * `HOME` (Linux/macOS). Profiles live at `<root home>/profiles/<name>/`.
  */
 import { copyFile, mkdir, readdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
+import { execFileSync } from 'node:child_process'
 
 import { build } from './build.mjs'
 import { enablePlugin, isPluginEnabled } from './config-enable.mjs'
@@ -63,7 +69,7 @@ export function resolveHome(explicit, env = process.env) {
     const normalised = String(candidate)
       .split(CH_BACKSLASH)
       .join('/')
-      .replace(/\/{2,}/g, '/')
+      .replace(/\/+/g, '/')
     const root = normalised.startsWith('//') ? '//' : normalised.startsWith('/') ? '/' : ''
     const segments = normalised.split('/').filter(Boolean)
     const marker = segments.lastIndexOf('profiles')
@@ -115,6 +121,144 @@ async function enableInConfig(path, name, { dryRun, required }) {
     throw new Error(`${path}: the edit did not land — run \`hermes plugins enable ${name}\` manually`)
   }
   return { path, changed, alreadyEnabled }
+}
+
+/**
+ * Find the Hermes venv site-packages directory and install Python dependencies
+ * required by the plugin's backend (plugin_api.py).
+ */
+async function ensurePythonDeps(home, { dryRun }) {
+  // The Hermes venv lives under <hermes home>/installs/<id>/environments/<id>/venv/
+  // but the exact paths vary. We find it by looking for the venv that has
+  // hermes_cli importable (the one the running gateway uses).
+  const installsDir = join(home, 'installs')
+  if (!(await exists(installsDir))) {
+    return { installed: [], skipped: 'no installs dir' }
+  }
+
+  // Read plugin_api.py to find imports we need to satisfy
+  const apiPath = join(ROOT, 'dashboard', 'plugin_api.py')
+  const apiSource = await readFile(apiPath, 'utf8')
+  const imports = new Set()
+  for (const line of apiSource.split('\n')) {
+    const m = line.match(/^\s*(?:import|from)\s+([a-zA-Z_][a-zA-Z0-9_]*)/)
+    if (m && !m[1].startsWith('_') && !['os', 'sys', 'json', 're', 'time', 'datetime', 'pathlib', 'typing', 'itertools', 'hashlib', 'shutil', 'tempfile', 'threading', 'logging', 'subprocess'].includes(m[1])) {
+      imports.add(m[1])
+    }
+  }
+  // Known third-party deps used by plugin_api.py
+  const knownDeps = new Map([
+    ['yaml', 'PyYAML>=6.0'],
+    ['fastapi', 'fastapi>=0.110'],
+    ['pydantic', 'pydantic>=2.6'],
+  ])
+  const needed = []
+  for (const imp of imports) {
+    if (knownDeps.has(imp)) needed.push(knownDeps.get(imp))
+  }
+
+  if (needed.length === 0) return { installed: [], skipped: 'no third-party deps' }
+
+  // Platform-specific venv structure
+  const isWindows = process.platform === 'win32'
+  const venvBinDir = isWindows ? 'Scripts' : 'bin'
+  const venvPythonExe = isWindows ? 'python.exe' : 'python'
+  const venvLibDir = isWindows ? 'Lib' : 'lib'
+
+  // Find a venv with hermes_cli available (the one Hermes runs with)
+  let venvPython = null
+  const installDirs = await readdir(installsDir, { withFileTypes: true })
+  for (const installDir of installDirs) {
+    if (!installDir.isDirectory()) continue
+    const envDir = join(installsDir, installDir.name, 'environments')
+    if (!(await exists(envDir))) continue
+    const envs = await readdir(envDir, { withFileTypes: true })
+    for (const env of envs) {
+      if (!env.isDirectory()) continue
+      const python = join(envDir, env.name, 'venv', venvBinDir, venvPythonExe)
+      if (!(await exists(python))) continue
+      // Probe: can this python import hermes_cli?
+      try {
+        execFileSync(python, ['-c', 'import hermes_cli.web_server_dashboard'], { stdio: 'ignore', timeout: 5000 })
+        venvPython = python
+        break
+      } catch { /* not this one */ }
+    }
+    if (venvPython) break
+  }
+
+  if (!venvPython) {
+    return { installed: [], skipped: 'no usable Hermes venv found' }
+  }
+
+  // Find pip that can target this venv (some Hermes venvs lack pip)
+  let pipPython = null
+  let pipArgs = ['-m', 'pip', 'install']
+  let targetArgs = []
+  // Check if venv has its own pip
+  try {
+    execFileSync(venvPython, ['-m', 'pip', '--version'], { stdio: 'ignore', timeout: 3000 })
+    pipPython = venvPython
+  } catch {
+    // Fallback: find a system python with pip, then use --target pointing to venv site-packages
+    // site-packages path: <venv>/lib/pythonX.Y/site-packages (Unix) or <venv>/Lib/site-packages (Windows)
+    const venvRoot = venvPython.replace(join(venvBinDir, venvPythonExe), '')
+    const sitePackages = join(venvRoot, venvLibDir, isWindows ? 'site-packages' : `python${process.version.match(/\d+\.\d+/)?.[0] || '3.12'}/site-packages`)
+    targetArgs = ['--target', sitePackages]
+
+    // Probe candidate system pythons for one with pip
+    const localAppData = process.env.LOCALAPPDATA || ''
+    const candidates = isWindows
+      ? [
+          // Allow override via SYSTEM_PYTHON env var
+          process.env.SYSTEM_PYTHON || '',
+          // Common Windows Python locations (expand globs)
+          'C:/Python*/python.exe',
+          'C:/Program Files/Python*/python.exe',
+          'C:/Program Files (x86)/Python*/python.exe',
+          // Microsoft Store Python
+          localAppData ? join(localAppData, 'Microsoft', 'WindowsApps', 'python.exe') : '',
+          // Fall back to PATH
+          'python'
+        ].filter(Boolean).flatMap(p => {
+          // Expand glob patterns on Windows
+          if (p.includes('*')) {
+            try {
+              const matches = execFileSync('cmd', ['/c', `dir /b ${p} 2>nul`], { stdio: ['ignore', 'pipe', 'ignore'], encoding: 'utf8', timeout: 3000 })
+              return matches.trim().split('\n').filter(Boolean).map(m => join(m, 'python.exe'))
+            } catch { return [] }
+          }
+          return p
+        })
+      : ['python3', 'python', '/usr/bin/python3', '/usr/bin/python']
+
+    for (const cand of candidates) {
+      try {
+        execFileSync(cand, ['-m', 'pip', '--version'], { stdio: 'ignore', timeout: 3000 })
+        pipPython = cand
+        break
+      } catch { /* try next */ }
+    }
+    if (!pipPython) {
+      return { installed: [], skipped: 'no system python with pip found for fallback' }
+    }
+  }
+
+  const installed = []
+  for (const dep of needed) {
+    const modName = dep.split('>=')[0].replace('-', '_')
+    try {
+      execFileSync(venvPython, ['-c', `import ${modName}`], { stdio: 'ignore', timeout: 5000 })
+    } catch {
+      if (!dryRun) {
+        execFileSync(pipPython, pipArgs.concat(targetArgs, dep), { stdio: 'pipe', timeout: 30000 })
+        installed.push(dep)
+      } else {
+        installed.push(`${dep} (would install)`)
+      }
+    }
+  }
+  return { installed, venv: venvPython }
 }
 
 export async function install({ profile, home, dryRun = false } = {}) {
@@ -175,6 +319,14 @@ export async function install({ profile, home, dryRun = false } = {}) {
     )
   }
 
+  // 2c. ensure Python runtime dependencies are installed in the Hermes venv
+  const depResult = await ensurePythonDeps(home, { dryRun })
+  if (depResult.installed.length) {
+    report.notes.push(`installed Python deps: ${depResult.installed.join(', ')}`)
+  } else if (depResult.skipped) {
+    report.notes.push(`Python deps: ${depResult.skipped}`)
+  }
+
   // 3. consent
   const profileName = profile || process.env.HERMES_PROFILE || 'default'
   const profileConfig = join(home, 'profiles', profileName, 'config.yaml')
@@ -199,6 +351,6 @@ if (process.argv[1] && fileURLToPath(import.meta.url) === resolve(process.argv[1
     console.log(`  note: ${note}`)
   }
   console.log('')
-  console.log('Next: restart Hermes Desktop (fully quit every Hermes.exe) so the runtime plugin')
+  console.log('Next: restart Hermes Desktop (fully quit every Hermes process) so the runtime plugin')
   console.log('loader picks up plugin.js, then open the "Spec Kit" pane in the right sidebar.')
 }
