@@ -38,7 +38,7 @@ Two things make it more than a launcher. The workflow stops at each review gate 
 
 ## Screenshots
 
-Spec Kit Plugin - Main Pane:
+<p align="center">Spec Kit Plugin - Main Pane:<p>
 
 <p align="center"><img src="docs/assets/speckit-ss1.png?v=3" alt="Spec Driven Development, Bug Fixing, Idea Assessment"><p>
 
