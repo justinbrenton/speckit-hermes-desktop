@@ -1,4 +1,4 @@
-.packages.
+.packages/
 .venv-test/
 .build-probe.mjs
 plugin-check.mjs
