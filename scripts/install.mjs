@@ -217,7 +217,14 @@ async function ensurePythonDeps(home, { dryRun }) {
     }
     targetArgs = ['--target', sitePackages]
 
-    // Probe candidate system pythons for one with pip
+    // Get venv Python version for compatibility check
+    const venvVersion = execFileSync(venvPython, ['-c', 'import sys; print(sys.version_info[:2])'], {
+      stdio: ['ignore', 'pipe', 'ignore'],
+      encoding: 'utf8',
+      timeout: 3000
+    }).trim()
+
+    // Probe candidate system pythons for one with pip AND matching version
         const localAppData = process.env.LOCALAPPDATA || ''
         const candidates = isWindows
           ? [
@@ -245,12 +252,21 @@ async function ensurePythonDeps(home, { dryRun }) {
           : ['python3', 'python', '/usr/bin/python3', '/usr/bin/python']
 
     for (const cand of candidates) {
-      try {
-        execFileSync(cand, ['-m', 'pip', '--version'], { stdio: 'ignore', timeout: 3000 })
-        pipPython = cand
-        break
-      } catch { /* try next */ }
-    }
+          try {
+            execFileSync(cand, ['-m', 'pip', '--version'], { stdio: 'ignore', timeout: 3000 })
+            // Check Python version compatibility (major.minor must match)
+            const candVersion = execFileSync(cand, ['-c', 'import sys; print(sys.version_info[:2])'], {
+              stdio: ['ignore', 'pipe', 'ignore'],
+              encoding: 'utf8',
+              timeout: 3000
+            }).trim()
+            if (candVersion !== venvVersion) {
+              continue // skip incompatible Python version
+            }
+            pipPython = cand
+            break
+          } catch { /* try next */ }
+        }
     if (!pipPython) {
       return { installed: [], skipped: 'no system python with pip found for fallback' }
     }
