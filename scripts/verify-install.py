@@ -68,8 +68,14 @@ def main() -> int:
     if root.name == profile and root.parent.name == "profiles":
         root = root.parent.parent
 
+    # Default profile config is at <root>/config.yaml, not <root>/profiles/default/config.yaml
+    if profile == "default":
+        profile_home = root
+    else:
+        profile_home = root / "profiles" / profile
+
     # Discovery resolves user plugins from the process home and the default root.
-    os.environ["HERMES_HOME"] = str(root / "profiles" / profile)
+    os.environ["HERMES_HOME"] = str(profile_home)
 
     from hermes_cli.web_server_dashboard import (
         _discover_dashboard_plugins,
@@ -95,7 +101,7 @@ def main() -> int:
     # Consent: the active profile's config must list the plugin. ruamel is what Hermes
     # itself parses config with, so prefer it and fail loudly on a duplicate key instead
     # of silently reading whichever copy wins.
-    config_path = root / "profiles" / profile / "config.yaml"
+    config_path = profile_home / "config.yaml"
     text = config_path.read_text(encoding="utf-8")
     try:
         from ruamel.yaml import YAML
