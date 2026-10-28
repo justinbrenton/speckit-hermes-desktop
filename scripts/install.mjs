@@ -201,9 +201,20 @@ async function ensurePythonDeps(home, { dryRun }) {
     pipPython = venvPython
   } catch {
     // Fallback: find a system python with pip, then use --target pointing to venv site-packages
-    // site-packages path: <venv>/lib/pythonX.Y/site-packages (Unix) or <venv>/Lib/site-packages (Windows)
-    const venvRoot = venvPython.replace(join(venvBinDir, venvPythonExe), '')
-    const sitePackages = join(venvRoot, venvLibDir, isWindows ? 'site-packages' : `python${process.version.match(/\d+\.\d+/)?.[0] || '3.12'}/site-packages`)
+    // Get the actual site-packages path from the venv Python interpreter (avoids Node version mismatch)
+    let sitePackages
+    try {
+      const purelib = execFileSync(venvPython, ['-c', 'import sysconfig; print(sysconfig.get_path("purelib"))'], {
+        stdio: ['ignore', 'pipe', 'ignore'],
+        encoding: 'utf8',
+        timeout: 3000
+      }).trim()
+      sitePackages = purelib
+    } catch {
+      // Fallback: best-effort path construction if sysconfig fails
+      const venvRoot = venvPython.replace(join(venvBinDir, venvPythonExe), '')
+      sitePackages = join(venvRoot, venvLibDir, isWindows ? 'site-packages' : `python${process.version.match(/\d+\.\d+/)?.[0] || '3.12'}/site-packages`)
+    }
     targetArgs = ['--target', sitePackages]
 
     // Probe candidate system pythons for one with pip
