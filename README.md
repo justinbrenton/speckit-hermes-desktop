@@ -40,18 +40,18 @@ Two things make it more than a launcher. The workflow stops at each review gate 
 
 Spec Kit Plugin - Main Pane:
 
-![Spec Driven Development, Bug Fixing, Idea Assessment](docs/speckit-ss1.png?v=3)
+![Spec Driven Development, Bug Fixing, Idea Assessment](docs/assets/speckit-ss1.png?v=3)
 
 Spec Driven Development (Short/Full Paths):
 
 | Spec Driven Development (Short/Full Paths) | Spec Driven Development - Short |
 | --- | --- |
-| ![Spec Driven Development - Main](docs/speckit-ss2.png) | ![Pull request detail view](docs/speckit-ss3.png?v=3) |
+| ![Spec Driven Development - Main](docs/assets/speckit-ss2.png) | ![Pull request detail view](docs/assets/speckit-ss3.png?v=3) |
 
 
 | Bug Fixing | Issues |
 | --- | --- |
-| ![Bug Fixing](docs/speckit-ss5.png) | ![Idea Assessment](docs/speckit-ss6.png) |
+| ![Bug Fixing](docs/assets/speckit-ss5.png) | ![Idea Assessment](docs/assets/speckit-ss6.png) |
 
 
 <!--
