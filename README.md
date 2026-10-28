@@ -46,7 +46,7 @@ Spec Driven Development (Short/Full Paths):
 
 | Spec Driven Development (Short/Full Paths) | Spec Driven Development - Short |
 | --- | --- |
-| <img src="docs/assets/speckit-ss2.png" alt="Spec Driven Development - Main"> | <img src="docs/assets/speckit-ss3.png?v=3" alt="Pull request detail view"> |
+| <img src="docs/assets/speckit-ss2.png" alt="Spec Driven Development - Main"> | <img src="docs/assets/speckit-ss3.png?v=3" alt="Spec Driven Development - Short"> |
 
 | Bug Fixing | Idea Assessment |
 | --- | --- |
