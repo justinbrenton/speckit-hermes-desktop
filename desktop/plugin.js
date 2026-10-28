@@ -717,11 +717,13 @@ function SpecKitPane() {
     try {
       let data
       try {
-        data = await rest(`/browse?path=${encodeURIComponent(wanted)}`)
-      } catch (err) {
-              // A folder the operator has not allowed is a refusal, not a dead end: fall
-              // back to the listing of what is allowed and say why.
-              if (wanted) {
+              data = await rest(`/browse?path=${encodeURIComponent(wanted)}`)
+            } catch (err) {
+              // A folder the operator has not allowed is a refusal (HTTP 403), not a dead end:
+              // fall back to the listing of what is allowed and say why.
+              // Other errors (400, 500, etc.) must not be masked — rethrow.
+              const status = err && (err.status || err.statusCode || err.response?.status)
+              if (wanted && status === 403) {
                 data = await rest('/browse?path=')
                 setBrowseNotice('That folder is outside the folders this plugin may open. Here are the allowed ones.')
               } else {
