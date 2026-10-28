@@ -32,7 +32,10 @@ import sys
 import tempfile
 from pathlib import Path
 
-HERMES_HOME = Path(os.environ.get("HERMES_HOME") or Path(os.environ.get("LOCALAPPDATA") or os.environ.get("HOME") or "") / "hermes")
+HERMES_HOME = Path(
+    os.environ.get("HERMES_HOME")
+    or Path(os.environ.get("LOCALAPPDATA") or os.environ.get("HOME") or "") / ".hermes"
+)
 PLUGIN = "spec-kit-hermes"
 
 

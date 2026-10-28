@@ -171,13 +171,13 @@ Then restart Hermes completely.
 
 The desktop plugin cannot reach `ctx.rest`. The backend is not mounted or the gateway is not running.
 
-**Fix:** Same as above — re-run the installer and restart Hermes.
+**Fix:** Same as above - re-run the installer and restart Hermes.
 
 ### Browse button does nothing
 
-The folder picker falls back to the allowed listing. If your project is outside the allowlist, the backend refuses the path.
+The folder picker falls back to the allowed listing. If your project is outside the configured browse roots, the backend refuses the path with a 403.
 
-**Fix:** Ensure the project path is absolute and readable. The allowlist covers `.specify/spec.md`, `.specify/memory/constitution.md`, and `.specify/tasks.md` relative to the project root.
+**Fix:** The `SPECKIT_ALLOWED_ROOTS` environment variable (or `allowed_roots` in the plugin config) controls which directories may be browsed. Ensure your project lives within one of those roots, or adjust the configured roots. The artifact-file allowlist (`.specify/spec.md`, `.specify/memory/constitution.md`, `.specify/tasks.md`) is separate and controls which files the backend can read/write inside the project.
 
 ### Skills not found at runtime
 

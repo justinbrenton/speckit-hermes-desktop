@@ -218,30 +218,31 @@ async function ensurePythonDeps(home, { dryRun }) {
     targetArgs = ['--target', sitePackages]
 
     // Probe candidate system pythons for one with pip
-    const localAppData = process.env.LOCALAPPDATA || ''
-    const candidates = isWindows
-      ? [
-          // Allow override via SYSTEM_PYTHON env var
-          process.env.SYSTEM_PYTHON || '',
-          // Common Windows Python locations (expand globs)
-          'C:/Python*/python.exe',
-          'C:/Program Files/Python*/python.exe',
-          'C:/Program Files (x86)/Python*/python.exe',
-          // Microsoft Store Python
-          localAppData ? join(localAppData, 'Microsoft', 'WindowsApps', 'python.exe') : '',
-          // Fall back to PATH
-          'python'
-        ].filter(Boolean).flatMap(p => {
-          // Expand glob patterns on Windows
-          if (p.includes('*')) {
-            try {
-              const matches = execFileSync('cmd', ['/c', `dir /b ${p} 2>nul`], { stdio: ['ignore', 'pipe', 'ignore'], encoding: 'utf8', timeout: 3000 })
-              return matches.trim().split('\n').filter(Boolean).map(m => join(m, 'python.exe'))
-            } catch { return [] }
-          }
-          return p
-        })
-      : ['python3', 'python', '/usr/bin/python3', '/usr/bin/python']
+        const localAppData = process.env.LOCALAPPDATA || ''
+        const candidates = isWindows
+          ? [
+              // Allow override via SYSTEM_PYTHON env var
+              process.env.SYSTEM_PYTHON || '',
+              // Common Windows Python locations
+              'C:/Python*/python.exe',
+              'C:/Program Files/Python*/python.exe',
+              'C:/Program Files (x86)/Python*/python.exe',
+              // Microsoft Store Python
+              localAppData ? join(localAppData, 'Microsoft', 'WindowsApps', 'python.exe') : '',
+              // Fall back to PATH
+              'python'
+            ].filter(Boolean).flatMap(p => {
+              // Expand glob patterns on Windows
+              if (p.includes('*')) {
+                try {
+                  // Use `where` to expand globs to full paths, preserving the executable name
+                  const matches = execFileSync('cmd', ['/c', `where ${p} 2>nul`], { stdio: ['ignore', 'pipe', 'ignore'], encoding: 'utf8', timeout: 3000 })
+                  return matches.trim().split('\n').filter(Boolean)
+                } catch { return [] }
+              }
+              return p
+            })
+          : ['python3', 'python', '/usr/bin/python3', '/usr/bin/python']
 
     for (const cand of candidates) {
       try {
@@ -256,19 +257,19 @@ async function ensurePythonDeps(home, { dryRun }) {
   }
 
   const installed = []
-  for (const dep of needed) {
-    const modName = dep.split('>=')[0].replace('-', '_')
-    try {
-      execFileSync(venvPython, ['-c', `import ${modName}`], { stdio: 'ignore', timeout: 5000 })
-    } catch {
-      if (!dryRun) {
-        execFileSync(pipPython, pipArgs.concat(targetArgs, dep), { stdio: 'pipe', timeout: 30000 })
-        installed.push(dep)
-      } else {
-        installed.push(`${dep} (would install)`)
+    for (const [importName, dep] of knownDeps) {
+      if (!needed.includes(dep)) continue
+      try {
+        execFileSync(venvPython, ['-c', `import ${importName}`], { stdio: 'ignore', timeout: 5000 })
+      } catch {
+        if (!dryRun) {
+          execFileSync(pipPython, pipArgs.concat(targetArgs, dep), { stdio: 'pipe', timeout: 30000 })
+          installed.push(dep)
+        } else {
+          installed.push(`${dep} (would install)`)
+        }
       }
     }
-  }
   return { installed, venv: venvPython }
 }
 
