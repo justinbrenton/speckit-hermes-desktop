@@ -543,7 +543,8 @@ function SpecKitPane() {
   const [error, setError] = useState('')
   const [editError, setEditError] = useState('')
   const [browseData, setBrowseData] = useState(null)
-  const [mode, setMode] = useState('full')
+    const [browseNotice, setBrowseNotice] = useState('')
+    const [mode, setMode] = useState('full')
   const [pathChosen, setPathChosen] = useState(false)
   const [questions, setQuestions] = useState([])
   const [answers, setAnswers] = useState({})
@@ -588,12 +589,15 @@ function SpecKitPane() {
       try {
         data = await rest(`/browse?path=${encodeURIComponent(wanted)}`)
       } catch (err) {
-        // A folder the operator has not allowed is a refusal, not a dead end: fall
-        // back to the listing of what is allowed and say why.
-        if (!wanted) throw err
-        data = await rest('/browse?path=')
-        setBrowseNotice('That folder is outside the folders this plugin may open. Here are the allowed ones.')
-      }
+              // A folder the operator has not allowed is a refusal, not a dead end: fall
+              // back to the listing of what is allowed and say why.
+              if (wanted) {
+                data = await rest('/browse?path=')
+                setBrowseNotice('That folder is outside the folders this plugin may open. Here are the allowed ones.')
+              } else {
+                throw err
+              }
+            }
       setBrowseData(data)
     } catch (err) {
       setError(errorText(err))
