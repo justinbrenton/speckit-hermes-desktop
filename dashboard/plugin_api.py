@@ -92,6 +92,91 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Optional
 
+# Ensure site-packages is on sys.path so yaml can be found even when PYTHONPATH is cleared.
+# The Hermes Desktop app clears PYTHONPATH when spawning the gateway, so we need to
+# locate the site-packages directory relative to the plugin installation.
+# This runs at import time, before yaml is imported.
+import sys
+import os as _os
+from pathlib import Path as _Path
+
+def _find_site_packages() -> _Path | None:
+    """Find the Python site-packages directory for the current platform."""
+    # Try common locations relative to the plugin directory
+    plugin_dir = _Path(__file__).resolve().parents[3]  # <hermes home>
+    
+    # Linux: tools/python-<version>/lib/python<X.Y>/site-packages
+    tools_dir = plugin_dir / "tools"
+    if tools_dir.exists():
+        for py_dir in tools_dir.glob("python-*"):
+            if py_dir.is_dir():
+                # Find lib/pythonX.Y/site-packages
+                for lib_dir in py_dir.glob("lib/python*/site-packages"):
+                    if lib_dir.exists():
+                        return lib_dir
+    
+    # Windows: tools/python-<version>/Lib/site-packages
+    for py_dir in tools_dir.glob("python-*"):
+        lib_dir = py_dir / "Lib" / "site-packages"
+        if lib_dir.exists():
+            return lib_dir
+    
+    # macOS: similar to Linux
+    for py_dir in tools_dir.glob("python-*"):
+        for lib_dir in py_dir.glob("lib/python*/site-packages"):
+            if lib_dir.exists():
+                return lib_dir
+    
+    # Fallback: check if there's a VIRTUAL_ENV or conda env
+    venv = _os.environ.get("VIRTUAL_ENV") or _os.environ.get("CONDA_PREFIX")
+    if venv:
+        for lib_dir in _Path(venv).glob("lib/python*/site-packages"):
+            if lib_dir.exists():
+                return lib_dir
+        win_lib = _Path(venv) / "Lib" / "site-packages"
+        if win_lib.exists():
+            return win_lib
+    
+    return None
+
+_site_packages = _find_site_packages()
+if _site_packages and str(_site_packages) not in sys.path:
+    sys.path.insert(0, str(_site_packages))
+
+import hashlib
+import itertools
+import json
+import logging
+import os
+import re
+import shutil
+import subprocess
+import tempfile
+import threading
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Optional
+
+import yaml
+from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel
+
+import hashlib
+import itertools
+import json
+import logging
+import os
+import re
+import shutil
+import subprocess
+import tempfile
+import threading
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Optional
+
 import yaml
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel
