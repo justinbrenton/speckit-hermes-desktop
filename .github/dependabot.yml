@@ -22,9 +22,9 @@ updates:
     ignore:
       # Ignore major version updates for core dependencies
       - dependency-name: "node"
-        update-type: "version-update:semver-major"
+        versions: ["*.x", "*.x.x"]
       - dependency-name: "typescript"
-        update-type: "version-update:semver-major"
+        versions: ["*.x", "*.x.x"]
 
   # Python dependencies (backend)
   - package-ecosystem: "pip"
@@ -46,13 +46,13 @@ updates:
     ignore:
       # Ignore major version updates for core dependencies
       - dependency-name: "python"
-        update-type: "version-update:semver-major"
+        versions: ["*.x", "*.x.x"]
       - dependency-name: "fastapi"
-        update-type: "version-update:semver-major"
+        versions: ["*.x", "*.x.x"]
       - dependency-name: "pydantic"
-        update-type: "version-update:semver-major"
+        versions: ["*.x", "*.x.x"]
       - dependency-name: "pytest"
-        update-type: "version-update:semver-major"
+        versions: ["*.x", "*.x.x"]
 
   # GitHub Actions
   - package-ecosystem: "github-actions"
