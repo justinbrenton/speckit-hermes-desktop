@@ -12,12 +12,10 @@ updates:
     open-pull-requests-limit: 10
     commit-message:
       prefix: "deps(npm): "
+      include: "scope"
     labels:
       - "dependencies"
       - "npm"
-    commit-message:
-      prefix: "deps(npm): "
-      include: "scope"
     allow:
       - dependency-type: "direct"
       - dependency-type: "indirect"
