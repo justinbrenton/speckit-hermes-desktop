@@ -20,11 +20,11 @@ updates:
       - dependency-type: "direct"
       - dependency-type: "indirect"
     ignore:
-      # Ignore major version updates for core dependencies
+      # Ignore major version updates for core dependencies (use version ranges)
       - dependency-name: "node"
-        versions: ["*.x", "*.x.x"]
+        versions: [">=22.0.0"]
       - dependency-name: "typescript"
-        versions: ["*.x", "*.x.x"]
+        versions: [">=6.0.0"]
 
   # Python dependencies (backend)
   - package-ecosystem: "pip"
@@ -46,13 +46,13 @@ updates:
     ignore:
       # Ignore major version updates for core dependencies
       - dependency-name: "python"
-        versions: ["*.x", "*.x.x"]
+        versions: [">=3.13.0"]
       - dependency-name: "fastapi"
-        versions: ["*.x", "*.x.x"]
+        versions: [">=1.0.0"]
       - dependency-name: "pydantic"
-        versions: ["*.x", "*.x.x"]
+        versions: [">=3.0.0"]
       - dependency-name: "pytest"
-        versions: ["*.x", "*.x.x"]
+        versions: [">=8.0.0"]
 
   # GitHub Actions
   - package-ecosystem: "github-actions"
