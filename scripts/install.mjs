@@ -148,14 +148,23 @@ async function ensurePythonDeps(home, { dryRun }) {
   }
   // Known third-party deps used by plugin_api.py
   const knownDeps = new Map([
-    ['yaml', 'PyYAML>=6.0'],
-    ['fastapi', 'fastapi>=0.110'],
-    ['pydantic', 'pydantic>=2.6'],
-  ])
-  const needed = []
-  for (const imp of imports) {
-    if (knownDeps.has(imp)) needed.push(knownDeps.get(imp))
-  }
+        ['yaml', 'PyYAML>=6.0'],
+        ['fastapi', 'fastapi>=0.110'],
+        ['pydantic', 'pydantic>=2.6'],
+        ['multipart', 'python-multipart>=0.0.6'],
+        ['psutil', 'psutil>=5.9'],
+      ])
+    // Always install multipart & psutil for gateway compatibility
+    const mandatoryDeps = ['multipart', 'psutil']
+    const needed = []
+    for (const imp of imports) {
+      if (knownDeps.has(imp)) needed.push(knownDeps.get(imp))
+    }
+    for (const imp of mandatoryDeps) {
+      if (!needed.some(d => d.startsWith(knownDeps.get(imp).split('>=')[0]))) {
+        needed.push(knownDeps.get(imp))
+      }
+    }
 
   if (needed.length === 0) return { installed: [], skipped: 'no third-party deps' }
 
