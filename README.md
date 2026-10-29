@@ -92,7 +92,7 @@ The plugin has two halves that both go in the **Hermes root home** (not a profil
 - Windows: `%LOCALAPPDATA%\hermes`
 - Linux/macOS: `~/.hermes`
 
-Profiles live at `$HERMES_HOME/profiles/<name>/config.yaml`. The installer finds the root home automatically, copies both halves there, and adds the plugin to the target profile's `plugins.enabled`.
+The **default profile** uses `$HERMES_HOME/config.yaml` (at the root). **Additional profiles** live at `$HERMES_HOME/profiles/<name>/config.yaml`. The installer finds the root home automatically, copies both halves there, and adds the plugin to the target profile's `plugins.enabled`.
 
 ### From the registry (recommended)
 
