@@ -12,7 +12,7 @@ We take security vulnerabilities seriously. If you discover a security vulnerabi
 
 **Please do NOT report security vulnerabilities through public GitHub issues.**
 
-Instead, please report them via email to: **security@justinbrenton.com**
+Instead, please use GitHub's [Private Vulnerability Reporting](https://github.com/justinbrenton/speckit-hermes-desktop/security/advisories/new) to report security issues.
 
 Include the following information:
 - Description of the vulnerability
