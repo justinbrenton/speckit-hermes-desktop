@@ -148,12 +148,12 @@ async function ensurePythonDeps(home, { dryRun }) {
   }
   // Known third-party deps used by plugin_api.py
   const knownDeps = new Map([
-        ['yaml', 'PyYAML>=6.0'],
-        ['fastapi', 'fastapi>=0.110'],
-        ['pydantic', 'pydantic>=2.6'],
-        ['multipart', 'python-multipart>=0.0.6'],
-        ['psutil', 'psutil>=5.9'],
-      ])
+      ['yaml', { pkg: 'PyYAML', version: '>=6.0' }],
+      ['fastapi', { pkg: 'fastapi', version: '>=0.110' }],
+      ['pydantic', { pkg: 'pydantic', version: '>=2.6' }],
+      ['multipart', { pkg: 'python-multipart', version: '>=0.0.6' }],
+      ['psutil', { pkg: 'psutil', version: '>=5.9' }],
+    ])
     // Always install multipart & psutil for gateway compatibility
     const mandatoryDeps = ['multipart', 'psutil']
     const needed = []
@@ -161,8 +161,9 @@ async function ensurePythonDeps(home, { dryRun }) {
       if (knownDeps.has(imp)) needed.push(knownDeps.get(imp))
     }
     for (const imp of mandatoryDeps) {
-      if (!needed.some(d => d.startsWith(knownDeps.get(imp).split('>=')[0]))) {
-        needed.push(knownDeps.get(imp))
+      const dep = knownDeps.get(imp)
+      if (dep && !needed.some(d => d.pkg === dep.pkg)) {
+        needed.push(dep)
       }
     }
 
@@ -283,20 +284,20 @@ async function ensurePythonDeps(home, { dryRun }) {
 
   const installed = []
     for (const [importName, dep] of knownDeps) {
-      if (!needed.includes(dep)) continue
+      if (!needed.some(d => d.pkg === dep.pkg)) continue
       try {
         execFileSync(venvPython, ['-c', `import ${importName}`], { stdio: 'ignore', timeout: 5000 })
       } catch {
         if (!dryRun) {
-          execFileSync(pipPython, pipArgs.concat(targetArgs, dep), { stdio: 'pipe', timeout: 30000 })
-          installed.push(dep)
+          execFileSync(pipPython, pipArgs.concat(targetArgs, `${dep.pkg}${dep.version}`), { stdio: 'pipe', timeout: 30000 })
+          installed.push(`${dep.pkg}${dep.version}`)
         } else {
-          installed.push(`${dep} (would install)`)
+          installed.push(`${dep.pkg}${dep.version} (would install)`)
         }
       }
     }
-  return { installed, venv: venvPython }
-}
+    return { installed, venv: venvPython }
+  }
 
 export async function install({ profile, home, dryRun = false } = {}) {
   const resolved = resolveHome(home)
