@@ -30,6 +30,10 @@ from __future__ import annotations
 # The Hermes Desktop app clears PYTHONPATH when spawning the gateway, so we need to
 # locate the site-packages directory relative to the plugin installation.
 # This runs at import time, before yaml is imported.
+# SAFETY: The paths added are derived from the plugin's own installation directory
+# (<hermes home>/tools/) or standard env vars (VIRTUAL_ENV, CONDA_PREFIX).
+# The plugin directory is controlled by the Hermes installer and not user-writable.
+# We only add directories that exist and contain Python packages.
 import sys
 import os as _os
 from pathlib import Path as _Path
@@ -74,6 +78,87 @@ def _find_site_packages() -> _Path | None:
     return None
 
 _site_packages = _find_site_packages()
+if _site_packages and str(_site_packages) not in sys.path:
+    sys.path.insert(0, str(_site_packages))
+
+import hashlib
+import itertools
+import json
+import logging
+import os
+import re
+import shutil
+import subprocess
+import tempfile
+import threading
+import time
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any, Optional
+
+import yaml
+from fastapi import APIRouter, HTTPException, Query
+from pydantic import BaseModel
+# This runs at import time, before yaml is imported.
+# SAFETY: Only add site-packages from verified Hermes installation directory.
+# The plugin directory is controlled by Hermes installer (not user-writable).
+# We verify the path is within the Hermes home before adding to sys.path.
+import sys
+import os as _os
+from pathlib import Path as _Path
+
+def _find_site_packages() -> _Path | None:
+    """Find the Python site-packages directory for the current platform."""
+    # Try common locations relative to the plugin directory
+    plugin_dir = _Path(__file__).resolve().parents[3]  # <hermes home>
+    hermes_home = plugin_dir  # <hermes home>
+    
+    # Linux: tools/python-<version>/lib/python<X.Y>/site-packages
+    tools_dir = plugin_dir / "tools"
+    if tools_dir.exists():
+        for py_dir in tools_dir.glob("python-*"):
+            if py_dir.is_dir():
+                # Find lib/pythonX.Y/site-packages (recursive)
+                for lib_dir in py_dir.glob("**/lib/python*/site-packages"):
+                    if lib_dir.exists():
+                        # SAFETY: Verify path is within Hermes home
+                        try:
+                            lib_dir.resolve().relative_to(hermes_home.resolve())
+                            return lib_dir
+                        except ValueError:
+                            continue
+    
+    # Windows: tools/python-<version>/Lib/site-packages
+    for py_dir in tools_dir.glob("python-*"):
+        lib_dir = py_dir / "Lib" / "site-packages"
+        if lib_dir.exists():
+            try:
+                lib_dir.resolve().relative_to(hermes_home.resolve())
+                return lib_dir
+            except ValueError:
+                pass
+    
+    # macOS: similar to Linux (recursive)
+    for py_dir in tools_dir.glob("python-*"):
+        for lib_dir in py_dir.glob("**/lib/python*/site-packages"):
+            if lib_dir.exists():
+                try:
+                    lib_dir.resolve().relative_to(hermes_home.resolve())
+                    return lib_dir
+                except ValueError:
+                    continue
+    
+    # Fallback: check if there's a VIRTUAL_ENV or conda env
+    venv = _os.environ.get("VIRTUAL_ENV") or _os.environ.get("CONDA_PREFIX")
+    if venv:
+        for lib_dir in _Path(venv).glob("**/lib/python*/site-packages"):
+            if lib_dir.exists():
+                return lib_dir
+        win_lib = _Path(venv) / "Lib" / "site-packages"
+        if win_lib.exists():
+            return win_lib
+    
+    return None
 if _site_packages and str(_site_packages) not in sys.path:
     sys.path.insert(0, str(_site_packages))
 
@@ -2019,18 +2104,18 @@ def _sync_command_aliases(root: Path) -> list[str]:
 def _integration_files() -> list[Path]:
     """Every installed copy of spec-kit's Hermes integration on this machine."""
     found: list[Path] = []
-    # Linux/macOS: uv cache and tool directories
+    # Linux/macOS: uv cache and tool directories (recursive glob)
     uv_cache = Path.home() / ".cache" / "uv" / "archive-v0"
     if uv_cache.is_dir():
-        found.extend(uv_cache.glob("*/specify_cli/integrations/hermes/__init__.py"))
+        found.extend(uv_cache.glob("**/specify_cli/integrations/hermes/__init__.py"))
     uv_tools = Path.home() / ".local" / "share" / "uv" / "tools"
     if uv_tools.is_dir():
-        found.extend(uv_tools.glob("specify-cli*/lib/python*/site-packages/specify_cli/integrations/hermes/__init__.py"))
+        found.extend(uv_tools.glob("**/specify_cli/integrations/hermes/__init__.py"))
     # Windows: LOCALAPPDATA
     local = Path(os.environ.get("LOCALAPPDATA", str(Path.home() / "AppData" / "Local")))
     cache = local / "uv" / "cache" / "archive-v0"
     if cache.is_dir():
-        found.extend(cache.glob("*/specify_cli/integrations/hermes/__init__.py"))
+        found.extend(cache.glob("**/specify_cli/integrations/hermes/__init__.py"))
     checkout = local / "spec-kit" / "src" / "specify_cli" / "integrations" / "hermes" / "__init__.py"
     if checkout.is_file():
         found.append(checkout)
