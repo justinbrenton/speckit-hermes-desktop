@@ -159,26 +159,6 @@ def _find_site_packages() -> _Path | None:
             return win_lib
     
     return None
-    
-    # macOS: similar to Linux
-    for py_dir in tools_dir.glob("python-*"):
-        for lib_dir in py_dir.glob("lib/python*/site-packages"):
-            if lib_dir.exists():
-                return lib_dir
-    
-    # Fallback: check if there's a VIRTUAL_ENV or conda env
-    venv = _os.environ.get("VIRTUAL_ENV") or _os.environ.get("CONDA_PREFIX")
-    if venv:
-        for lib_dir in _Path(venv).glob("lib/python*/site-packages"):
-            if lib_dir.exists():
-                return lib_dir
-        win_lib = _Path(venv) / "Lib" / "site-packages"
-        if win_lib.exists():
-            return win_lib
-    
-    return None
-
-_site_packages = _find_site_packages()
 if _site_packages and str(_site_packages) not in sys.path:
     sys.path.insert(0, str(_site_packages))
 
