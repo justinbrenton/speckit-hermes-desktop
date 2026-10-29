@@ -28,7 +28,7 @@ updates:
 
   # Python dependencies (backend)
   - package-ecosystem: "pip"
-    directory: "/"
+    directory: "dashboard"
     schedule:
       interval: "weekly"
       day: "monday"
@@ -52,7 +52,7 @@ updates:
       - dependency-name: "pydantic"
         versions: [">=3.0.0"]
       - dependency-name: "pytest"
-        versions: [">=8.0.0"]
+        versions: [">=8.0.0 <9.0.0"]
 
   # GitHub Actions
   - package-ecosystem: "github-actions"
