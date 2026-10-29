@@ -26,21 +26,6 @@ Security: every path is resolved inside ``<cwd>/.specify`` and must be one of
 
 from __future__ import annotations
 
-import hashlib
-import itertools
-import json
-import logging
-import os
-import re
-import shutil
-import subprocess
-import tempfile
-import threading
-import time
-from datetime import datetime, timezone
-from pathlib import Path
-from typing import Any, Optional
-
 # Ensure site-packages is on sys.path so yaml can be found even when PYTHONPATH is cleared.
 # The Hermes Desktop app clears PYTHONPATH when spawning the gateway, so we need to
 # locate the site-packages directory relative to the plugin installation.
@@ -91,25 +76,6 @@ def _find_site_packages() -> _Path | None:
 _site_packages = _find_site_packages()
 if _site_packages and str(_site_packages) not in sys.path:
     sys.path.insert(0, str(_site_packages))
-
-import hashlib
-import itertools
-import json
-import logging
-import os
-import re
-import shutil
-import subprocess
-import tempfile
-import threading
-import time
-from datetime import datetime, timezone
-from pathlib import Path
-from typing import Any, Optional
-
-import yaml
-from fastapi import APIRouter, HTTPException, Query
-from pydantic import BaseModel
 
 import hashlib
 import itertools
