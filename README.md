@@ -195,6 +195,81 @@ The `speckit-*` skills must be installed in the active Hermes profile.
 
 **Fix:** Run `specify init --integration hermes` in a terminal, then restart Hermes.
 
+### Linux-specific issues
+
+#### PyYAML / "yaml not found" on Linux
+
+The Hermes gateway clears `PYTHONPATH` when spawning the gateway process. If the plugin can't import `yaml`, the backend won't mount.
+
+**Fix:** The plugin now auto-detects the site-packages directory at import time. If it still fails, ensure the Hermes venv has PyYAML:
+
+```bash
+# Find the Hermes venv (look in ~/.hermes/installs/.../venv/)
+~/.hermes/installs/<install-id>/environments/<env-id>/venv/bin/python -m pip install PyYAML
+```
+
+Then restart Hermes Desktop completely.
+
+#### Missing `python-multipart` or `psutil`
+
+The gateway requires `python-multipart` for multipart form handling and `psutil` for process management.
+
+**Fix:** Install into the Hermes venv:
+
+```bash
+~/.hermes/installs/<install-id>/environments/<env-id>/venv/bin/python -m pip install python-multipart psutil
+```
+
+Then restart Hermes Desktop.
+
+#### Plugin not loading / "duplicate id" errors
+
+If you cloned the repo into `~/.hermes/hermes-agent/speckit-hermes-desktop/`, the source directory may be loaded alongside the installed plugin.
+
+**Fix:** Remove the source directory:
+
+```bash
+rm -rf ~/.hermes/hermes-agent/speckit-hermes-desktop/
+```
+
+#### Config YAML indentation
+
+The `plugins.enabled` and `plugins.disabled` must be under `plugins:` key, not at root level.
+
+**Fix:** Edit `~/.hermes/config.yaml`:
+
+```yaml
+plugins:
+  isolation: in_process
+  enabled:
+    - spec-kit-hermes
+  disabled: []
+```
+
+#### Missing `plugins.isolation`
+
+If `plugins.isolation` is not set, it defaults to `host` which requires a plugin host process.
+
+**Fix:** Add `isolation: in_process` under `plugins:` in `~/.hermes/config.yaml`.
+
+### "Dispatched steps not told which project they are in" alert
+
+The `specify` CLI's Hermes integration was missing the working-directory fix.
+
+**Fix:** The plugin's repair mechanism automatically patches the integration files at runtime:
+- `~/.cache/uv/archive-v0/*/specify_cli/integrations/hermes/__init__.py`
+- `~/.local/share/uv/tools/specify-cli/.../site-packages/specify_cli/integrations/hermes/__init__.py`
+
+Click "Re-apply fix" in the Spec Kit pane to re-apply the patches.
+
+### "Browse" button does nothing
+
+The folder picker falls back to the allowed listing. If your project is outside the configured browse roots, the backend refuses the path with a 403.
+
+**Fix:** The `SPECKIT_ALLOWED_ROOTS` environment variable (or `allowed_roots` in the plugin config) controls which directories may be browsed. Ensure your project lives within one of those roots, or adjust the configured roots. The artifact-file allowlist (`.specify/spec.md`, `.specify/memory/constitution.md`, `.specify/tasks.md`) is separate and controls which files the backend can read/write inside the project.
+
+### Skills not found at runtime
+
 ## Limitations
 
 - Gates cannot be answered automatically. Approval is always a click.
