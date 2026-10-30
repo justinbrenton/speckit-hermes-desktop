@@ -23,7 +23,7 @@ python -m pip install -r requirements-dev.txt
 python -m pytest tests/backend -q -m "not hermes"
 ```
 
-`requirements-dev.txt` is fastapi, pydantic, PyYAML, pytest, httpx and defusedxml.
+`requirements-dev.txt` is fastapi, pydantic, PyYAML, pytest, httpx, defusedxml, python-multipart, and psutil.
 CI installs it before pytest for the same reason: the suite does not run without
 them, and a fresh checkout does not have them.
 
