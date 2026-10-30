@@ -378,7 +378,7 @@ test/                     node --test suites
 docs/design.md            this file
 docs/design.html          generated from this file, do not hand edit
 docs/VERIFICATION.md      the evidence behind each claim
-docs/archive/             superseded v0 design, v1 sources, spike notes
+# docs/archive/           superseded v0 design, v1 sources, spike notes (removed)
 ```
 
 `desktop/plugin.js` is a build artifact. Edit `src/`, run `npm run build`.
