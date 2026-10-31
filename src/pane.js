@@ -1165,7 +1165,7 @@ export default {
     ctxRef = ctx
     ensureStyles()
     ctx.register({
-      id: 'spec-kit',
+      id: ID,
       area: PANES_AREA,
       title: 'Spec Kit',
       data: { placement: 'right', width: '460px', collapsible: true },
