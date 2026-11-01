@@ -1,21 +1,21 @@
-schema_version: '1.0'
+schema_version: "1.0"
 workflow:
   id: speckit
   name: Full SDD Cycle
   version: 1.2.0
   author: GitHub
-  description: "Runs specify \u2192 clarify \u2192 plan \u2192 checklist \u2192 tasks\
-    \ \u2192 analyze \u2192 implement \u2192 converge with review gates. Converge\
-    \ loops back to implement until all tasks are complete."
+  description: "Runs specify → clarify → plan → checklist → tasks → analyze → implement → converge with review gates. Converge loops back to implement until all tasks are complete."
+
 requires:
   speckit_version: '>=0.8.5'
   integrations:
     any:
-    - alquimia
-    - claude
-    - copilot
-    - gemini
-    - opencode
+      - alquimia
+      - claude
+      - copilot
+      - gemini
+      - opencode
+
 inputs:
   spec:
     type: string
@@ -24,8 +24,7 @@ inputs:
   integration:
     type: string
     default: auto
-    prompt: Integration to use (e.g. claude, copilot, gemini; 'auto' uses the project's
-      initialized integration)
+    prompt: Integration to use (e.g. claude, copilot, gemini; 'auto' uses the project's initialized integration)
   gate_review_spec:
     type: string
     required: false
@@ -46,6 +45,7 @@ inputs:
     type: string
     required: false
     prompt: approve or reject the analysis
+
 steps:
 - id: specify
   command: speckit.specify
@@ -64,7 +64,7 @@ steps:
   command: speckit.clarify
   integration: '{{ inputs.integration }}'
   input:
-    args: ''
+    args: 'Resolve the open questions in the current specification.'
 - id: review-clarify
   type: gate
   message: Review the clarified spec before planning.
@@ -90,7 +90,7 @@ steps:
   command: speckit.checklist
   integration: '{{ inputs.integration }}'
   input:
-    args: ''
+    args: 'Review the specification and plan for gaps.'
 - id: review-checklist
   type: gate
   message: Review the quality checklist before generating tasks.
@@ -108,7 +108,7 @@ steps:
   command: speckit.analyze
   integration: '{{ inputs.integration }}'
   input:
-    args: ''
+    args: 'Check the artifacts for consistency.'
 - id: review-analyze
   type: gate
   message: Review the consistency analysis before implementing.
@@ -127,18 +127,37 @@ steps:
   integration: '{{ inputs.integration }}'
   input:
     args: '{{ inputs.spec }}'
+# Check if converge appended tasks by examining tasks.md for "## Phase.*Convergence" header
+- id: check-converge-appended
+  type: shell
+  run: |
+    if grep -q "^## Phase.*Convergence" .specify/specs/*/tasks.md 2>/dev/null; then
+      echo "true"
+    else
+      echo "false"
+    fi
+  capture: true
 - id: converge-loop
   type: while
-  condition: '{{ steps.converge.output.tasks_appended == true }}'
+  condition: '{{ steps["check-converge-appended"].output.stdout == "true" }}'
   max_iterations: 10
   steps:
-  - id: implement-loop
-    command: speckit.implement
-    integration: '{{ inputs.integration }}'
-    input:
-      args: '{{ inputs.spec }}'
-  - id: converge-loop-step
-    command: speckit.converge
-    integration: '{{ inputs.integration }}'
-    input:
-      args: '{{ inputs.spec }}'
+    - id: implement-loop
+      command: speckit.implement
+      integration: '{{ inputs.integration }}'
+      input:
+        args: '{{ inputs.spec }}'
+    - id: converge-loop-step
+      command: speckit.converge
+      integration: '{{ inputs.integration }}'
+      input:
+        args: '{{ inputs.spec }}'
+    - id: check-converge-appended-loop
+      type: shell
+      run: |
+        if grep -q "^## Phase.*Convergence" .specify/specs/*/tasks.md 2>/dev/null; then
+          echo "true"
+        else
+          echo "false"
+        fi
+      capture: true
