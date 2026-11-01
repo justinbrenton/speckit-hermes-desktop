@@ -137,11 +137,20 @@ function titleCase(id) {
   return __str(id).replace(/[-_]+/g, ' ').trim().replace(/^./, c => c.toUpperCase())
 }
 
-const GATE_LABELS = { approve: 'Approve', reject: 'Reject' }
+const GATE_LABELS = { 
+  approve: 'Approve', 
+  reject: 'Reject',
+  go: 'Go',
+  'needs-clarification': 'Needs Clarification',
+  kill: 'Kill',
+  verified: 'Verified',
+  partial: 'Partial',
+  failed: 'Failed'
+}
 
 // Shown in the pane. A stale plugin.js is otherwise invisible: this pane looked
 // broken for hours because the renderer had loaded the previous build.
-const VERSION = '0.1.4'
+const VERSION = '0.2.0'
 
 /** The three entry points spec-kit documents, in its own words. */
 const PROCESS_COPY = [
@@ -444,10 +453,14 @@ function StartCard({ process, values, onChange, onStart, busy, error }) {
   ] })
 }
 
-function GateCard({ run, busy, onDecide, error, onLoadFull }) {
+function GateCard({ run, busy, onDecide, error, onLoadFull, folder, onAnswerQuestions }) {
   const [showOutput, setShowOutput] = useState(false)
   const [full, setFull] = useState(null)
   const [loadingFull, setLoadingFull] = useState(false)
+  const [gateAnswers, setGateAnswers] = useState({})
+  const [submittingAnswers, setSubmittingAnswers] = useState(false)
+  const [answerError, setAnswerError] = useState('')
+
   const gate = run.gate || {}
   const options = gate.options && gate.options.length ? gate.options : ['approve', 'reject']
   const stdout = __str(gate.reviewed_stdout)
@@ -457,6 +470,9 @@ function GateCard({ run, busy, onDecide, error, onLoadFull }) {
   const output = full === null ? preview : full.text
   const truncated = Boolean(gate.reviewed_truncated)
   const [loadError, setLoadError] = useState('')
+
+  const questions = gate.questions || []
+  const hasQuestions = questions.length > 0
 
   async function loadFull() {
     if (!onLoadFull) return
@@ -471,9 +487,48 @@ function GateCard({ run, busy, onDecide, error, onLoadFull }) {
       setLoadingFull(false)
     }
   }
+
+  async function handleAnswerQuestions() {
+    if (!onAnswerQuestions) return
+    setSubmittingAnswers(true)
+    setAnswerError('')
+    try {
+      await onAnswerQuestions(gateAnswers)
+    } catch (err) {
+      setAnswerError(errorText(err))
+    } finally {
+      setSubmittingAnswers(false)
+    }
+  }
+
+  function handleAnswerChange(index, value) {
+    setGateAnswers(prev => ({ ...prev, [index]: value }))
+  }
+
   return jsxs('div', { className: 'flex flex-col gap-2 rounded border sk-accent p-2', children: [
     jsx('p', { className: 'sk-small sk-medium', children: gate.message || 'Review before continuing' }),
-    jsx('p', { className: 'sk-tiny sk-faint', children: 'Edit the file below if it needs work, then approve.' }),
+    jsx('p', { className: 'sk-tiny sk-faint', children: hasQuestions ? 'Answer the questions below, then approve.' : 'Edit the file below if it needs work, then approve.' }),
+    hasQuestions ? jsxs('div', { className: 'flex flex-col gap-2 sk-panel p-2 rounded border sk-border', children: [
+      jsx('p', { className: 'sk-small sk-medium', children: `${questions.length} question${questions.length !== 1 ? 's' : ''} require your input:` }),
+      ...questions.map((q, index) => jsxs('div', { className: 'flex flex-col gap-1', children: [
+        jsx('label', { className: 'sk-tiny sk-medium', htmlFor: `gate-q-${index}`, children: q.text }),
+        jsx(Input, {
+          id: `gate-q-${index}`,
+          value: gateAnswers[index] || '',
+          placeholder: 'Your answer',
+          onChange: e => handleAnswerChange(index, e.target.value),
+          disabled: busy || submittingAnswers,
+        }),
+      ] }, q.index)),
+      answerError ? jsx('p', { className: 'sk-tiny sk-err', children: answerError }) : null,
+      jsx(Button, {
+        size: 'sm',
+        variant: 'outline',
+        onClick: handleAnswerQuestions,
+        disabled: busy || submittingAnswers || Object.keys(gateAnswers).length === 0,
+        children: submittingAnswers ? 'Saving…' : 'Apply Answers'
+      }),
+    ] }) : null,
     output
       ? jsxs('div', { className: 'flex flex-col gap-1', children: [
           jsxs('div', { className: 'flex items-center justify-between gap-2', children: [
@@ -493,26 +548,28 @@ function GateCard({ run, busy, onDecide, error, onLoadFull }) {
                 : null,
               jsx(Button, { size: 'xs', variant: 'ghost', onClick: () => setShowOutput(value => !value), children: showOutput ? 'Hide' : 'Show' })
             ] })
-          ] }),
-          showOutput
-            ? jsx(ScrollArea, { className: 'max-h-48', children:
-                jsx('pre', { className: 'whitespace-pre-wrap p-2 sk-tiny leading-relaxed sk-dim', children: output })
-              })
-            : null
-        ] })
+        ] }), 
+        showOutput
+          ? jsx(ScrollArea, { className: 'max-h-48', children:
+              jsx('pre', { className: 'whitespace-pre-wrap p-2 sk-tiny leading-relaxed sk-dim', children: output })
+            })
+          : null
+      ] })
       : null,
     error ? jsx('p', { className: 'sk-small sk-err', children: error }) : null,
+    answerError ? jsx('p', { className: 'sk-small sk-err', children: answerError }) : null,
     jsxs('div', { className: 'flex flex-wrap gap-2', children: options.map(option =>
       jsx(Button, {
         size: 'sm',
         variant: option === 'reject' ? 'outline' : 'default',
-        disabled: busy,
+        disabled: busy || submittingAnswers,
         onClick: () => onDecide(option),
         children: GATE_LABELS[option] || titleCase(option)
       }, option)
     ) })
   ] })
 }
+
 
 function DoneCard({ run, onRestart }) {
   const failed = run.status === 'aborted' || run.status === 'failed' || Boolean(run.error)
@@ -608,8 +665,11 @@ function SpecKitPane() {
     }
   }, [])
 
+  // Normalize path to forward slashes for cross-platform consistency
+  const normalizePath = useCallback(p => __str(p).replace(/\\/g, '/'), [])
+
   const loadFolder = useCallback(async target => {
-    const path = __str(target)
+    const path = normalizePath(target)
     if (!path) return
     setBusy(true)
     setError('')
@@ -682,12 +742,12 @@ function SpecKitPane() {
 
   useEffect(() => {
     const stored = ctxRef && ctxRef.storage ? ctxRef.storage.get('specKitProject', '') : ''
-    const initial = __str(stored) || __str(workspaceCwd)
+    const initial = normalizePath(__str(stored) || __str(workspaceCwd))
     if (initial) {
       setDraftFolder(initial)
       loadFolder(initial)
     }
-  }, [loadFolder])
+  }, [loadFolder, normalizePath])
 
   useEffect(() => {
     if (!folder || !run || run.status !== 'running') {
@@ -1057,7 +1117,7 @@ function SpecKitPane() {
     !viewing && (status === 'completed' || status === 'aborted' || status === 'failed')
       ? jsx(DoneCard, { run, onRestart: restart })
       : null,
-    open && questions.length
+    open && questions.length && !(run && run.gate && run.gate.artifact_path === open.path)
       ? jsx(QuestionsPanel, {
           questions,
           answers,
@@ -1122,6 +1182,16 @@ function SpecKitPane() {
             busy,
             onDecide: decide,
             error,
+            folder,
+            onAnswerQuestions: async (answers) => {
+              if (!run.gate?.artifact_path) return
+              await rest('/clarify', {
+                method: 'POST',
+                body: { cwd: folder, path: run.gate.artifact_path, answers }
+              })
+              // Refresh the run to get updated questions
+              await refreshRun(folder, process.id)
+            },
             onLoadFull: async () => {
               const step = __str((run.gate || {}).reviewed_step)
               if (!step || !run.run_id || !process) return null
