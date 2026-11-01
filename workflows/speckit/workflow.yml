@@ -128,13 +128,14 @@ steps:
   input:
     args: '{{ inputs.spec }}'
 # Check if converge appended tasks by examining tasks.md for "## Phase.*Convergence" header
+# Searches both current (specs/) and legacy (.specify/specs/) layouts
 - id: check-converge-appended
   type: shell
   run: |
-    if grep -q "^## Phase.*Convergence" .specify/specs/*/tasks.md 2>/dev/null; then
-      echo "true"
+    if grep -q "^## Phase.*Convergence" specs/*/tasks.md 2>/dev/null || grep -q "^## Phase.*Convergence" .specify/specs/*/tasks.md 2>/dev/null; then
+      echo -n "true"
     else
-      echo "false"
+      echo -n "false"
     fi
   capture: true
 - id: converge-loop
@@ -155,9 +156,9 @@ steps:
     - id: check-converge-appended-loop
       type: shell
       run: |
-        if grep -q "^## Phase.*Convergence" .specify/specs/*/tasks.md 2>/dev/null; then
-          echo "true"
+        if grep -q "^## Phase.*Convergence" specs/*/tasks.md 2>/dev/null || grep -q "^## Phase.*Convergence" .specify/specs/*/tasks.md 2>/dev/null; then
+          echo -n "true"
         else
-          echo "false"
+          echo -n "false"
         fi
       capture: true
