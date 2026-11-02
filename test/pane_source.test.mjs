@@ -61,9 +61,11 @@ test('the gate card keeps saying when loaded output is still incomplete', () => 
 })
 
 test('the output loader hands the endpoint truncation back to the card', () => {
-  const index = SOURCE.indexOf('onLoadFull: async () => {')
-  assert.ok(index >= 0, 'the pane must supply the loader')
-  const slice = SOURCE.slice(index, index + 900)
+  // Find the GateCard instantiation's onLoadFull (not ConstitutionCard's)
+  const first = SOURCE.indexOf('onLoadFull: async () => {')
+  const second = SOURCE.indexOf('onLoadFull: async () => {', first + 1)
+  assert.ok(second >= 0, 'GateCard instantiation must supply the loader')
+  const slice = SOURCE.slice(second, second + 900)
   assert.match(slice, /truncated: Boolean\(payload\.truncated\)/, 'the endpoint flag is dropped')
 })
 

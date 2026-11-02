@@ -730,14 +730,21 @@ function ConstitutionCard({ run, busy, onDecide, error, folder, onLoadFull, onSa
         ] }),
         error ? jsx('p', { className: 'sk-small sk-err', children: error }) : null,
         jsx('div', { className: 'flex gap-2', children: [
-          jsx(Button, { size: 'sm', variant: 'outline', onClick: () => setShowReview(false), disabled: busy || saving, children: 'Back' }),
-          jsx(Button, {
-            size: 'sm',
-            onClick: () => handleDecide('approve'),
-            disabled: busy || saving || !canApprove,
-            children: saving ? 'Saving…' : 'Approve Constitution'
-          })
-        ]})
+                  jsx(Button, { size: 'sm', variant: 'outline', onClick: () => setShowReview(false), disabled: busy || saving, children: 'Back' }),
+                  jsx(Button, {
+                    size: 'sm',
+                    variant: 'outline',
+                    onClick: () => handleDecide('reject'),
+                    disabled: busy || saving,
+                    children: 'Reject'
+                  }),
+                  jsx(Button, {
+                    size: 'sm',
+                    onClick: () => handleDecide('approve'),
+                    disabled: busy || saving || !canApprove,
+                    children: saving ? 'Saving…' : 'Approve Constitution'
+                  })
+                ]})
       ]})
     }
 
@@ -1526,7 +1533,7 @@ function SpecKitPane() {
                 : null,
               (() => {
                               const stepId = __str((run.gate || {}).step_id) || __str(run.current_step_id)
-                              const isConstitution = stepId === 'constitution'
+                              const isConstitution = stepId === 'constitution' || stepId === 'review-constitution'
                               if (isConstitution) {
                                 return jsx(ConstitutionCard, {
                                   run,
@@ -1535,15 +1542,14 @@ function SpecKitPane() {
                                   error,
                                   folder,
                                   onLoadFull: async () => {
-                                    const step = __str((run.gate || {}).reviewed_step)
-                                    if (!step || !run.run_id || !process) return null
+                                    // Load the constitution artifact directly from .specify/memory/constitution.md
+                                    if (!run.gate?.artifact_path) return null
                                     const payload = await rest(
-                                      `/workflows/${encodeURIComponent(process.id)}/runs/${encodeURIComponent(run.run_id)}/output` +
-                                        `?cwd=${encodeURIComponent(folder)}&step=${encodeURIComponent(step)}`
+                                      `/artifact?cwd=${encodeURIComponent(folder)}&path=${encodeURIComponent(run.gate.artifact_path)}`
                                     )
                                     return {
-                                      text: [payload.stdout, payload.stderr].filter(Boolean).join('\n'),
-                                      truncated: Boolean(payload.truncated)
+                                      text: __str(payload && payload.content),
+                                      truncated: false
                                     }
                                   },
                                   onSaveArtifact: async (content) => {
