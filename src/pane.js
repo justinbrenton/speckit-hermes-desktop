@@ -453,6 +453,263 @@ function StartCard({ process, values, onChange, onStart, busy, error }) {
   ] })
 }
 
+const PLACEHOLDERS = ['[PROJECT_NAME]', '[PRINCIPLE_1_NAME]', '[PRINCIPLE_1_DESCRIPTION]', '[PRINCIPLE_2_NAME]', '[PRINCIPLE_2_DESCRIPTION]', '[PRINCIPLE_3_NAME]', '[PRINCIPLE_3_DESCRIPTION]']
+
+function extractPlaceholders(text) {
+  const found = []
+  for (const ph of PLACEHOLDERS) {
+    if (text.includes(ph)) found.push(ph)
+  }
+  return found
+}
+
+function buildConstitution(template, values) {
+  // Start with the template
+  let result = template
+
+  // First, replace all placeholders that exist in the template
+  for (const [key, value] of Object.entries(values)) {
+    if (value && value.trim()) {
+      result = result.split(key).join(value)
+    }
+  }
+
+  // Then, for any principles that don't have placeholders in the template,
+  // append them as new sections
+  const principleKeys = [
+    { name: '[PRINCIPLE_1_NAME]', desc: '[PRINCIPLE_1_DESCRIPTION]' },
+    { name: '[PRINCIPLE_2_NAME]', desc: '[PRINCIPLE_2_DESCRIPTION]' },
+    { name: '[PRINCIPLE_3_NAME]', desc: '[PRINCIPLE_3_DESCRIPTION]' }
+  ]
+
+  for (const { name, desc } of principleKeys) {
+    const nameVal = values[name]?.trim()
+    const descVal = values[desc]?.trim()
+    if (nameVal && descVal) {
+      // Check if this principle's placeholders exist in the original template
+      const hasNamePlaceholder = template.includes(name)
+      const hasDescPlaceholder = template.includes(desc)
+      if (!hasNamePlaceholder && !hasDescPlaceholder) {
+        // Append as new section
+        result = result.trimEnd() + '\n\n## ' + nameVal + '\n\n' + descVal
+      }
+    }
+  }
+
+  return result
+}
+
+/** Wizard steps: each groups related placeholders into a focused screen. */
+const WIZARD_STEPS = [
+  {
+    id: 'project',
+    title: 'Project Name',
+    description: 'What is this project called?',
+    fields: [{ key: '[PROJECT_NAME]', label: 'Project Name', placeholder: 'My Awesome Project', type: 'text' }]
+  },
+  {
+    id: 'principle1',
+    title: 'Principle 1',
+    description: 'Define your first guiding principle',
+    fields: [
+      { key: '[PRINCIPLE_1_NAME]', label: 'Principle Name', placeholder: 'e.g., Simplicity', type: 'text' },
+      { key: '[PRINCIPLE_1_DESCRIPTION]', label: 'Description', placeholder: 'What this principle means in practice…', type: 'textarea' }
+    ]
+  },
+  {
+    id: 'principle2',
+    title: 'Principle 2',
+    description: 'Define your second guiding principle',
+    fields: [
+      { key: '[PRINCIPLE_2_NAME]', label: 'Principle Name', placeholder: 'e.g., Clarity', type: 'text' },
+      { key: '[PRINCIPLE_2_DESCRIPTION]', label: 'Description', placeholder: 'What this principle means in practice…', type: 'textarea' }
+    ]
+  },
+  {
+    id: 'principle3',
+    title: 'Principle 3',
+    description: 'Define your third guiding principle',
+    fields: [
+      { key: '[PRINCIPLE_3_NAME]', label: 'Principle Name', placeholder: 'e.g., Maintainability', type: 'text' },
+      { key: '[PRINCIPLE_3_DESCRIPTION]', label: 'Description', placeholder: 'What this principle means in practice…', type: 'textarea' }
+    ]
+  }
+]
+
+function ConstitutionCard({ run, busy, onDecide, error, folder, onLoadFull, onSaveArtifact }) {
+  const [values, setValues] = useState({})
+  const [loadingFull, setLoadingFull] = useState(false)
+  const [loadError, setLoadError] = useState('')
+  const [full, setFull] = useState(null)
+  const [artifactMtime, setArtifactMtime] = useState(null)
+  const [stepIndex, setStepIndex] = useState(0)
+  const [showReview, setShowReview] = useState(false)
+  const [saving, setSaving] = useState(false)
+
+  const gate = run.gate || {}
+  const artifactPath = gate.artifact_path
+
+  useEffect(() => {
+    if (artifactPath) {
+      loadArtifact()
+    }
+  }, [artifactPath])
+
+  async function loadArtifact() {
+      if (!onLoadFull) return
+      setLoadingFull(true)
+      setLoadError('')
+      try {
+        const loaded = await onLoadFull()
+        if (loaded && typeof loaded.text === 'string') {
+          setFull(loaded)
+          setArtifactMtime(loaded.mtime)
+          const placeholders = extractPlaceholders(loaded.text)
+          const initialValues = {}
+          for (const ph of placeholders) {
+            initialValues[ph] = ''
+          }
+          setValues(initialValues)
+        }
+      } catch (err) {
+        setLoadError(errorText(err))
+      } finally {
+        setLoadingFull(false)
+      }
+    }
+
+  function handleChange(key, value) {
+    setValues(prev => ({ ...prev, [key]: value }))
+  }
+
+  async function handleDecide(decision) {
+        if (decision === 'approve') {
+          const missing = WIZARD_STEPS.flatMap(s => s.fields.map(f => f.key)).filter(k => !values[k] || !values[k].trim())
+          if (missing.length > 0) {
+            return
+          }
+          // Save the completed constitution to the artifact before approving
+          if (!onSaveArtifact || !full) {
+            setLoadError('Cannot save: constitution artifact not loaded')
+            return
+          }
+          setSaving(true)
+          try {
+            const completed = buildConstitution(full.text, values)
+            const newMtime = await onSaveArtifact(completed, artifactMtime)
+            if (newMtime) setArtifactMtime(newMtime)
+          } catch (err) {
+            setLoadError(errorText(err))
+            setSaving(false)
+            return
+          } finally {
+            setSaving(false)
+          }
+        }
+        onDecide(decision)
+      }
+
+  const currentStep = WIZARD_STEPS[stepIndex]
+  const allKeys = WIZARD_STEPS.flatMap(s => s.fields.map(f => f.key))
+  const filledCount = allKeys.filter(k => values[k] && values[k].trim()).length
+  const canApprove = filledCount === allKeys.length
+  const preview = full ? replacePlaceholders(full.text, values) : ''
+
+  if (loadingFull) {
+    return jsx('div', { className: 'flex items-center justify-center p-4', children: [
+      jsx(GlyphSpinner, { size: 'lg' }),
+      jsx('span', { className: 'ml-2 sk-small', children: 'Loading constitution…' })
+    ]})
+  }
+
+  if (showReview) {
+      return jsxs('div', { className: 'flex flex-col gap-2 rounded border sk-accent p-2', children: [
+        jsx('p', { className: 'sk-small sk-medium', children: 'Review your constitution' }),
+        jsx('p', { className: 'sk-tiny sk-faint', children: 'All fields complete. Verify the preview below, then approve.' }),
+        loadError ? jsx('p', { className: 'sk-tiny sk-err', children: loadError }) : null,
+        jsxs('div', { className: 'flex flex-col gap-2 sk-panel p-2 rounded border sk-border max-h-60 overflow-auto', children: [
+          jsx('p', { className: 'sk-small sk-medium', children: 'Constitution Preview' }),
+          jsx('div', { className: 'max-h-40 overflow-auto p-2 sk-tiny sk-mono sk-dim whitespace-pre-wrap', children: preview })
+        ] }),
+        error ? jsx('p', { className: 'sk-small sk-err', children: error }) : null,
+        jsx('div', { className: 'flex gap-2', children: [
+                  jsx(Button, { size: 'sm', variant: 'outline', onClick: () => setShowReview(false), disabled: busy || saving, children: 'Back' }),
+                  jsx(Button, {
+                    size: 'sm',
+                    variant: 'outline',
+                    onClick: () => handleDecide('reject'),
+                    disabled: busy || saving,
+                    children: 'Reject'
+                  }),
+                  jsx(Button, {
+                    size: 'sm',
+                    onClick: () => handleDecide('approve'),
+                    disabled: busy || saving || !canApprove,
+                    children: saving ? 'Saving…' : 'Approve Constitution'
+                  })
+                ]})
+      ]})
+    }
+
+  const progress = ((stepIndex + 1) / (WIZARD_STEPS.length + 1)) * 100 // +1 for review step
+
+  return jsxs('div', { className: 'flex flex-col gap-2 rounded border sk-accent p-2', children: [
+    jsx('div', { className: 'flex items-center justify-between gap-2', children: [
+      jsx('p', { className: 'sk-small sk-medium', children: currentStep.title }),
+      jsx('span', { className: 'sk-tiny sk-faint shrink-0', children: `Step ${stepIndex + 1} of ${WIZARD_STEPS.length}` })
+    ] }),
+    jsx('div', { className: 'sk-bar w-full', children:
+      jsx('div', { className: 'sk-bar-fill', style: { width: `${progress}%` } })
+    }),
+    jsx('p', { className: 'sk-tiny sk-dim', children: currentStep.description }),
+    loadError ? jsx('p', { className: 'sk-tiny sk-err', children: loadError }) : null,
+    jsxs('div', { className: 'flex flex-col gap-2 sk-panel p-2 rounded border sk-border', children: [
+      currentStep.fields.map(field => jsxs('div', { className: 'flex flex-col gap-1', children: [
+        jsx('label', { className: 'sk-tiny sk-medium', htmlFor: `const-${field.key}`, children: field.label }),
+        field.type === 'textarea'
+          ? jsx(Textarea, {
+              id: `const-${field.key}`,
+              value: values[field.key] || '',
+              placeholder: field.placeholder,
+              onChange: e => handleChange(field.key, e.target.value),
+              disabled: busy,
+              rows: 3
+            })
+          : jsx(Input, {
+              id: `const-${field.key}`,
+              value: values[field.key] || '',
+              placeholder: field.placeholder,
+              onChange: e => handleChange(field.key, e.target.value),
+              disabled: busy,
+            })
+      ] }, field.key))
+    ] }),
+    error ? jsx('p', { className: 'sk-small sk-err', children: error }) : null,
+    jsx('div', { className: 'flex justify-between gap-2', children: [
+      jsx(Button, {
+        size: 'sm',
+        variant: 'outline',
+        onClick: () => setStepIndex(i => Math.max(0, i - 1)),
+        disabled: busy || stepIndex === 0,
+        children: 'Back'
+      }),
+      stepIndex === WIZARD_STEPS.length - 1
+        ? jsx(Button, {
+            size: 'sm',
+            onClick: () => setShowReview(true),
+            disabled: busy,
+            children: 'Review'
+          })
+        : jsx(Button, {
+            size: 'sm',
+            onClick: () => setStepIndex(i => Math.min(WIZARD_STEPS.length - 1, i + 1)),
+            disabled: busy,
+            children: 'Next'
+          })
+    ]})
+  ] })
+}
+
 function GateCard({ run, busy, onDecide, error, onLoadFull, folder, onAnswerQuestions }) {
   const [showOutput, setShowOutput] = useState(false)
   const [full, setFull] = useState(null)
@@ -1170,43 +1427,78 @@ function SpecKitPane() {
           ] })
         }),
     status === 'paused' && run.gate && !viewing
-      ? jsxs('div', { className: 'flex flex-col gap-2 border-t sk-border pt-2', children: [
-          run.output_check && run.output_check.checked && run.output_check.unchanged
-            ? jsx('p', {
-                className: 'rounded border sk-border sk-panel p-2 sk-tiny sk-dim',
-                children: 'The step before this gate changed no artifact. The agent may have failed silently, so check the files before approving.'
-              })
-            : null,
-          jsx(GateCard, {
-            run,
-            busy,
-            onDecide: decide,
-            error,
-            folder,
-            onAnswerQuestions: async (answers) => {
-              if (!run.gate?.artifact_path) return
-              await rest('/clarify', {
-                method: 'POST',
-                body: { cwd: folder, path: run.gate.artifact_path, answers }
-              })
-              // Refresh the run to get updated questions
-              await refreshRun(folder, process.id)
-            },
-            onLoadFull: async () => {
-              const step = __str((run.gate || {}).reviewed_step)
-              if (!step || !run.run_id || !process) return null
-              const payload = await rest(
-                `/workflows/${encodeURIComponent(process.id)}/runs/${encodeURIComponent(run.run_id)}/output` +
-                  `?cwd=${encodeURIComponent(folder)}&step=${encodeURIComponent(step)}`
-              )
-              return {
-                text: [payload.stdout, payload.stderr].filter(Boolean).join('\n'),
-                truncated: Boolean(payload.truncated)
-              }
-            }
-          })
-        ] })
-      : null
+          ? jsxs('div', { className: 'flex flex-col gap-2 border-t sk-border pt-2', children: [
+              run.output_check && run.output_check.checked && run.output_check.unchanged
+                ? jsx('p', {
+                    className: 'rounded border sk-border sk-panel p-2 sk-tiny sk-dim',
+                    children: 'The step before this gate changed no artifact. The agent may have failed silently, so check the files before approving.'
+                  })
+                : null,
+              (() => {
+                              const stepId = __str((run.gate || {}).step_id) || __str(run.current_step_id)
+                              const isConstitution = stepId === 'constitution' || stepId === 'review-constitution'
+                              if (isConstitution) {
+                                return jsx(ConstitutionCard, {
+                                  run,
+                                  busy,
+                                  onDecide: decide,
+                                  error,
+                                  folder,
+                                  onLoadFull: async () => {
+                                                                      // Load the constitution artifact directly from .specify/memory/constitution.md
+                                                                      if (!run.gate?.artifact_path) return null
+                                                                      const payload = await rest(
+                                                                        `/artifact?cwd=${encodeURIComponent(folder)}&path=${encodeURIComponent(run.gate.artifact_path)}`
+                                                                      )
+                                                                      return {
+                                                                        text: __str(payload && payload.content),
+                                                                        mtime: payload && payload.mtime,
+                                                                        truncated: false
+                                                                      }
+                                                                    },
+                                  onSaveArtifact: async (content, mtime) => {
+                                                                                                        if (!run.gate?.artifact_path) {
+                                                                                                          throw new Error('Constitution gate missing artifact path')
+                                                                                                        }
+                                                                                                        const payload = await rest('/artifact', {
+                                                                                                          method: 'PUT',
+                                                                                                          body: { cwd: folder, path: run.gate.artifact_path, content, base_mtime: mtime }
+                                                                                                        })
+                                                                                                        return payload && payload.mtime
+                                                                                                      }
+                                })
+                              }
+                return jsx(GateCard, {
+                  run,
+                  busy,
+                  onDecide: decide,
+                  error,
+                  folder,
+                  onAnswerQuestions: async (answers) => {
+                    if (!run.gate?.artifact_path) return
+                    await rest('/clarify', {
+                      method: 'POST',
+                      body: { cwd: folder, path: run.gate.artifact_path, answers }
+                    })
+                    // Refresh the run to get updated questions
+                    await refreshRun(folder, process.id)
+                  },
+                  onLoadFull: async () => {
+                    const step = __str((run.gate || {}).reviewed_step)
+                    if (!step || !run.run_id || !process) return null
+                    const payload = await rest(
+                      `/workflows/${encodeURIComponent(process.id)}/runs/${encodeURIComponent(run.run_id)}/output` +
+                        `?cwd=${encodeURIComponent(folder)}&step=${encodeURIComponent(step)}`
+                    )
+                    return {
+                      text: [payload.stdout, payload.stderr].filter(Boolean).join('\n'),
+                      truncated: Boolean(payload.truncated)
+                    }
+                  }
+                })
+              })()
+            ] })
+          : null
   ] })
 }
 
