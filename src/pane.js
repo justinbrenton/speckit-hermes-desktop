@@ -31,7 +31,7 @@ import { jsx, jsxs } from 'react/jsx-runtime'
 /* CORE_INJECT */
 
 const ID = 'spec-kit-hermes'
-const PANE_ID = `${ID}:spec-kit`
+const PANE_ID = 'spec-kit'
 
 let ctxRef = null
 
@@ -1235,7 +1235,7 @@ export default {
     ctxRef = ctx
     ensureStyles()
     ctx.register({
-      id: ID,
+      id: PANE_ID,
       area: PANES_AREA,
       title: 'Spec Kit',
       data: { placement: 'right', width: '460px', collapsible: true },
