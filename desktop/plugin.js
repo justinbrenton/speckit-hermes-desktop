@@ -1546,16 +1546,17 @@ function SpecKitPane() {
                                   error,
                                   folder,
                                   onLoadFull: async () => {
-                                    // Load the constitution artifact directly from .specify/memory/constitution.md
-                                    if (!run.gate?.artifact_path) return null
-                                    const payload = await rest(
-                                      `/artifact?cwd=${encodeURIComponent(folder)}&path=${encodeURIComponent(run.gate.artifact_path)}`
-                                    )
-                                    return {
-                                      text: __str(payload && payload.content),
-                                      truncated: false
-                                    }
-                                  },
+                                                                      // Load the constitution artifact directly from .specify/memory/constitution.md
+                                                                      if (!run.gate?.artifact_path) return null
+                                                                      const payload = await rest(
+                                                                        `/artifact?cwd=${encodeURIComponent(folder)}&path=${encodeURIComponent(run.gate.artifact_path)}`
+                                                                      )
+                                                                      return {
+                                                                        text: __str(payload && payload.content),
+                                                                        mtime: payload && payload.mtime,
+                                                                        truncated: false
+                                                                      }
+                                                                    },
                                   onSaveArtifact: async (content, mtime) => {
                                                                       if (!run.gate?.artifact_path) {
                                                                         throw new Error('Constitution gate missing artifact path')
