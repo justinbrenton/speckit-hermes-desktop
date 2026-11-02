@@ -154,7 +154,7 @@ steps:
   capture: true
 - id: converge-loop
   type: while
-  condition: '{{ steps["check-converge-appended"].output.stdout == "true" }}'
+  condition: '{{ steps.check-converge-appended.output.stdout == "true" }}'
   max_iterations: 10
   steps:
     - id: implement-loop
