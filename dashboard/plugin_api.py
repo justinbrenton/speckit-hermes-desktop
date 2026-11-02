@@ -1689,6 +1689,78 @@ def install_extension(payload: ExtensionRequest) -> dict[str, Any]:
     }
 
 
+@router.get("/extensions/hooks")
+def get_extension_hooks(cwd: str = Query(..., description="Absolute project directory")) -> dict[str, Any]:
+    """Read hook definitions from the project's .specify/extensions.yml."""
+    root = _project_root(cwd)
+    extensions_file = root / ".specify" / "extensions.yml"
+    hooks: dict[str, list[dict[str, Any]]] = {}
+    settings: dict[str, Any] = {}
+    if extensions_file.is_file():
+        try:
+            data = yaml.safe_load(extensions_file.read_text(encoding="utf-8")) or {}
+            hooks = data.get("hooks", {}) or {}
+            settings = data.get("settings", {}) or {}
+        except (OSError, yaml.YAMLError):
+            pass
+    return {"cwd": str(root), "hooks": hooks, "settings": settings}
+
+
+@router.post("/extensions/hooks/execute")
+def execute_extension_hook(
+    payload: dict[str, Any] = None,
+    cwd: str = Query(..., description="Absolute project directory"),
+) -> dict[str, Any]:
+    """Execute a specific extension hook by running its command.
+    
+    Expected payload: {"hook_type": "before_implement", "hook_id": "pre_test"}
+    """
+    root = _project_root(cwd)
+    if payload is None:
+        payload = {}
+    hook_type = payload.get("hook_type", "")
+    hook_id = payload.get("hook_id", "")
+    
+    extensions_file = root / ".specify" / "extensions.yml"
+    if not extensions_file.is_file():
+        return {"ok": False, "error": "No extensions.yml found"}
+    
+    try:
+        data = yaml.safe_load(extensions_file.read_text(encoding="utf-8")) or {}
+    except (OSError, yaml.YAMLError) as e:
+        return {"ok": False, "error": f"Failed to parse extensions.yml: {e}"}
+    
+    hooks = data.get("hooks", {}) or {}
+    hook_list = hooks.get(hook_type, [])
+    
+    hook = next((h for h in hook_list if h.get("id") == hook_id), None)
+    if not hook:
+        return {"ok": False, "error": f"Hook {hook_id} not found in {hook_type}"}
+    
+    if hook.get("enabled") is False:
+        return {"ok": False, "error": f"Hook {hook_id} is disabled"}
+    
+    command = hook.get("command", "")
+    if not command:
+        return {"ok": False, "error": f"Hook {hook_id} has no command"}
+    
+    # Replace dots with dashes for Hermes skill dispatch
+    skill_name = command.replace(".", "-")
+    
+    # Execute the hook via specify workflow run (or direct skill dispatch)
+    # For now, return the command info for the frontend to execute
+    return {
+        "ok": True,
+        "hook_id": hook_id,
+        "hook_type": hook_type,
+        "command": command,
+        "skill": skill_name,
+        "optional": hook.get("optional", False),
+        "description": hook.get("description", ""),
+        "prompt": hook.get("prompt", ""),
+    }
+
+
 #: step id -> gate key, because the step is `specify` and its gate is `review-spec`
 GATE_FOR = {
     "constitution": "constitution",
@@ -1823,6 +1895,67 @@ def _workflow_yaml(mode: str, with_constitution: bool = True) -> str:
                 f"    verdict_input: gate_review_{gate_key}",
                 "    on_reject: abort",
             ]
+
+    # Add converge loop: check if tasks were appended, then loop implement -> converge
+        if "converge" in steps:
+            lines += [
+                "",
+                "# Resolve the active feature's tasks.md path from feature.json",
+                "  - id: get-active-tasks-file",
+                "    type: shell",
+                "    run: |",
+                "      if [ -f .specify/feature.json ]; then",
+                "        python3 -c 'import json, sys, os; f=open(\".specify/feature.json\"); data=json.load(f); feat=data.get(\"feature_directory\", \"\"); feat=os.path.normpath(feat); [print(p, end=\"\") or sys.exit(0) for p in [f\"{feat}/tasks.md\", f\".specify/{feat}/tasks.md\"] if os.path.exists(p) and not os.path.isabs(p)]; print(\"\", end=\"\")'",
+                "      else",
+                "        echo -n \"\"",
+                "      fi",
+                "    capture: true",
+                "# Check if converge appended tasks by examining the active feature's tasks.md",
+                "  - id: check-converge-appended",
+                "    type: shell",
+                "    run: |",
+                "      TASKS_FILE=\"{{ steps.get-active-tasks-file.output.stdout }}\"",
+                "      if [ -n \"$TASKS_FILE\" ] && [ -f \"$TASKS_FILE\" ]; then",
+                "        if grep -q \"^## Phase.*Convergence\" \"$TASKS_FILE\"; then",
+                "          echo -n \"true\"",
+                "        else",
+                "          echo -n \"false\"",
+                "        fi",
+                "      else",
+                "        echo -n \"false\"",
+                "      fi",
+                "    capture: true",
+                "  - id: converge-loop",
+                                "    type: while",
+                                '    condition: \'{{ steps.check-converge-appended.output.stdout == "true" }}\'',
+                "    max_iterations: 10",
+                "    steps:",
+                "      - id: implement-loop",
+                "        command: speckit.implement",
+                '        integration: "{{ inputs.integration }}"',
+                "        input:",
+                '          args: "{{ inputs.spec }}"',
+                "      - id: converge-loop-step",
+                "        command: speckit.converge",
+                '        integration: "{{ inputs.integration }}"',
+                "        input:",
+                '          args: "{{ inputs.spec }}"',
+                "      - id: check-converge-appended-loop",
+                "        type: shell",
+                "        run: |",
+                "          TASKS_FILE=\"{{ steps.get-active-tasks-file.output.stdout }}\"",
+                "          if [ -n \"$TASKS_FILE\" ] && [ -f \"$TASKS_FILE\" ]; then",
+                "            if grep -q \"^## Phase.*Convergence\" \"$TASKS_FILE\"; then",
+                "              echo -n \"true\"",
+                "            else",
+                "              echo -n \"false\"",
+                "            fi",
+                "          else",
+                "            echo -n \"false\"",
+                "          fi",
+                "        capture: true",
+            ]
+
     return "\n".join(lines) + "\n"
 
 
@@ -2540,6 +2673,149 @@ def read_artifact(
     if not target.is_file():
         raise HTTPException(status_code=404, detail=f"not found: {path}")
     return {"path": path, "content": _read_text(target), "mtime": _mtime_ms(target), "exists": True}
+
+
+@router.get("/feature")
+def get_feature(cwd: str = Query(..., description="Absolute project directory")) -> dict[str, Any]:
+    """Get the active feature directory from .specify/feature.json."""
+    root = _project_root(cwd)
+    feature_file = root / ".specify" / "feature.json"
+    if not feature_file.is_file():
+        return {"cwd": str(root), "feature_directory": None, "spec_file": None, "exists": False}
+    try:
+        data = json.loads(feature_file.read_text(encoding="utf-8"))
+        feature_dir = data.get("feature_directory", "")
+        if feature_dir:
+            spec_file = str(Path(feature_dir) / "spec.md").replace("\\", "/")
+            return {"cwd": str(root), "feature_directory": feature_dir, "spec_file": spec_file, "exists": True}
+    except (OSError, ValueError):
+        pass
+    return {"cwd": str(root), "feature_directory": None, "spec_file": None, "exists": False}
+
+
+@router.put("/feature")
+def set_feature(
+    payload: dict[str, Any],
+    cwd: str = Query(..., description="Absolute project directory"),
+) -> dict[str, Any]:
+    """Set the active feature directory in .specify/feature.json."""
+    root = _project_root(cwd)
+    feature_dir = payload.get("feature_directory", "")
+    if not feature_dir:
+        raise HTTPException(status_code=400, detail="feature_directory is required")
+    feature_file = root / ".specify" / "feature.json"
+    feature_file.parent.mkdir(parents=True, exist_ok=True)
+    data = {"feature_directory": feature_dir}
+    feature_file.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    spec_file = str(Path(feature_dir) / "spec.md").replace("\\", "/")
+    return {"cwd": str(root), "feature_directory": feature_dir, "spec_file": spec_file, "ok": True}
+
+
+@router.post("/prerequisites/check")
+def check_prerequisites(
+    payload: dict[str, Any],
+    cwd: str = Query(..., description="Absolute project directory"),
+) -> dict[str, Any]:
+    """Check prerequisites for a spec-kit command step.
+    
+    Expected payload: {"require_spec": true, "require_plan": false, "require_tasks": true, "include_tasks": true}
+    """
+    root = _project_root(cwd)
+    require_spec = payload.get("require_spec", False)
+    require_plan = payload.get("require_plan", False)
+    require_tasks = payload.get("require_tasks", False)
+    include_tasks = payload.get("include_tasks", False)
+    
+    feature_file = root / ".specify" / "feature.json"
+    feature_dir = None
+    if feature_file.is_file():
+        try:
+            data = json.loads(feature_file.read_text(encoding="utf-8"))
+            feature_dir = data.get("feature_directory", "")
+        except (OSError, ValueError):
+            pass
+    
+    available_docs = []
+    missing = []
+    
+    if feature_dir:
+        spec_path = root / feature_dir / "spec.md"
+        plan_path = root / feature_dir / "plan.md"
+        tasks_path = root / feature_dir / "tasks.md"
+        
+        if require_spec:
+            if spec_path.is_file():
+                available_docs.append("spec.md")
+            else:
+                missing.append("spec.md (run /speckit-specify)")
+        if require_plan:
+            if plan_path.is_file():
+                available_docs.append("plan.md")
+            else:
+                missing.append("plan.md (run /speckit-plan)")
+        if require_tasks:
+            if tasks_path.is_file():
+                available_docs.append("tasks.md")
+            else:
+                missing.append("tasks.md (run /speckit-tasks)")
+        
+        if include_tasks and tasks_path.is_file():
+            # Could parse tasks for phase info
+            pass
+    else:
+        if require_spec:
+            missing.append("spec.md (run /speckit-specify)")
+        if require_plan:
+            missing.append("plan.md (run /speckit-plan)")
+        if require_tasks:
+            missing.append("tasks.md (run /speckit-tasks)")
+    
+    ok = len(missing) == 0
+    return {
+        "cwd": str(root),
+        "ok": ok,
+        "feature_directory": feature_dir,
+        "available_docs": available_docs,
+        "missing": missing,
+    }
+
+
+@router.post("/constitution/validate")
+def validate_constitution(
+    cwd: str = Query(..., description="Absolute project directory"),
+) -> dict[str, Any]:
+    """Validate that project artifacts comply with the constitution."""
+    root = _project_root(cwd)
+    constitution_path = root / ".specify" / "memory" / "constitution.md"
+    
+    if not constitution_path.is_file():
+        return {"cwd": str(root), "validated": False, "reason": "No constitution found", "violations": []}
+    
+    # Read constitution
+    constitution_text = constitution_path.read_text(encoding="utf-8")
+    
+    # Simple check: look for unresolved placeholders and TODO items
+    violations = []
+    # This is a basic check - the actual validation is done by the speckit-analyze skill
+    # Here we just check if constitution exists and is not a template
+    if "TODO(" in constitution_text:
+        violations.append("Constitution contains TODO items")
+    # Detect any [UPPER_CASE_WITH_UNDERSCORES] placeholder pattern
+    import re
+    placeholder_pattern = r"\[[A-Z_][A-Z0-9_]*\]"
+    placeholders = re.findall(placeholder_pattern, constitution_text)
+    if placeholders:
+        # Filter out common markdown/header patterns that aren't placeholders
+        real_placeholders = [p for p in placeholders if not p.startswith("[#") and len(p) > 3]
+        if real_placeholders:
+            violations.append(f"Constitution contains unresolved placeholders: {', '.join(set(real_placeholders))}")
+    
+    return {
+        "cwd": str(root),
+        "validated": len(violations) == 0,
+        "violations": violations,
+        "constitution_path": ".specify/memory/constitution.md",
+    }
 
 
 def _run_belongs(state: dict[str, Any], process: str) -> bool:

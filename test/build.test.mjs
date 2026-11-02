@@ -47,7 +47,8 @@ test('the built plugin registers exactly one pane', async () => {
   const code = await source()
   const paneRegistrations = [...code.matchAll(/area:\s*PANES_AREA/g)]
   assert.equal(paneRegistrations.length, 1, 'v2 must register one master pane, not three')
-  assert.match(code, /id: 'spec-kit'/)
+  assert.match(code, /const ID = 'spec-kit-hermes'/)
+  assert.match(code, /const PANE_ID = 'spec-kit'/)
   assert.equal(/id: 'spec-builder'|id: 'task-board'|id: 'constitution-wizard'/.test(code), false)
 })
 

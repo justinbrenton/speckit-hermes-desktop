@@ -41,6 +41,7 @@ def main() -> int:
 
     root = parsed["plugin.yaml"]
     npm = json.loads((ROOT / "package.json").read_text(encoding="utf-8"))
+    dash = json.loads((ROOT / "dashboard/manifest.json").read_text(encoding="utf-8"))
 
     problems = []
     if root.get("name") != npm.get("name"):
@@ -48,12 +49,22 @@ def main() -> int:
     if not root.get("requires_hermes"):
         problems.append("plugin.yaml has no requires_hermes floor")
 
+    # Version consistency checks
+    plugin_version = root.get("version")
+    package_version = npm.get("version")
+    dash_version = dash.get("version")
+
+    if plugin_version != package_version:
+        problems.append(f"plugin.yaml version={plugin_version!r} but package.json version={package_version!r}")
+    if plugin_version != dash_version:
+        problems.append(f"plugin.yaml version={plugin_version!r} but dashboard/manifest.json version={dash_version!r}")
+
     if problems:
         for problem in problems:
             print(problem, file=sys.stderr)
         return 1
 
-    print(f"manifests parse and agree (version {root.get('version')})")
+    print(f"manifests parse and agree (version {plugin_version})")
     return 0
 
 
