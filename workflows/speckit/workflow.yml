@@ -132,7 +132,7 @@ steps:
   type: shell
   run: |
     if [ -f .specify/feature.json ]; then
-      python3 -c 'import json, sys; f=open(".specify/feature.json"); data=json.load(f); feat=data.get("feature_directory", ""); [print(p) or sys.exit(0) for p in [f"{feat}/tasks.md", f".specify/{feat}/tasks.md"] if __import__("os").path.exists(p)]; print("", end="")'
+      python3 -c 'import json, sys; f=open(".specify/feature.json"); data=json.load(f); feat=data.get("feature_directory", ""); [print(p, end="") or sys.exit(0) for p in [f"{feat}/tasks.md", f".specify/{feat}/tasks.md"] if __import__("os").path.exists(p)]; print("", end="")'
     else
       echo -n ""
     fi
@@ -154,7 +154,7 @@ steps:
   capture: true
 - id: converge-loop
   type: while
-  condition: '{{ steps["check-converge-appended-loop"].output.stdout == "true" }}'
+  condition: '{{ steps["check-converge-appended"].output.stdout == "true" }}'
   max_iterations: 10
   steps:
     - id: implement-loop
