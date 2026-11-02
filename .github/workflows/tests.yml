@@ -26,7 +26,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          path: ${{ github.workspace }}
+          path: .
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -51,7 +51,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          path: ${{ github.workspace }}
+          path: .
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
@@ -79,7 +79,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          path: ${{ github.workspace }}
+          path: .
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -124,7 +124,7 @@ jobs:
     steps:
       - uses: actions/checkout@v7
         with:
-          path: ${{ github.workspace }}
+          path: .
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
