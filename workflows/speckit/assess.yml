@@ -1,0 +1,118 @@
+schema_version: "1.0"
+workflow:
+  id: assess
+  name: Idea Assessment Pipeline
+  version: 1.0.0
+  author: GitHub
+  description: "Runs intake → research → define → shape → decide with review gates at each stage."
+
+requires:
+  speckit_version: '>=0.9.0'
+  integrations:
+    any:
+      - alquimia
+      - claude
+      - copilot
+      - gemini
+      - opencode
+
+inputs:
+  idea:
+    type: string
+    required: true
+    prompt: "Raw idea (pasted text, URL, ticket, or codebase pointer)"
+  slug:
+    type: string
+    required: true
+    prompt: "Assessment slug (short kebab-case name, e.g. offline-mode)"
+  integration:
+    type: string
+    default: auto
+    prompt: "Integration to use (e.g. claude, copilot, gemini; 'auto' uses the project's initialized integration)"
+  gate_review_intake:
+    type: string
+    required: false
+    prompt: "Approve or reject the captured idea"
+  gate_review_research:
+    type: string
+    required: false
+    prompt: "Approve or reject the gathered evidence"
+  gate_review_define:
+    type: string
+    required: false
+    prompt: "Approve or reject the problem definition"
+  gate_review_shape:
+    type: string
+    required: false
+    prompt: "Approve or reject the shaped concept"
+  gate_review_decide:
+    type: string
+    required: false
+    prompt: "Approve or reject the go/clarify/kill decision"
+
+steps:
+- id: intake
+  command: speckit.assess.intake
+  integration: '{{ inputs.integration }}'
+  input:
+    args: '{{ inputs.idea }}'
+- id: review-intake
+  type: gate
+  message: "Review the captured idea before researching."
+  options:
+    - approve
+    - reject
+  verdict_input: gate_review_intake
+  on_reject: abort
+- id: research
+  command: speckit.assess.research
+  integration: '{{ inputs.integration }}'
+  input:
+    args: "Research the idea in the most recent intake under .specify/assessments/."
+- id: review-research
+  type: gate
+  message: "Review the gathered evidence before defining the problem."
+  options:
+    - approve
+    - reject
+  verdict_input: gate_review_research
+  on_reject: abort
+- id: define
+  command: speckit.assess.define
+  integration: '{{ inputs.integration }}'
+  input:
+    args: "Define the problem from that intake."
+- id: review-define
+  type: gate
+  message: "Review the problem definition before shaping options."
+  options:
+    - approve
+    - reject
+  verdict_input: gate_review_define
+  on_reject: abort
+- id: shape
+  command: speckit.assess.shape
+  integration: '{{ inputs.integration }}'
+  input:
+    args: "Shape the options for that assessment."
+- id: review-shape
+  type: gate
+  message: "Review the shaped concept before the final decision."
+  options:
+    - approve
+    - reject
+  verdict_input: gate_review_shape
+  on_reject: abort
+- id: decide
+  command: speckit.assess.decide
+  integration: '{{ inputs.integration }}'
+  input:
+    args: "Write the go, clarify or kill decision for that assessment."
+- id: review-decide
+  type: gate
+  message: "Review the go / clarify / kill decision."
+  options:
+    - approve
+    - reject
+  verdict_input: gate_review_decide
+  on_reject: abort
