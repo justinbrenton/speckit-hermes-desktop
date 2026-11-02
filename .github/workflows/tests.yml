@@ -24,19 +24,13 @@ jobs:
         os: [ubuntu-latest, macos-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-        with:
-          path: ${{ github.workspace }}
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 20
       - run: npm install --no-audit --no-fund
       - run: npm run build
       - run: npm test
-        
-        
-        
-        
 
   backend:
     # The router suite: everything that does not need Hermes itself.
@@ -52,18 +46,13 @@ jobs:
             python: "3.13"
     runs-on: ${{ matrix.os }}
     steps:
-      - uses: actions/checkout@v4
-        with:
-          path: ${{ github.workspace }}
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
       - run: pip install -r requirements-dev.txt
       - name: Run the router suite
         run: python -m pytest tests/backend -q -m "not hermes" --junitxml=junit.xml
-        
-        
-        
       - name: The suite must not skip anything it is not expected to skip
         if: always()
         run: python scripts/check-skips.py junit.xml
@@ -83,12 +72,10 @@ jobs:
       # block, and GitHub rejects the whole workflow when it is used there.
       HERMES_SRC: /tmp/hermes-agent
     steps:
-      - uses: actions/checkout@v4
-        with:
-          path: ${{ github.workspace }}
+      - uses: actions/checkout@v7
       - uses: actions/setup-node@v4
         with:
-          node-version: 22
+          node-version: 20
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
@@ -115,9 +102,6 @@ jobs:
         run: |
           PYTHONPATH="$HERMES_SRC" "$HERMES_SRC/.venv/bin/python" -m pytest tests/backend \
             -q -m hermes --junitxml=junit.xml
-        
-        
-        
       - name: No silent skips
         if: always()
         # Five tests here by design: this job runs the hermes-marked subset.
@@ -127,16 +111,11 @@ jobs:
           PREFLIGHT_PYTHON: /tmp/hermes-agent/.venv/bin/python
           PYTHONPATH: /tmp/hermes-agent
         run: node scripts/preflight.mjs
-        
-        
-        
 
   manifests:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
-        with:
-          path: ${{ github.workspace }}
+      - uses: actions/checkout@v7
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
