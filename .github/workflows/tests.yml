@@ -30,7 +30,7 @@ jobs:
           node-version: 22
       - run: npm install --no-audit --no-fund
       - run: npm run build
-      - run: cd ${{ github.workspace }}/${{ github.event.repository.name }} && npm test
+      - run: cd $GITHUB_WORKSPACE/${{ github.event.repository.name }} && npm test
         
         
 
@@ -54,7 +54,7 @@ jobs:
           python-version: ${{ matrix.python }}
       - run: pip install -r requirements-dev.txt
       - name: Run the router suite
-        run: cd ${{ github.workspace }}/${{ github.event.repository.name }} && python -m pytest tests/backend -q -m "not hermes" --junitxml=junit.xml
+        run: cd $GITHUB_WORKSPACE/${{ github.event.repository.name }} && python -m pytest tests/backend -q -m "not hermes" --junitxml=junit.xml
         
       - name: The suite must not skip anything it is not expected to skip
         if: always()
@@ -103,7 +103,7 @@ jobs:
             "import hermes_cli.web_server_dashboard, hermes_cli.kanban_db_connect; print('hermes imports ok')"
       - name: Run the Hermes integration tests
         run: |
-          cd ${{ github.workspace }}/${{ github.event.repository.name }}
+          cd $GITHUB_WORKSPACE/${{ github.event.repository.name }}
           PYTHONPATH="$HERMES_SRC" "$HERMES_SRC/.venv/bin/python" -m pytest tests/backend \
             -q -m hermes --junitxml=junit.xml
         
@@ -115,7 +115,7 @@ jobs:
         env:
           PREFLIGHT_PYTHON: /tmp/hermes-agent/.venv/bin/python
           PYTHONPATH: /tmp/hermes-agent
-        run: cd ${{ github.workspace }}/${{ github.event.repository.name }} && node scripts/preflight.mjs
+        run: cd $GITHUB_WORKSPACE/${{ github.event.repository.name }} && node scripts/preflight.mjs
         
 
   manifests:
