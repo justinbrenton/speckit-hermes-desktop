@@ -32,8 +32,9 @@ schema_version: "1.0"
 workflow:
   id: "bugfix"
   name: "Guided Bug Fix"
-  version: "1.0.0"
-  description: "assess -> gate -> fix -> test"
+  version: "1.1.0"
+  author: "GitHub"
+  description: "Runs bug assess → human review gate → bug fix → bug test on a bug report"
 
 requires:
   speckit_version: ">=0.9.0"
@@ -46,15 +47,24 @@ inputs:
   slug:
     type: string
     required: true
-    prompt: "Bug slug"
+    prompt: "Bug slug (short kebab-case name, e.g. login-timeout)"
   integration:
     type: string
     default: "auto"
-    prompt: "Integration to use"
+    prompt: "Integration to use (e.g. claude, copilot, gemini; 'auto' uses the project's initialized integration)"
+  gate_review_assessment:
+    type: string
+    required: false
+    prompt: "approve or reject"
+  gate_review_test:
+    type: string
+    required: false
+    prompt: "approve or reject"
 
 steps:
   - id: assess
     command: speckit.bug.assess
+    integration: "{{ inputs.integration }}"
     input:
       args: "{{ inputs.report }} slug={{ inputs.slug }}"
 
@@ -62,12 +72,27 @@ steps:
     type: gate
     message: "Review the assessment before any code change."
     options: [approve, reject]
+    verdict_input: gate_review_assessment
     on_reject: abort
 
   - id: fix
     command: speckit.bug.fix
+    integration: "{{ inputs.integration }}"
     input:
       args: "slug={{ inputs.slug }}"
+
+  - id: test
+    command: speckit.bug.test
+    integration: "{{ inputs.integration }}"
+    input:
+      args: "slug={{ inputs.slug }}"
+
+  - id: review-test
+    type: gate
+    message: "Review the verification before closing the bug."
+    options: [verified, partial, failed]
+    verdict_input: gate_review_test
+    on_reject: abort
 """
 
 
@@ -115,11 +140,11 @@ def test_workflow_becomes_a_process_with_inputs_and_steps(client, tmp_path, monk
 
     assert process["id"] == "bugfix"
     assert process["name"] == "Guided Bug Fix"
-    assert [item["name"] for item in process["inputs"]] == ["report", "slug", "integration"]
+    assert [item["name"] for item in process["inputs"]] == ["report", "slug", "integration", "gate_review_assessment", "gate_review_test"]
     assert process["inputs"][2]["default"] == "auto"
     assert process["inputs"][0]["required"] is True
 
-    assert [step["id"] for step in process["steps"]] == ["assess", "review-assessment", "fix"]
+    assert [step["id"] for step in process["steps"]] == ["assess", "review-assessment", "fix", "test", "review-test"]
     assert process["steps"][0]["type"] == "command"
     assert process["steps"][0]["skill"] == "speckit-bug-assess"
     assert process["steps"][0]["args"] == "{{ inputs.report }} slug={{ inputs.slug }}"
@@ -128,7 +153,7 @@ def test_workflow_becomes_a_process_with_inputs_and_steps(client, tmp_path, monk
     assert gate["type"] == "gate"
     assert gate["options"] == ["approve", "reject"]
     assert gate["on_reject"] == "abort"
-    assert gate["verdict_input"] is None, "undeclared gates cannot be answered from a GUI"
+    assert gate["verdict_input"] == "gate_review_assessment"
     assert "Review the assessment" in gate["message"]
 
 
@@ -144,8 +169,11 @@ def test_ready_false_until_the_skills_exist(client, tmp_path, monkeypatch):
     assert next(item for item in body["processes"] if item["id"] == "bugfix")["ready"] is False
     assert str(home / "skills") in body["skills_dirs"]
 
-    for name in ("speckit-bug-assess", "speckit-bug-fix"):
+    for name in ("speckit-bug-assess", "speckit-bug-fix", "speckit-bug-test"):
         (home / "skills" / name).mkdir()
+
+    # Also create the project-level extension directory
+    (root / ".specify" / "extensions" / "bug").mkdir(parents=True)
 
     body = client.get(f"{PREFIX}/processes", params={"cwd": str(root)}).json()
     assert next(item for item in body["processes"] if item["id"] == "bugfix")["ready"] is True
@@ -259,7 +287,7 @@ def test_the_canonical_workflow_wins_when_both_trees_exist(client, tmp_path):
     # the shipped bundle's own steps, not the generated spec's
     assert [step["id"] for step in card["steps"]], "the canonical card has steps"
     assert card["steps"][0]["id"] == "assess"
-    assert card["version"] == "1.0.1", "the shipped workflow's version identifies which file won"
+    assert card["version"] == "1.1.0", "the shipped workflow's version identifies which file won"
 
 
 def test_a_legacy_project_runs_its_own_workflow_file(client, tmp_path, monkeypatch):
