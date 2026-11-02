@@ -593,11 +593,39 @@ function extractPlaceholders(text) {
   return found
 }
 
-function replacePlaceholders(text, values) {
-  let result = text
+function buildConstitution(template, values) {
+  // Start with the template
+  let result = template
+
+  // First, replace all placeholders that exist in the template
   for (const [key, value] of Object.entries(values)) {
-    result = result.split(key).join(value)
+    if (value && value.trim()) {
+      result = result.split(key).join(value)
+    }
   }
+
+  // Then, for any principles that don't have placeholders in the template,
+  // append them as new sections
+  const principleKeys = [
+    { name: '[PRINCIPLE_1_NAME]', desc: '[PRINCIPLE_1_DESCRIPTION]' },
+    { name: '[PRINCIPLE_2_NAME]', desc: '[PRINCIPLE_2_DESCRIPTION]' },
+    { name: '[PRINCIPLE_3_NAME]', desc: '[PRINCIPLE_3_DESCRIPTION]' }
+  ]
+
+  for (const { name, desc } of principleKeys) {
+    const nameVal = values[name]?.trim()
+    const descVal = values[desc]?.trim()
+    if (nameVal && descVal) {
+      // Check if this principle's placeholders exist in the original template
+      const hasNamePlaceholder = template.includes(name)
+      const hasDescPlaceholder = template.includes(desc)
+      if (!hasNamePlaceholder && !hasDescPlaceholder) {
+        // Append as new section
+        result = result.trimEnd() + '\n\n## ' + nameVal + '\n\n' + descVal
+      }
+    }
+  }
+
   return result
 }
 
@@ -685,30 +713,31 @@ function ConstitutionCard({ run, busy, onDecide, error, folder, onLoadFull, onSa
   }
 
   async function handleDecide(decision) {
-      if (decision === 'approve') {
-        const missing = WIZARD_STEPS.flatMap(s => s.fields.map(f => f.key)).filter(k => !values[k] || !values[k].trim())
-        if (missing.length > 0) {
-          return
+        if (decision === 'approve') {
+          const missing = WIZARD_STEPS.flatMap(s => s.fields.map(f => f.key)).filter(k => !values[k] || !values[k].trim())
+          if (missing.length > 0) {
+            return
+          }
+          // Save the completed constitution to the artifact before approving
+          if (!onSaveArtifact || !full) {
+            setLoadError('Cannot save: constitution artifact not loaded')
+            return
+          }
+          setSaving(true)
+          try {
+            const completed = buildConstitution(full.text, values)
+            const newMtime = await onSaveArtifact(completed, artifactMtime)
+            if (newMtime) setArtifactMtime(newMtime)
+          } catch (err) {
+            setLoadError(errorText(err))
+            setSaving(false)
+            return
+          } finally {
+            setSaving(false)
+          }
         }
-        // Save the completed constitution to the artifact before approving
-        if (!onSaveArtifact || !full) {
-          setLoadError('Cannot save: constitution artifact not loaded')
-          return
-        }
-        setSaving(true)
-        try {
-          const completed = replacePlaceholders(full.text, values)
-          await onSaveArtifact(completed, artifactMtime)
-        } catch (err) {
-          setLoadError(errorText(err))
-          setSaving(false)
-          return
-        } finally {
-          setSaving(false)
-        }
+        onDecide(decision)
       }
-      onDecide(decision)
-    }
 
   const currentStep = WIZARD_STEPS[stepIndex]
   const allKeys = WIZARD_STEPS.flatMap(s => s.fields.map(f => f.key))
@@ -1558,14 +1587,15 @@ function SpecKitPane() {
                                                                       }
                                                                     },
                                   onSaveArtifact: async (content, mtime) => {
-                                                                      if (!run.gate?.artifact_path) {
-                                                                        throw new Error('Constitution gate missing artifact path')
-                                                                      }
-                                                                      await rest('/artifact', {
-                                                                        method: 'PUT',
-                                                                        body: { cwd: folder, path: run.gate.artifact_path, content, base_mtime: mtime }
-                                                                      })
-                                                                    }
+                                                                                                        if (!run.gate?.artifact_path) {
+                                                                                                          throw new Error('Constitution gate missing artifact path')
+                                                                                                        }
+                                                                                                        const payload = await rest('/artifact', {
+                                                                                                          method: 'PUT',
+                                                                                                          body: { cwd: folder, path: run.gate.artifact_path, content, base_mtime: mtime }
+                                                                                                        })
+                                                                                                        return payload && payload.mtime
+                                                                                                      }
                                 })
                               }
                 return jsx(GateCard, {
