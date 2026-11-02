@@ -25,14 +25,13 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
-        with:
-          path: .
       - uses: actions/setup-node@v4
         with:
           node-version: 22
       - run: npm install --no-audit --no-fund
       - run: npm run build
       - run: npm test
+        working-directory: ${{ github.event.repository.name }}
         
         
 
@@ -51,14 +50,13 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
-        with:
-          path: .
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
       - run: pip install -r requirements-dev.txt
       - name: Run the router suite
         run: python -m pytest tests/backend -q -m "not hermes" --junitxml=junit.xml
+        working-directory: ${{ github.event.repository.name }}
         
       - name: The suite must not skip anything it is not expected to skip
         if: always()
@@ -80,8 +78,6 @@ jobs:
       HERMES_SRC: /tmp/hermes-agent
     steps:
       - uses: actions/checkout@v7
-        with:
-          path: .
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -111,6 +107,7 @@ jobs:
         run: |
           PYTHONPATH="$HERMES_SRC" "$HERMES_SRC/.venv/bin/python" -m pytest tests/backend \
             -q -m hermes --junitxml=junit.xml
+        working-directory: ${{ github.event.repository.name }}
         
       - name: No silent skips
         if: always()
@@ -121,14 +118,13 @@ jobs:
           PREFLIGHT_PYTHON: /tmp/hermes-agent/.venv/bin/python
           PYTHONPATH: /tmp/hermes-agent
         run: node scripts/preflight.mjs
+        working-directory: ${{ github.event.repository.name }}
         
 
   manifests:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
-        with:
-          path: .
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
