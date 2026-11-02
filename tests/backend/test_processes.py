@@ -172,8 +172,21 @@ def test_ready_false_until_the_skills_exist(client, tmp_path, monkeypatch):
     for name in ("speckit-bug-assess", "speckit-bug-fix", "speckit-bug-test"):
         (home / "skills" / name).mkdir()
 
-    # Also create the project-level extension directory
-    (root / ".specify" / "extensions" / "bug").mkdir(parents=True)
+    # Also create the project-level extension directory with a valid extension.yml
+    ext_dir = root / ".specify" / "extensions" / "bug"
+    ext_dir.mkdir(parents=True)
+    (ext_dir / "extension.yml").write_text(
+        "schema_version: \"1.0\"\n"
+        "extension:\n  id: bug\n  name: Bug\n"
+        "provides:\n  commands:\n"
+        "    - name: speckit.bug.assess\n      file: commands/speckit.bug.assess.md\n"
+        "      description: Assess the bug\n"
+        "    - name: speckit.bug.fix\n      file: commands/speckit.bug.fix.md\n"
+        "      description: Fix the bug\n"
+        "    - name: speckit.bug.test\n      file: commands/speckit.bug.test.md\n"
+        "      description: Test the bug fix\n",
+        encoding="utf-8",
+    )
 
     body = client.get(f"{PREFIX}/processes", params={"cwd": str(root)}).json()
     assert next(item for item in body["processes"] if item["id"] == "bugfix")["ready"] is True
