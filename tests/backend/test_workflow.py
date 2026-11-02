@@ -1157,16 +1157,29 @@ def test_browse_is_unrestricted_when_no_allowlist_is_set(client, monkeypatch, tm
     assert top["entries"], "no ceiling means the usual roots"
 
 
-SHIPPED = """\
+SHIPPED = """\\
 schema_version: "1.0"
 workflow:
   id: "speckit"
   name: "Shipped"
-  version: "1.1.0"
+  version: "1.2.0"
+  description: "Runs specify \u2192 clarify \u2192 plan \u2192 checklist \u2192 tasks \u2192 analyze \u2192 implement \u2192 converge with review gates. Converge loops back to implement until all tasks are complete."
+requires:
+  speckit_version: ">=0.8.5"
+  integrations:
+    any:
+      - alquimia
+      - claude
+      - copilot
+      - gemini
+      - opencode
 inputs:
   spec:
     type: string
     required: true
+  integration:
+    type: string
+    default: "auto"
   gate_review_spec:
     type: string
     required: false
@@ -1185,61 +1198,128 @@ inputs:
 steps:
   - id: specify
     command: speckit.specify
+    integration: "{{ inputs.integration }}"
     input:
       args: "{{ inputs.spec }}"
   - id: review-spec
     type: gate
-    message: "Review"
+    message: "Review the generated spec before clarifying."
     options: [approve, reject]
     verdict_input: gate_review_spec
+    on_reject: abort
   - id: clarify
     command: speckit.clarify
+    integration: "{{ inputs.integration }}"
     input:
-      args: ""
+      args: "Resolve the open questions in the current specification."
   - id: review-clarify
     type: gate
-    message: "Review"
+    message: "Review the clarified spec before planning."
     options: [approve, reject]
     verdict_input: gate_review_clarify
+    on_reject: abort
   - id: plan
     command: speckit.plan
+    integration: "{{ inputs.integration }}"
     input:
       args: "{{ inputs.spec }}"
   - id: review-plan
     type: gate
-    message: "Review"
+    message: "Review the plan before generating the checklist."
     options: [approve, reject]
     verdict_input: gate_review_plan
+    on_reject: abort
   - id: checklist
     command: speckit.checklist
+    integration: "{{ inputs.integration }}"
     input:
-      args: ""
+      args: "Review the specification and plan for gaps."
   - id: review-checklist
     type: gate
-    message: "Review"
+    message: "Review the quality checklist before generating tasks."
     options: [approve, reject]
     verdict_input: gate_review_checklist
+    on_reject: abort
   - id: tasks
     command: speckit.tasks
+    integration: "{{ inputs.integration }}"
     input:
       args: "{{ inputs.spec }}"
   - id: analyze
     command: speckit.analyze
+    integration: "{{ inputs.integration }}"
     input:
-      args: ""
+      args: "Check the artifacts for consistency."
   - id: review-analyze
     type: gate
-    message: "Review"
+    message: "Review the consistency analysis before implementing."
     options: [approve, reject]
     verdict_input: gate_review_analyze
+    on_reject: abort
   - id: implement
     command: speckit.implement
+    integration: "{{ inputs.integration }}"
     input:
       args: "{{ inputs.spec }}"
   - id: converge
     command: speckit.converge
+    integration: "{{ inputs.integration }}"
     input:
       args: "{{ inputs.spec }}"
+# Resolve the active feature's tasks.md path from feature.json
+  - id: get-active-tasks-file
+    type: shell
+    run: |
+      if [ -f .specify/feature.json ]; then
+        python3 -c 'import json, sys; f=open(".specify/feature.json"); data=json.load(f); feat=data.get("feature_directory", ""); [print(p) or sys.exit(0) for p in [f"{feat}/tasks.md", f".specify/{feat}/tasks.md"] if __import__("os").path.exists(p)]; print("", end="")'
+      else
+        echo -n ""
+      fi
+    capture: true
+# Check if converge appended tasks by examining the active feature's tasks.md
+  - id: check-converge-appended
+    type: shell
+    run: |
+      TASKS_FILE="{{ steps.get-active-tasks-file.output.stdout }}"
+      if [ -n "$TASKS_FILE" ] && [ -f "$TASKS_FILE" ]; then
+        if grep -q "^## Phase.*Convergence" "$TASKS_FILE"; then
+          echo -n "true"
+        else
+          echo -n "false"
+        fi
+      else
+        echo -n "false"
+      fi
+    capture: true
+  - id: converge-loop
+    type: while
+    condition: '{{ steps["check-converge-appended"].output.stdout == "true" }}'
+    max_iterations: 10
+    steps:
+      - id: implement-loop
+        command: speckit.implement
+        integration: "{{ inputs.integration }}"
+        input:
+          args: "{{ inputs.spec }}"
+      - id: converge-loop-step
+        command: speckit.converge
+        integration: "{{ inputs.integration }}"
+        input:
+          args: "{{ inputs.spec }}"
+      - id: check-converge-appended-loop
+        type: shell
+        run: |
+          TASKS_FILE="{{ steps.get-active-tasks-file.output.stdout }}"
+          if [ -n "$TASKS_FILE" ] && [ -f "$TASKS_FILE" ]; then
+            if grep -q "^## Phase.*Convergence" "$TASKS_FILE"; then
+              echo -n "true"
+            else
+              echo -n "false"
+            fi
+          else
+            echo -n "false"
+          fi
+        capture: true
 """
 
 
