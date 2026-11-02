@@ -643,6 +643,7 @@ function ConstitutionCard({ run, busy, onDecide, error, folder, onLoadFull, onSa
   const [loadingFull, setLoadingFull] = useState(false)
   const [loadError, setLoadError] = useState('')
   const [full, setFull] = useState(null)
+  const [artifactMtime, setArtifactMtime] = useState(null)
   const [stepIndex, setStepIndex] = useState(0)
   const [showReview, setShowReview] = useState(false)
   const [saving, setSaving] = useState(false)
@@ -657,43 +658,47 @@ function ConstitutionCard({ run, busy, onDecide, error, folder, onLoadFull, onSa
   }, [artifactPath])
 
   async function loadArtifact() {
-    if (!onLoadFull) return
-    setLoadingFull(true)
-    setLoadError('')
-    try {
-      const loaded = await onLoadFull()
-      if (loaded && typeof loaded.text === 'string') {
-        setFull(loaded)
-        const placeholders = extractPlaceholders(loaded.text)
-        const initialValues = {}
-        for (const ph of placeholders) {
-          initialValues[ph] = ''
+      if (!onLoadFull) return
+      setLoadingFull(true)
+      setLoadError('')
+      try {
+        const loaded = await onLoadFull()
+        if (loaded && typeof loaded.text === 'string') {
+          setFull(loaded)
+          setArtifactMtime(loaded.mtime)
+          const placeholders = extractPlaceholders(loaded.text)
+          const initialValues = {}
+          for (const ph of placeholders) {
+            initialValues[ph] = ''
+          }
+          setValues(initialValues)
         }
-        setValues(initialValues)
+      } catch (err) {
+        setLoadError(errorText(err))
+      } finally {
+        setLoadingFull(false)
       }
-    } catch (err) {
-      setLoadError(errorText(err))
-    } finally {
-      setLoadingFull(false)
     }
-  }
 
   function handleChange(key, value) {
     setValues(prev => ({ ...prev, [key]: value }))
   }
 
   async function handleDecide(decision) {
-    if (decision === 'approve') {
-      const missing = WIZARD_STEPS.flatMap(s => s.fields.map(f => f.key)).filter(k => !values[k] || !values[k].trim())
-      if (missing.length > 0) {
-        return
-      }
-      // Save the completed constitution to the artifact before approving
-      if (onSaveArtifact && full) {
+      if (decision === 'approve') {
+        const missing = WIZARD_STEPS.flatMap(s => s.fields.map(f => f.key)).filter(k => !values[k] || !values[k].trim())
+        if (missing.length > 0) {
+          return
+        }
+        // Save the completed constitution to the artifact before approving
+        if (!onSaveArtifact || !full) {
+          setLoadError('Cannot save: constitution artifact not loaded')
+          return
+        }
         setSaving(true)
         try {
           const completed = replacePlaceholders(full.text, values)
-          await onSaveArtifact(completed)
+          await onSaveArtifact(completed, artifactMtime)
         } catch (err) {
           setLoadError(errorText(err))
           setSaving(false)
@@ -702,9 +707,8 @@ function ConstitutionCard({ run, busy, onDecide, error, folder, onLoadFull, onSa
           setSaving(false)
         }
       }
+      onDecide(decision)
     }
-    onDecide(decision)
-  }
 
   const currentStep = WIZARD_STEPS[stepIndex]
   const allKeys = WIZARD_STEPS.flatMap(s => s.fields.map(f => f.key))
@@ -1552,13 +1556,15 @@ function SpecKitPane() {
                                       truncated: false
                                     }
                                   },
-                                  onSaveArtifact: async (content) => {
-                                    if (!run.gate?.artifact_path) return
-                                    await rest('/artifact', {
-                                      method: 'PUT',
-                                      body: { cwd: folder, path: run.gate.artifact_path, content, base_mtime: open?.mtime }
-                                    })
-                                  }
+                                  onSaveArtifact: async (content, mtime) => {
+                                                                      if (!run.gate?.artifact_path) {
+                                                                        throw new Error('Constitution gate missing artifact path')
+                                                                      }
+                                                                      await rest('/artifact', {
+                                                                        method: 'PUT',
+                                                                        body: { cwd: folder, path: run.gate.artifact_path, content, base_mtime: mtime }
+                                                                      })
+                                                                    }
                                 })
                               }
                 return jsx(GateCard, {
