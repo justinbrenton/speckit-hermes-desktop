@@ -25,12 +25,14 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          path: .
       - uses: actions/setup-node@v4
         with:
           node-version: 22
       - run: npm install --no-audit --no-fund
       - run: npm run build
-      - run: cd $GITHUB_WORKSPACE/${{ github.event.repository.name }} && npm test
+      - run: npm test
         
         
 
@@ -49,12 +51,14 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          path: .
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
       - run: pip install -r requirements-dev.txt
       - name: Run the router suite
-        run: cd $GITHUB_WORKSPACE/${{ github.event.repository.name }} && python -m pytest tests/backend -q -m "not hermes" --junitxml=junit.xml
+        run: python -m pytest tests/backend -q -m "not hermes" --junitxml=junit.xml
         
       - name: The suite must not skip anything it is not expected to skip
         if: always()
@@ -76,6 +80,8 @@ jobs:
       HERMES_SRC: /tmp/hermes-agent
     steps:
       - uses: actions/checkout@v7
+        with:
+          path: .
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -103,7 +109,6 @@ jobs:
             "import hermes_cli.web_server_dashboard, hermes_cli.kanban_db_connect; print('hermes imports ok')"
       - name: Run the Hermes integration tests
         run: |
-          cd $GITHUB_WORKSPACE/${{ github.event.repository.name }}
           PYTHONPATH="$HERMES_SRC" "$HERMES_SRC/.venv/bin/python" -m pytest tests/backend \
             -q -m hermes --junitxml=junit.xml
         
@@ -115,13 +120,15 @@ jobs:
         env:
           PREFLIGHT_PYTHON: /tmp/hermes-agent/.venv/bin/python
           PYTHONPATH: /tmp/hermes-agent
-        run: cd $GITHUB_WORKSPACE/${{ github.event.repository.name }} && node scripts/preflight.mjs
+        run: node scripts/preflight.mjs
         
 
   manifests:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          path: .
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
