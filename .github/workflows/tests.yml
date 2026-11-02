@@ -25,13 +25,15 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          path: ${{ github.workspace }}
       - uses: actions/setup-node@v4
         with:
           node-version: 22
       - run: npm install --no-audit --no-fund
       - run: npm run build
       - run: npm test
-        working-directory: ${{ github.workspace }}/..
+        
 
   backend:
     # The router suite: everything that does not need Hermes itself.
@@ -48,6 +50,8 @@ jobs:
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v7
+        with:
+          path: ${{ github.workspace }}
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ matrix.python }}
@@ -74,6 +78,8 @@ jobs:
       HERMES_SRC: /tmp/hermes-agent
     steps:
       - uses: actions/checkout@v7
+        with:
+          path: ${{ github.workspace }}
       - uses: actions/setup-node@v4
         with:
           node-version: 22
@@ -117,6 +123,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v7
+        with:
+          path: ${{ github.workspace }}
       - uses: actions/setup-python@v5
         with:
           python-version: "3.12"
