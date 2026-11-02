@@ -1162,12 +1162,24 @@ schema_version: "1.0"
 workflow:
   id: "speckit"
   name: "Shipped"
-  version: "1.0.2"
+  version: "1.1.0"
 inputs:
   spec:
     type: string
     required: true
   gate_review_spec:
+    type: string
+    required: false
+  gate_review_clarify:
+    type: string
+    required: false
+  gate_review_plan:
+    type: string
+    required: false
+  gate_review_checklist:
+    type: string
+    required: false
+  gate_review_analyze:
     type: string
     required: false
 steps:
@@ -1180,6 +1192,54 @@ steps:
     message: "Review"
     options: [approve, reject]
     verdict_input: gate_review_spec
+  - id: clarify
+    command: speckit.clarify
+    input:
+      args: ""
+  - id: review-clarify
+    type: gate
+    message: "Review"
+    options: [approve, reject]
+    verdict_input: gate_review_clarify
+  - id: plan
+    command: speckit.plan
+    input:
+      args: "{{ inputs.spec }}"
+  - id: review-plan
+    type: gate
+    message: "Review"
+    options: [approve, reject]
+    verdict_input: gate_review_plan
+  - id: checklist
+    command: speckit.checklist
+    input:
+      args: ""
+  - id: review-checklist
+    type: gate
+    message: "Review"
+    options: [approve, reject]
+    verdict_input: gate_review_checklist
+  - id: tasks
+    command: speckit.tasks
+    input:
+      args: "{{ inputs.spec }}"
+  - id: analyze
+    command: speckit.analyze
+    input:
+      args: ""
+  - id: review-analyze
+    type: gate
+    message: "Review"
+    options: [approve, reject]
+    verdict_input: gate_review_analyze
+  - id: implement
+    command: speckit.implement
+    input:
+      args: "{{ inputs.spec }}"
+  - id: converge
+    command: speckit.converge
+    input:
+      args: "{{ inputs.spec }}"
 """
 
 
@@ -1286,7 +1346,10 @@ def test_init_installs_our_workflows_with_answerable_gates(client, tmp_path, mon
     workflow = bare / ".specify" / "workflows" / "speckit" / "workflow.yml"
     doc = yaml.safe_load(workflow.read_text(encoding="utf-8"))
     gates = [step for step in doc["steps"] if step.get("type") == "gate"]
-    assert [g["id"] for g in gates] == ["review-spec", "review-plan"], "a gate went missing"
+    assert [g["id"] for g in gates] == [
+        "review-spec", "review-clarify", "review-plan", 
+        "review-checklist", "review-analyze"
+    ], "a gate went missing"
     for gate in gates:
         assert gate.get("verdict_input") in doc["inputs"], f"{gate['id']} cannot be answered"
 
