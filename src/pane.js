@@ -94,6 +94,20 @@ const SK_CSS = `
 .sk-pill-absent { color: var(--ui-text-tertiary, #6f767f); }
 .sk-click { cursor: pointer; }
 .sk-fade { opacity: .55; }
+.sk-md {}
+.sk-md .sk-md-h1 { font-size: 16px; font-weight: 600; margin: 0; color: var(--ui-text-primary, #e7e9ec); }
+.sk-md .sk-md-h2 { font-size: 14px; font-weight: 600; margin: 0; color: var(--ui-text-primary, #e7e9ec); }
+.sk-md .sk-md-h3 { font-size: 13px; font-weight: 600; margin: 0; color: var(--ui-text-primary, #e7e9ec); }
+.sk-md .sk-md-p { margin: 0; line-height: 1.5; }
+.sk-md .sk-md-ul, .sk-md .sk-md-ol { margin: 0; padding-left: 18px; }
+.sk-md .sk-md-li { margin: 2px 0; }
+.sk-md .sk-md-pre { background: var(--ui-bg-tertiary, #1a1e24); border: 1px solid var(--color-border, #343a41); border-radius: 6px; padding: 8px; overflow-x: auto; }
+.sk-md .sk-md-code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; background: var(--ui-bg-tertiary, #1a1e24); padding: 1px 4px; border-radius: 4px; }
+.sk-md .sk-md-pre .sk-md-code { background: transparent; padding: 0; }
+.sk-md .sk-md-blockquote { border-left: 3px solid var(--ui-accent, #6ea8fe); padding-left: 8px; margin: 4px 0; color: var(--ui-text-secondary, #9aa2ae); }
+.sk-md .sk-md-a { color: var(--ui-accent, #6ea8fe); }
+.sk-md .sk-md-strong { font-weight: 600; }
+.sk-md .sk-md-em { font-style: italic; }
 `
 
 function ensureStyles() {
@@ -137,7 +151,143 @@ function titleCase(id) {
   return __str(id).replace(/[-_]+/g, ' ').trim().replace(/^./, c => c.toUpperCase())
 }
 
-const GATE_LABELS = { 
+function escapeHtml(text) {
+  return String(text)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+}
+
+function sanitizeUrl(url) {
+  const trimmed = String(url).trim()
+  if (!trimmed) return ''
+  if (/^[a-z][a-z0-9+.-]*:/i.test(trimmed)) {
+    const scheme = trimmed.split(/[#?]/, 1)[0].replace(/^(.+?):.*$/, '$1').toLowerCase()
+    const safe = new Set(['http', 'https', 'mailto'])
+    if (!safe.has(scheme)) return '#'
+  }
+  return trimmed
+}
+
+function renderInlineMd(text) {
+  const codeSegments = []
+  let processed = text.replace(/`(.+?)`/g, (match, code) => {
+    codeSegments.push(escapeHtml(code))
+    return `\x00CODE${codeSegments.length - 1}\x00`
+  })
+
+  processed = escapeHtml(processed)
+  processed = processed.replace(/\*\*(.+?)\*\*/g, '<strong class="sk-md-strong">$1</strong>')
+  processed = processed.replace(/\*(.+?)\*/g, '<em class="sk-md-em">$1</em>')
+  processed = processed.replace(/\[([^\]]+?)\]\(([^\s)]+?)\)/g, (match, label, url) => `<a class="sk-md-a" href="${sanitizeUrl(url)}">${label}</a>`)
+  processed = processed.replace(/\x00CODE(\d+)\x00/g, (match, idx) => `<code class="sk-md-code">${codeSegments[parseInt(idx)]}</code>`)
+  return processed
+}
+
+const MD_CLASSES = {
+  h1: 'sk-md-h1',
+  h2: 'sk-md-h2',
+  h3: 'sk-md-h3',
+  p: 'sk-md-p',
+  ul: 'sk-md-ul',
+  ol: 'sk-md-ol',
+  li: 'sk-md-li',
+  pre: 'sk-md-pre',
+  code: 'sk-md-code',
+  blockquote: 'sk-md-blockquote',
+  a: 'sk-md-a',
+  strong: 'sk-md-strong',
+  em: 'sk-md-em'
+}
+
+function renderMarkdown(md) {
+  if (!md) return ''
+  const lines = String(md).split('\n')
+  const out = []
+  let i = 0
+  let inCode = false
+  const codeLines = []
+
+  while (i < lines.length) {
+    const line = lines[i]
+
+    if (line.startsWith('```')) {
+      if (!inCode) {
+        inCode = true
+        codeLines.length = 0
+        i++
+        continue
+      }
+      inCode = false
+      out.push(`<pre class="sk-md-pre"><code class="sk-md-code">${escapeHtml(codeLines.join('\n'))}</code></pre>`)
+      i++
+      continue
+    }
+
+    if (inCode) {
+      codeLines.push(line)
+      i++
+      continue
+    }
+
+    if (/^#{1,3} /.test(line)) {
+      const level = line.search(/[^#]/)
+      const cls = level === 1 ? 'sk-md-h1' : level === 2 ? 'sk-md-h2' : 'sk-md-h3'
+      out.push(`<h${level} class="${cls}">${renderInlineMd(line.slice(level + 1).trim())}</h${level}>`)
+      i++
+      continue
+    }
+
+    if (/^> /.test(line)) {
+      out.push(`<blockquote class="sk-md-blockquote">${renderInlineMd(line.slice(2).trim())}</blockquote>`)
+      i++
+      continue
+    }
+
+    if (/^[-*] /.test(line)) {
+      const items = []
+      while (i < lines.length && /^[-*] /.test(lines[i])) {
+        items.push(`<li class="sk-md-li">${renderInlineMd(lines[i].slice(2).trim())}</li>`)
+        i++
+      }
+      out.push(`<ul class="sk-md-ul">${items.join('')}</ul>`)
+      continue
+    }
+
+    if (/^\d+\. /.test(line)) {
+      const items = []
+      while (i < lines.length && /^\d+\. /.test(lines[i])) {
+        items.push(`<li class="sk-md-li">${renderInlineMd(lines[i].replace(/^\d+\. /, '').trim())}</li>`)
+        i++
+      }
+      out.push(`<ol class="sk-md-ol">${items.join('')}</ol>`)
+      continue
+    }
+
+    if (line.trim() === '') {
+      i++
+      continue
+    }
+
+    const paraLines = []
+    while (i < lines.length && lines[i].trim() !== '' && !/^#{1,3} /.test(lines[i]) && !lines[i].startsWith('```') && !/^> /.test(lines[i]) && !/^[-*] /.test(lines[i]) && !/^\d+\. /.test(lines[i])) {
+      paraLines.push(lines[i])
+      i++
+    }
+    if (paraLines.length > 0) {
+      out.push(`<p class="sk-md-p">${renderInlineMd(paraLines.join(' '))}</p>`)
+    }
+  }
+
+  if (inCode && codeLines.length) {
+    out.push(`<pre class="sk-md-pre"><code class="sk-md-code">${escapeHtml(codeLines.join('\n'))}</code></pre>`)
+  }
+
+  return out.join('\n')
+}
+
+const GATE_LABELS = {
   approve: 'Approve', 
   reject: 'Reject',
   go: 'Go',
@@ -367,22 +517,32 @@ function ConflictPanel({ conflict, busy, onReload, onKeep }) {
 
 function ArtifactEditor({ artifact, draft, onDraft, onSave, onClose, busy, dirty, error }) {
   if (!artifact) return null
+  const [view, setView] = useState('edit')
   return jsxs('div', { className: 'flex min-h-0 flex-1 flex-col gap-1 rounded border sk-border', children: [
     jsxs('div', { className: 'flex items-center justify-between gap-2 border-b sk-border px-2 py-1', children: [
       jsx('span', { className: 'sk-truncate sk-mono sk-tiny', children: artifact.path }),
       jsxs('div', { className: 'flex items-center gap-1', children: [
         dirty ? jsx(Badge, { variant: 'secondary', children: 'edited' }) : null,
-        jsx(Button, { size: 'xs', onClick: onSave, disabled: busy || !dirty, children: 'Save' }),
+        jsx(Button, { size: 'xs', variant: 'ghost', onClick: () => setView(v => v === 'edit' ? 'preview' : 'edit'), children: view === 'edit' ? 'Preview' : 'Edit' }),
+        view === 'edit'
+          ? jsx(Button, { size: 'xs', onClick: onSave, disabled: busy || !dirty, children: 'Save' })
+          : null,
         jsx(Button, { size: 'xs', variant: 'ghost', onClick: onClose, children: 'Close' })
       ] })
     ] }),
     error ? jsx('p', { className: 'px-2 sk-tiny sk-err', children: error }) : null,
-    jsx(Textarea, {
-      value: draft,
-      onChange: event => onDraft(event.target.value),
-      className: 'min-h-0 flex-1 resize-none sk-mono sk-tiny',
-      rows: 14
-    })
+    view === 'edit'
+      ? jsx(Textarea, {
+          value: draft,
+          onChange: event => onDraft(event.target.value),
+          className: 'min-h-0 flex-1 resize-none sk-mono sk-tiny',
+          rows: 14
+        })
+      : jsx('div', {
+          className: 'sk-md sk-small sk-dim min-h-0 flex-1 overflow-auto p-2',
+          // Local artifact content only; renderMarkdown escapes HTML before applying markdown syntax.
+          dangerouslySetInnerHTML: { __html: renderMarkdown(draft) }
+        })
   ] })
 }
 
@@ -805,10 +965,14 @@ function GateCard({ run, busy, onDecide, error, onLoadFull, folder, onAnswerQues
                 : null,
               jsx(Button, { size: 'xs', variant: 'ghost', onClick: () => setShowOutput(value => !value), children: showOutput ? 'Hide' : 'Show' })
             ] })
-        ] }), 
+        ] }),
         showOutput
-          ? jsx(ScrollArea, { className: 'max-h-48', children:
-              jsx('pre', { className: 'whitespace-pre-wrap p-2 sk-tiny leading-relaxed sk-dim', children: output })
+          ? jsx(ScrollArea, { className: 'max-h-40', children:
+              jsx('div', {
+                className: 'sk-md sk-small sk-dim',
+                // Local artifacts only; renderMarkdown escapes HTML before applying markdown syntax.
+                dangerouslySetInnerHTML: { __html: renderMarkdown(output) }
+              })
             })
           : null
       ] })
@@ -869,6 +1033,8 @@ function SpecKitPane() {
   const [integrationOk, setIntegrationOk] = useState(null)
   const [conflict, setConflict] = useState(null)
   const pollRef = useRef(null)
+  const logScrollRef = useRef(null)
+  const atBottomRef = useRef(true)
 
   const checkIntegration = useCallback(async () => {
     try {
@@ -1060,6 +1226,14 @@ function SpecKitPane() {
     const match = artifactForGate(artifacts, run.gate.step_id)
     if (match) openArtifact(match.path)
   }, [run, artifacts, open, openArtifact])
+
+  useEffect(() => {
+    if (!logScrollRef.current || !showLog) return
+    if (!atBottomRef.current) return
+    const el = logScrollRef.current
+    const viewport = el.querySelector('[data-slot="scroll-area-viewport"]') || el
+    viewport.scrollTop = viewport.scrollHeight
+  }, [logText, showLog])
 
   const applyAnswers = useCallback(async () => {
     if (!open) return
@@ -1368,17 +1542,21 @@ function SpecKitPane() {
           jsx(Button, { size: 'xs', variant: 'outline', onClick: stop, disabled: busy || !run.run_id, children: 'Stop' })
         ] })
       : null,
-    status === 'running' || (status === 'paused' && logText)
+    status === 'running' || status === 'paused'
       ? jsxs('div', { className: 'flex flex-col gap-1', children: [
           jsxs('div', { className: 'flex items-center justify-between gap-2', children: [
             jsx('span', { className: 'sk-tiny sk-medium sk-dim', children: 'Step output' }),
             jsx(Button, { size: 'xs', variant: 'ghost', onClick: () => setShowLog(v => !v), children: showLog ? 'Hide' : 'Show log' })
           ] }),
           showLog
-            ? jsx(ScrollArea, { className: 'max-h-40', children:
+            ? jsx(ScrollArea, { ref: logScrollRef, className: 'max-h-40', onScroll: event => {
+                const viewport = event.currentTarget.querySelector('[data-slot="scroll-area-viewport"]') || event.currentTarget
+                const atBottom = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight < 16
+                atBottomRef.current = atBottom
+              }, children:
                 jsx('pre', { className: 'whitespace-pre-wrap p-2 sk-tiny leading-relaxed sk-dim', children: logText || 'No output yet.' })
               })
-            : null
+            : jsx('div', { className: 'sk-tiny sk-faint p-2 border sk-border rounded', children: 'Output will appear here...' })
         ] })
       : null,
     !viewing && (status === 'completed' || status === 'aborted' || status === 'failed')
@@ -1409,7 +1587,9 @@ function SpecKitPane() {
                     jsx('span', { className: 'shrink-0 sk-mono sk-tiny sk-faint', children: item.feature })
                   ]
                 }, item.path))
-              : jsx('p', { className: 'sk-small sk-faint', children: 'Nothing written yet.' }),
+              : jsx('div', { className: 'rounded border sk-border p-2', children:
+                  jsx('p', { className: 'sk-small sk-faint', children: 'Nothing written yet. Run a workflow step that produces artifacts to see them here.' })
+                }),
             runs.length > 1
               ? jsxs('div', { className: 'mt-2 flex flex-col gap-1', children: [
                   jsx('p', { className: 'sk-tiny sk-medium sk-dim', children: 'Previous runs' }),
