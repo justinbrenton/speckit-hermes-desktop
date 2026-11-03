@@ -225,19 +225,19 @@ const SK_CSS = `
 .sk-click { cursor: pointer; }
 .sk-fade { opacity: .55; }
 .sk-md {}
-.sk-md-h1 { font-size: 16px; font-weight: 600; margin: 0; color: var(--ui-text-primary, #e7e9ec); }
-.sk-md-h2 { font-size: 14px; font-weight: 600; margin: 0; color: var(--ui-text-primary, #e7e9ec); }
-.sk-md-h3 { font-size: 13px; font-weight: 600; margin: 0; color: var(--ui-text-primary, #e7e9ec); }
-.sk-md-p { margin: 0; line-height: 1.5; }
-.sk-md-ul, .sk-md-ol { margin: 0; padding-left: 18px; }
-.sk-md-li { margin: 2px 0; }
-.sk-md-pre { background: var(--ui-bg-tertiary, #1a1e24); border: 1px solid var(--color-border, #343a41); border-radius: 6px; padding: 8px; overflow-x: auto; }
-.sk-md-code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; background: var(--ui-bg-tertiary, #1a1e24); padding: 1px 4px; border-radius: 4px; }
-.sk-md-pre .sk-md-code { background: transparent; padding: 0; }
-.sk-md-blockquote { border-left: 3px solid var(--ui-accent, #6ea8fe); padding-left: 8px; margin: 4px 0; color: var(--ui-text-secondary, #9aa2ae); }
-.sk-md-a { color: var(--ui-accent, #6ea8fe); }
-.sk-md-strong { font-weight: 600; }
-.sk-md-em { font-style: italic; }
+.sk-md .sk-md-h1 { font-size: 16px; font-weight: 600; margin: 0; color: var(--ui-text-primary, #e7e9ec); }
+.sk-md .sk-md-h2 { font-size: 14px; font-weight: 600; margin: 0; color: var(--ui-text-primary, #e7e9ec); }
+.sk-md .sk-md-h3 { font-size: 13px; font-weight: 600; margin: 0; color: var(--ui-text-primary, #e7e9ec); }
+.sk-md .sk-md-p { margin: 0; line-height: 1.5; }
+.sk-md .sk-md-ul, .sk-md .sk-md-ol { margin: 0; padding-left: 18px; }
+.sk-md .sk-md-li { margin: 2px 0; }
+.sk-md .sk-md-pre { background: var(--ui-bg-tertiary, #1a1e24); border: 1px solid var(--color-border, #343a41); border-radius: 6px; padding: 8px; overflow-x: auto; }
+.sk-md .sk-md-code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; background: var(--ui-bg-tertiary, #1a1e24); padding: 1px 4px; border-radius: 4px; }
+.sk-md .sk-md-pre .sk-md-code { background: transparent; padding: 0; }
+.sk-md .sk-md-blockquote { border-left: 3px solid var(--ui-accent, #6ea8fe); padding-left: 8px; margin: 4px 0; color: var(--ui-text-secondary, #9aa2ae); }
+.sk-md .sk-md-a { color: var(--ui-accent, #6ea8fe); }
+.sk-md .sk-md-strong { font-weight: 600; }
+.sk-md .sk-md-em { font-style: italic; }
 `
 
 function ensureStyles() {
@@ -303,6 +303,22 @@ function renderInlineMd(text) {
   return processed
 }
 
+const MD_CLASSES = {
+  h1: 'sk-md-h1',
+  h2: 'sk-md-h2',
+  h3: 'sk-md-h3',
+  p: 'sk-md-p',
+  ul: 'sk-md-ul',
+  ol: 'sk-md-ol',
+  li: 'sk-md-li',
+  pre: 'sk-md-pre',
+  code: 'sk-md-code',
+  blockquote: 'sk-md-blockquote',
+  a: 'sk-md-a',
+  strong: 'sk-md-strong',
+  em: 'sk-md-em'
+}
+
 function renderMarkdown(md) {
   if (!md) return ''
   const lines = String(md).split('\n')
@@ -335,7 +351,8 @@ function renderMarkdown(md) {
 
     if (/^#{1,3} /.test(line)) {
       const level = line.search(/[^#]/)
-      out.push(`<h${level + 1} class="sk-md-h${level + 1}">${renderInlineMd(line.slice(level + 1).trim())}</h${level + 1}>`)
+      const cls = level === 0 ? 'sk-md-h1' : level === 1 ? 'sk-md-h2' : 'sk-md-h3'
+      out.push(`<h${level + 1} class="${cls}">${renderInlineMd(line.slice(level + 1).trim())}</h${level + 1}>`)
       i++
       continue
     }
@@ -1128,6 +1145,7 @@ function SpecKitPane() {
   const [integrationOk, setIntegrationOk] = useState(null)
   const [conflict, setConflict] = useState(null)
   const pollRef = useRef(null)
+  const logScrollRef = useRef(null)
 
   const checkIntegration = useCallback(async () => {
     try {
@@ -1319,6 +1337,13 @@ function SpecKitPane() {
     const match = artifactForGate(artifacts, run.gate.step_id)
     if (match) openArtifact(match.path)
   }, [run, artifacts, open, openArtifact])
+
+  useEffect(() => {
+    if (!logScrollRef.current || !showLog) return
+    const el = logScrollRef.current
+    const viewport = el.querySelector('[data-slot="scroll-area-viewport"]') || el
+    viewport.scrollTop = viewport.scrollHeight
+  }, [logText, showLog])
 
   const applyAnswers = useCallback(async () => {
     if (!open) return
@@ -1627,17 +1652,17 @@ function SpecKitPane() {
           jsx(Button, { size: 'xs', variant: 'outline', onClick: stop, disabled: busy || !run.run_id, children: 'Stop' })
         ] })
       : null,
-    status === 'running' || (status === 'paused' && logText)
+    status === 'running' || status === 'paused'
       ? jsxs('div', { className: 'flex flex-col gap-1', children: [
           jsxs('div', { className: 'flex items-center justify-between gap-2', children: [
             jsx('span', { className: 'sk-tiny sk-medium sk-dim', children: 'Step output' }),
             jsx(Button, { size: 'xs', variant: 'ghost', onClick: () => setShowLog(v => !v), children: showLog ? 'Hide' : 'Show log' })
           ] }),
           showLog
-            ? jsx(ScrollArea, { className: 'max-h-40', children:
+            ? jsx(ScrollArea, { ref: logScrollRef, className: 'max-h-40', children:
                 jsx('pre', { className: 'whitespace-pre-wrap p-2 sk-tiny leading-relaxed sk-dim', children: logText || 'No output yet.' })
               })
-            : null
+            : jsx('div', { className: 'sk-tiny sk-faint p-2 border sk-border rounded', children: 'Output will appear here...' })
         ] })
       : null,
     !viewing && (status === 'completed' || status === 'aborted' || status === 'failed')
@@ -1668,7 +1693,9 @@ function SpecKitPane() {
                     jsx('span', { className: 'shrink-0 sk-mono sk-tiny sk-faint', children: item.feature })
                   ]
                 }, item.path))
-              : jsx('p', { className: 'sk-small sk-faint', children: 'Nothing written yet.' }),
+              : jsx('div', { className: 'rounded border sk-border p-2', children:
+                  jsx('p', { className: 'sk-small sk-faint', children: 'Nothing written yet. Run a workflow step that produces artifacts to see them here.' })
+                }),
             runs.length > 1
               ? jsxs('div', { className: 'mt-2 flex flex-col gap-1', children: [
                   jsx('p', { className: 'sk-tiny sk-medium sk-dim', children: 'Previous runs' }),
