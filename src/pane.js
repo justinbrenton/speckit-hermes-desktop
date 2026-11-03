@@ -156,6 +156,18 @@ function escapeHtml(text) {
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;')
+}
+
+function sanitizeUrl(url) {
+  const trimmed = String(url).trim()
+  if (!trimmed) return ''
+  if (/^[a-z][a-z0-9+.-]*:/i.test(trimmed)) {
+    const scheme = trimmed.split(/[#?]/, 1)[0].replace(/^(.+?):.*$/, '$1').toLowerCase()
+    const safe = new Set(['http', 'https', 'mailto'])
+    if (!safe.has(scheme)) return '#'
+  }
+  return trimmed
 }
 
 function renderInlineMd(text) {
@@ -166,10 +178,10 @@ function renderInlineMd(text) {
   })
 
   processed = escapeHtml(processed)
-  processed = processed.replace(/\x00CODE(\d+)\x00/g, (match, idx) => `<code class="sk-md-code">${codeSegments[parseInt(idx)]}</code>`)
   processed = processed.replace(/\*\*(.+?)\*\*/g, '<strong class="sk-md-strong">$1</strong>')
   processed = processed.replace(/\*(.+?)\*/g, '<em class="sk-md-em">$1</em>')
-  processed = processed.replace(/\[(.+?)\]\((.+?)\)/g, '<a class="sk-md-a" href="$2">$1</a>')
+  processed = processed.replace(/\[([^\]]+?)\]\(([^\s)]+?)\)/g, (match, label, url) => `<a class="sk-md-a" href="${sanitizeUrl(url)}">${label}</a>`)
+  processed = processed.replace(/\x00CODE(\d+)\x00/g, (match, idx) => `<code class="sk-md-code">${codeSegments[parseInt(idx)]}</code>`)
   return processed
 }
 
@@ -221,8 +233,8 @@ function renderMarkdown(md) {
 
     if (/^#{1,3} /.test(line)) {
       const level = line.search(/[^#]/)
-      const cls = level === 0 ? 'sk-md-h1' : level === 1 ? 'sk-md-h2' : 'sk-md-h3'
-      out.push(`<h${level + 1} class="${cls}">${renderInlineMd(line.slice(level + 1).trim())}</h${level + 1}>`)
+      const cls = level === 1 ? 'sk-md-h1' : level === 2 ? 'sk-md-h2' : 'sk-md-h3'
+      out.push(`<h${level} class="${cls}">${renderInlineMd(line.slice(level + 1).trim())}</h${level}>`)
       i++
       continue
     }
@@ -266,6 +278,10 @@ function renderMarkdown(md) {
     if (paraLines.length > 0) {
       out.push(`<p class="sk-md-p">${renderInlineMd(paraLines.join(' '))}</p>`)
     }
+  }
+
+  if (inCode && codeLines.length) {
+    out.push(`<pre class="sk-md-pre"><code class="sk-md-code">${escapeHtml(codeLines.join('\n'))}</code></pre>`)
   }
 
   return out.join('\n')
@@ -951,10 +967,12 @@ function GateCard({ run, busy, onDecide, error, onLoadFull, folder, onAnswerQues
             ] })
         ] }),
         showOutput
-          ? jsx('div', {
-              className: 'sk-md sk-small sk-dim',
-              // Local artifacts only; renderMarkdown escapes HTML before applying markdown syntax.
-              dangerouslySetInnerHTML: { __html: renderMarkdown(output) }
+          ? jsx(ScrollArea, { className: 'max-h-40', children:
+              jsx('div', {
+                className: 'sk-md sk-small sk-dim',
+                // Local artifacts only; renderMarkdown escapes HTML before applying markdown syntax.
+                dangerouslySetInnerHTML: { __html: renderMarkdown(output) }
+              })
             })
           : null
       ] })
