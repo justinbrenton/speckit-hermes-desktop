@@ -91,7 +91,7 @@ claim that only holds on the machine it was written on.
 
 ```
 $ npm test
-ℹ tests 59   ℹ pass 59   ℹ fail 0
+ℹ tests 77   ℹ pass 77   ℹ fail 0
 
 $ python -m pytest tests/backend -q -m "not hermes"
 155 passed, 5 deselected
