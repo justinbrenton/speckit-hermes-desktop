@@ -74,11 +74,11 @@ const SK_CSS = `
 .sk-bar { height: 4px; border-radius: 999px; overflow: hidden; background: var(--ui-bg-tertiary, #1a1e24); }
 .sk-bar-fill { height: 100%; border-radius: 999px; background: var(--ui-accent, #6ea8fe); transition: width .2s ease; }
 /* Hover on generic rows (browser, artifacts) — explicit fallback, no var dependency */
-.sk-root .sk-hover:hover { background: #2a2f36; }
+.sk-root .sk-hover:hover { background: var(--ui-row-hover-background, #2a2f36); }
 /* Choice list rows: fill + 2px accent edge, explicit colours so hover never disappears */
 .sk-root .sk-choice { cursor: pointer; border-left: 2px solid transparent; transition: background .12s ease, border-color .12s ease; }
-.sk-root .sk-choice:hover { background: #2a2f36; border-left-color: #6ea8fe; }
-.sk-root .sk-choice:focus-visible { outline: 2px solid #6ea8fe; outline-offset: -2px; }
+.sk-root .sk-choice:hover { background: var(--ui-row-hover-background, #2a2f36); border-left-color: var(--ui-accent, #6ea8fe); }
+.sk-root .sk-choice:focus-visible { outline: 2px solid var(--ui-accent, #6ea8fe); outline-offset: -2px; }
 /* Non-runnable rows are plain divs, not buttons — no pointer/hover cue */
 .sk-root .sk-choice:not(button) { cursor: default; }
 .sk-root .sk-choice:not(button):hover { background: transparent; border-left-color: transparent; }
@@ -1317,6 +1317,16 @@ function SpecKitPane() {
     jsx(IntegrationBanner, { ok: integrationOk, busy, onRepair: repairIntegration }),
     jsx(ProgressHeader, { steps: process.steps || [], run }),
     jsx('div', { className: 'h-px sk-hr' }),
+    open && questions.length && !(run && run.gate && run.gate.artifact_path === open.path)
+      ? jsx(QuestionsPanel, {
+          questions,
+          answers,
+          onChange: (index, value) => setAnswers(prev => ({ ...prev, [index]: value })),
+          onApply: applyAnswers,
+          busy,
+          error: editError
+        })
+      : null,
     status === 'none' || !run
       ? (process.id === 'speckit' && !pathChosen
           ? jsx(PathChoice, {
@@ -1332,7 +1342,7 @@ function SpecKitPane() {
                 setBusy(false)
               }
             }
-            })
+          })
           : jsxs('div', { className: 'flex flex-col gap-3', children: [
               process.id === 'speckit'
                 ? jsxs('div', { className: 'flex items-center justify-between gap-2', children: [
@@ -1360,7 +1370,7 @@ function SpecKitPane() {
       : null,
     status === 'running' || (status === 'paused' && logText)
       ? jsxs('div', { className: 'flex flex-col gap-1', children: [
-          jsxs('div', { className: 'flex items-center justify-between', children: [
+          jsxs('div', { className: 'flex items-center justify-between gap-2', children: [
             jsx('span', { className: 'sk-tiny sk-medium sk-dim', children: 'Step output' }),
             jsx(Button, { size: 'xs', variant: 'ghost', onClick: () => setShowLog(v => !v), children: showLog ? 'Hide' : 'Show log' })
           ] }),
@@ -1373,16 +1383,6 @@ function SpecKitPane() {
       : null,
     !viewing && (status === 'completed' || status === 'aborted' || status === 'failed')
       ? jsx(DoneCard, { run, onRestart: restart })
-      : null,
-    open && questions.length && !(run && run.gate && run.gate.artifact_path === open.path)
-      ? jsx(QuestionsPanel, {
-          questions,
-          answers,
-          onChange: (index, value) => setAnswers(prev => ({ ...prev, [index]: value })),
-          onApply: applyAnswers,
-          busy,
-          error: editError
-        })
       : null,
     open ? jsx(ConflictPanel, { conflict, busy, onReload: loadTheirs, onKeep: keepMine }) : null,
     open
