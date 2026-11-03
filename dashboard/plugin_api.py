@@ -839,11 +839,16 @@ def _reap() -> None:
     with ACTIVE_LOCK:
         for key, entry in list(ACTIVE_RUNS.items()):
             state = entry.get("state")
+            proc = entry.get("proc")
             if state == "starting" and not entry.get("cancelled"):
+                # If a process was attached and it died, the startup failed — release the slot.
+                # If no process attached yet (proc is None), keep the slot: job may still attach.
+                if proc is not None and not _alive(proc):
+                    ACTIVE_RUNS.pop(key, None)
                 continue
-            if state == "stopping" and _alive(entry.get("proc")):
+            if state == "stopping" and _alive(proc):
                 continue
-            if not _alive(entry.get("proc")):
+            if not _alive(proc):
                 ACTIVE_RUNS.pop(key, None)
 
 
