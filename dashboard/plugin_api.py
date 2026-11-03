@@ -1079,7 +1079,7 @@ def _run_ids(root: Path) -> set[str]:
     return {d.name for d in runs.iterdir() if d.is_dir()}
 
 
-def _await_new_run(root: Path, before: set[str], timeout: float = 25.0) -> Optional[str]:
+def _await_new_run(root: Path, before: set[str], timeout: float = 60.0) -> Optional[str]:
     """Return the run id spec-kit just created, or None if it did not start.
 
     ``specify workflow run`` picks its own run id; the pane needs that id to
@@ -1440,10 +1440,10 @@ def workflow_run(process: str, payload: WorkflowRunRequest) -> dict[str, Any]:
     token = _admit_start(root, process, before)
     job: Optional[dict[str, Any]] = None
     try:
-        before_artifacts = _artifact_index(root)
-        job = _start_job(args, root, max(30, min(payload.timeout, SPECIFY_TIMEOUT_MAX)))
-        _attach_job(root, token, job)
-        run_id = _await_new_run(root, before)
+            before_artifacts = _artifact_index(root)
+            job = _start_job(args, root, max(30, min(payload.timeout, SPECIFY_TIMEOUT_MAX)))
+            _attach_job(root, token, job)
+            run_id = _await_new_run(root, before, timeout=min(payload.timeout, 120.0))
     except BaseException:
         # A dispatch that happened must not outlive the request either. The slot is
         # freed only once that process is provably gone.
