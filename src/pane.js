@@ -1361,11 +1361,26 @@ function SpecKitPane() {
         if (updated) setProcess(updated)
       }
       await rest(`/workflows/${encodeURIComponent(process.id)}/run`, {
-        method: 'POST',
-        body: { cwd: folder, inputs: values }
-      })
-      setRun({ status: 'running', run_id: null, gate: null, current_step_id: '' })
-      setTimeout(() => refreshRun(folder, process.id), 900)
+              method: 'POST',
+              body: { cwd: folder, inputs: values }
+            })
+            // Don't set status to 'running' yet — wait for /runs/latest to return a real run.
+            // Poll aggressively at first (500ms) to catch the run as soon as it appears.
+            let attempts = 0
+            const pollUntilRun = async () => {
+              if (attempts++ > 24) return // ~12 seconds max
+              try {
+                const latest = await rest(`/workflows/${encodeURIComponent(process.id)}/runs/latest?cwd=${encodeURIComponent(folder)}`)
+                if (latest && latest.run_id) {
+                  setRun(latest)
+                  return
+                }
+              } catch (err) {
+                // Ignore polling errors, keep trying
+              }
+              setTimeout(pollUntilRun, 500)
+            }
+            pollUntilRun()
     } catch (err) {
       setError(errorText(err))
     } finally {
