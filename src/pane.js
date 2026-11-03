@@ -1034,6 +1034,7 @@ function SpecKitPane() {
   const [conflict, setConflict] = useState(null)
   const pollRef = useRef(null)
   const logScrollRef = useRef(null)
+  const atBottomRef = useRef(true)
 
   const checkIntegration = useCallback(async () => {
     try {
@@ -1228,6 +1229,7 @@ function SpecKitPane() {
 
   useEffect(() => {
     if (!logScrollRef.current || !showLog) return
+    if (!atBottomRef.current) return
     const el = logScrollRef.current
     const viewport = el.querySelector('[data-slot="scroll-area-viewport"]') || el
     viewport.scrollTop = viewport.scrollHeight
@@ -1547,7 +1549,11 @@ function SpecKitPane() {
             jsx(Button, { size: 'xs', variant: 'ghost', onClick: () => setShowLog(v => !v), children: showLog ? 'Hide' : 'Show log' })
           ] }),
           showLog
-            ? jsx(ScrollArea, { ref: logScrollRef, className: 'max-h-40', children:
+            ? jsx(ScrollArea, { ref: logScrollRef, className: 'max-h-40', onScroll: event => {
+                const viewport = event.currentTarget.querySelector('[data-slot="scroll-area-viewport"]') || event.currentTarget
+                const atBottom = viewport.scrollHeight - viewport.scrollTop - viewport.clientHeight < 16
+                atBottomRef.current = atBottom
+              }, children:
                 jsx('pre', { className: 'whitespace-pre-wrap p-2 sk-tiny leading-relaxed sk-dim', children: logText || 'No output yet.' })
               })
             : jsx('div', { className: 'sk-tiny sk-faint p-2 border sk-border rounded', children: 'Output will appear here...' })
