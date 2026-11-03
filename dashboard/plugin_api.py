@@ -1424,7 +1424,7 @@ class WorkflowResumeRequest(BaseModel):
 
 @router.post("/workflows/{process}/run")
 def workflow_run(process: str, payload: WorkflowRunRequest) -> dict[str, Any]:
-    """Start a workflow. Gates park; nothing executes synchronously."""
+    """Start a workflow. Returns immediately with job_id; pane polls /runs/latest for run_id."""
     root = _project_root(payload.cwd)
     _process_data(root, process)
     # Ask the CLI for the id it can actually find: a pre-rename project has `bug/`.
@@ -1440,38 +1440,51 @@ def workflow_run(process: str, payload: WorkflowRunRequest) -> dict[str, Any]:
     token = _admit_start(root, process, before)
     job: Optional[dict[str, Any]] = None
     try:
-            before_artifacts = _artifact_index(root)
-            job = _start_job(args, root, max(30, min(payload.timeout, SPECIFY_TIMEOUT_MAX)))
-            _attach_job(root, token, job)
-            run_id = _await_new_run(root, before, timeout=min(payload.timeout, 120.0))
+        before_artifacts = _artifact_index(root)
+        job = _start_job(args, root, max(30, min(payload.timeout, SPECIFY_TIMEOUT_MAX)))
+        _attach_job(root, token, job)
     except BaseException:
         # A dispatch that happened must not outlive the request either. The slot is
         # freed only once that process is provably gone.
         _abandon_start(root, token, job)
         raise
-    if not run_id:
-        # The CLI exited without leaving a run behind. Kill it rather than register
-        # a run nobody can address.
-        gone = _abandon_start(root, token, job)
-        if not gone:
-            raise HTTPException(
-                status_code=504,
-                detail="spec-kit did not report a run, and its process would not stop",
-            )
-        raise HTTPException(status_code=504, detail="spec-kit did not start a run in time")
-    try:
-        _snapshot_file(root, run_id).parent.mkdir(parents=True, exist_ok=True)
-        _snapshot_file(root, run_id).write_text(json.dumps(before_artifacts), encoding="utf-8")
-    except OSError:
-        pass
-    _claim(root, token, run_id, "run", process, job)
+
+    # Background task: wait for run_id to appear, then claim or abandon the slot.
+    def _wait_and_claim():
+        try:
+            run_id = _await_new_run(root, before, timeout=min(payload.timeout, 120.0))
+        except Exception:
+            # _await_new_run raised (e.g. test simulates failure) - abandon the slot.
+            _abandon_start(root, token, job)
+            return
+        if run_id:
+            try:
+                _snapshot_file(root, run_id).parent.mkdir(parents=True, exist_ok=True)
+                _snapshot_file(root, run_id).write_text(json.dumps(before_artifacts), encoding="utf-8")
+            except OSError:
+                pass
+            try:
+                _claim(root, token, run_id, "run", process, job)
+            except HTTPException as e:
+                if e.status_code == 409:
+                    # Slot was cancelled (e.g. run stopped during startup) - this is expected.
+                    pass
+                else:
+                    raise
+        else:
+            # The CLI exited without leaving a run behind.
+            _abandon_start(root, token, job)
+
+    threading.Thread(target=_wait_and_claim, daemon=True).start()
+
     return {
         "process": process,
-        "run_id": run_id,
+        "run_id": None,
         "job_id": job["job_id"],
         "pid": job["pid"],
         "running": True,
         "stdout_file": job["stdout_file"],
+        "log_path": job["log_path"],
     }
 
 

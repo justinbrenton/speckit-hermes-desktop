@@ -317,13 +317,15 @@ def test_a_legacy_project_runs_its_own_workflow_file(client, tmp_path, monkeypat
 
     def fake_job(args, cwd, timeout=None):
         calls.append({"args": args, "cwd": str(cwd)})
-        return {"job_id": "job1", "id": "job1", "pid": 0, "stdout_file": ""}
+        return {"job_id": "job1", "id": "job1", "pid": 0, "stdout_file": "", "log_path": ""}
 
     monkeypatch.setattr(plugin_api, "_start_job", fake_job)
     monkeypatch.setattr(plugin_api, "_await_new_run", lambda root_, before, timeout=25.0: "run-1")
 
     response = client.post(f"{PREFIX}/workflows/bugfix/run", json={"cwd": str(root), "inputs": {"report": "x"}})
     assert response.status_code == 200, response.text
+    data = response.json()
+    assert data["run_id"] is None, "run_id should be None initially; pane polls /runs/latest"
     assert ["workflow", "run", "bug"] == calls[-1]["args"][:3], "the CLI must be asked for the id that exists"
     assert (legacy / "workflow.yml").is_file()
 
@@ -377,13 +379,15 @@ def test_the_legacy_id_can_start_a_run_when_nothing_is_on_disk(client, tmp_path,
 
     def fake_job(args, cwd, timeout=None):
         calls.append(args)
-        return {"job_id": "j", "id": "j", "pid": 0, "stdout_file": ""}
+        return {"job_id": "j", "id": "j", "pid": 0, "stdout_file": "", "log_path": ""}
 
     monkeypatch.setattr(plugin_api, "_start_job", fake_job)
     monkeypatch.setattr(plugin_api, "_await_new_run", lambda root_, before, timeout=25.0: "r")
 
     response = client.post(f"{PREFIX}/workflows/bug/run", json={"cwd": str(root), "inputs": {"report": "x"}})
     assert response.status_code == 200, response.text
+    data = response.json()
+    assert data["run_id"] is None, "run_id should be None initially; pane polls /runs/latest"
     assert calls[-1][:3] == ["workflow", "run", "bugfix"], "the generated tree is canonical once written"
 
 
@@ -428,7 +432,7 @@ def test_a_custom_workflow_is_listed_and_can_start(client, tmp_path, monkeypatch
 
     def fake_job(args, cwd, timeout=None):
         calls.append(args)
-        return {"job_id": "j", "id": "j", "pid": 0, "stdout_file": ""}
+        return {"job_id": "j", "id": "j", "pid": 0, "stdout_file": "", "log_path": ""}
 
     monkeypatch.setattr(plugin_api, "_start_job", fake_job)
     monkeypatch.setattr(plugin_api, "_await_new_run", lambda root_, before, timeout=25.0: "r9")
@@ -436,5 +440,7 @@ def test_a_custom_workflow_is_listed_and_can_start(client, tmp_path, monkeypatch
 
     response = client.post(f"{PREFIX}/workflows/my-flow/run", json={"cwd": str(root), "inputs": {"spec": "x"}})
     assert response.status_code == 200, response.text
+    data = response.json()
+    assert data["run_id"] is None, "run_id should be None initially; pane polls /runs/latest"
     assert calls[-1][:3] == ["workflow", "run", "my-flow"]
 

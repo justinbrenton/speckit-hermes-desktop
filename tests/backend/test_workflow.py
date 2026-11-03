@@ -93,6 +93,7 @@ def cli(monkeypatch):
             "pid": 99999,
             "running": False,
             "stdout_file": "/fake/stdout",
+            "log_path": "/fake/stdout",
             "ok": state["ok"],
             "payload": state["payload"],
             "output": state["stdout"],
@@ -137,9 +138,9 @@ def test_run_builds_the_documented_argv(client, project, cli):
         "-i", "spec=a greeting CLI",
         "--json",
     ], "empty inputs are skipped, not sent as -i key="
-    # The pane polls /runs/latest, so the request must return at once with a job.
+    # The pane polls /runs/latest, so the request returns immediately with run_id=None.
     assert body["running"] is True
-    assert body["run_id"] == "run-abc"
+    assert body["run_id"] is None
     assert body["job_id"]
 
 
@@ -1552,7 +1553,7 @@ def test_the_legacy_spelling_cannot_start_a_second_run(client, project, monkeypa
     def fake_job(args, cwd, timeout=None):
         # the lock reads proc out of JOBS, so the stub has to put it there
         plugin_api.JOBS["j"] = {"proc": LiveProc(), "id": "j"}
-        return {"job_id": "j", "id": "j", "pid": 0, "stdout_file": ""}
+        return {"job_id": "j", "id": "j", "pid": 0, "stdout_file": "", "log_path": ""}
 
     monkeypatch.setattr(plugin_api, "_start_job", fake_job)
     monkeypatch.setattr(plugin_api, "_await_new_run", lambda root_, before, timeout=25.0: "run-x")
@@ -1561,6 +1562,8 @@ def test_the_legacy_spelling_cannot_start_a_second_run(client, project, monkeypa
 
     first = client.post(f"{PREFIX}/workflows/bugfix/run", json={"cwd": str(project), "inputs": {"report": "x"}})
     assert first.status_code == 200, first.text
+    data = first.json()
+    assert data["run_id"] is None, "run_id should be None initially; pane polls /runs/latest"
 
     second = client.post(f"{PREFIX}/workflows/bug/run", json={"cwd": str(project), "inputs": {"report": "x"}})
     assert second.status_code == 409, f"the alias opened a second run: {second.status_code}"
@@ -1579,7 +1582,7 @@ def test_a_second_process_cannot_start_in_one_project(client, project, monkeypat
 
     def fake_job(args, cwd, timeout=None):
         plugin_api.JOBS["j"] = {"proc": LiveProc(), "id": "j"}
-        return {"job_id": "j", "id": "j", "pid": 0, "stdout_file": ""}
+        return {"job_id": "j", "id": "j", "pid": 0, "stdout_file": "", "log_path": ""}
 
     monkeypatch.setattr(plugin_api, "_start_job", fake_job)
     monkeypatch.setattr(plugin_api, "_await_new_run", lambda root_, before, timeout=25.0: "run-y")
@@ -1588,6 +1591,8 @@ def test_a_second_process_cannot_start_in_one_project(client, project, monkeypat
 
     first = client.post(f"{PREFIX}/workflows/bugfix/run", json={"cwd": str(project), "inputs": {"report": "x"}})
     assert first.status_code == 200, first.text
+    data = first.json()
+    assert data["run_id"] is None, "run_id should be None initially; pane polls /runs/latest"
 
     second = client.post(f"{PREFIX}/workflows/assess/run", json={"cwd": str(project), "inputs": {"idea": "y"}})
     assert second.status_code == 409, f"a second process started alongside: {second.status_code}"
@@ -1608,7 +1613,7 @@ def test_two_simultaneous_starts_cannot_both_dispatch(client, project, monkeypat
         entered.set()
         assert release.wait(5), "the first start never finished"
         plugin_api.JOBS["slow"] = {"proc": None, "id": "slow"}
-        return {"job_id": "slow", "id": "slow", "pid": 0, "stdout_file": ""}
+        return {"job_id": "slow", "id": "slow", "pid": 0, "stdout_file": "", "log_path": ""}
 
     monkeypatch.setattr(plugin_api, "_start_job", slow_job)
     monkeypatch.setattr(plugin_api, "_await_new_run", lambda root_, before, timeout=25.0: "run-z")
@@ -1839,7 +1844,7 @@ def test_a_new_run_can_be_stopped_during_startup(client, project, monkeypatch):
     def job(args, cwd, timeout=None):
         plugin_api.JOBS["s1"] = {"proc": proc, "id": "s1", "cwd": str(cwd), "argv": args}
         dispatch_returned.set()
-        return {"job_id": "s1", "id": "s1", "pid": 4242, "stdout_file": ""}
+        return {"job_id": "s1", "id": "s1", "pid": 4242, "stdout_file": "", "log_path": ""}
 
     def slow_await(root_, before, timeout=25.0):
         # the run becomes visible while the dispatcher is still waiting for it
@@ -1879,9 +1884,13 @@ def test_a_new_run_can_be_stopped_during_startup(client, project, monkeypatch):
         plugin_api.ACTIVE_RUNS.clear()
         plugin_api.JOBS.clear()
 
-    # the dispatch that was cancelled must not report success
+    # The /run endpoint now returns immediately with run_id=None.
+    # The stop is processed after the run is created by the background thread.
     assert outcome.get("response") is not None
-    assert outcome["response"].status_code == 409, outcome["response"].text
+    assert outcome["response"].status_code == 200, outcome["response"].text
+    data = outcome["response"].json()
+    assert data["run_id"] is None
+    assert data["job_id"] == "s1"
 
 
 def test_the_slot_stays_taken_until_the_kill_finishes(client, project, monkeypatch):
@@ -2012,7 +2021,7 @@ def test_a_dispatch_without_a_run_id_is_refused(client, project, monkeypatch):
     monkeypatch.setattr(plugin_api, "_start_job",
                         lambda args, cwd, timeout=None: (
                             plugin_api.JOBS.__setitem__("j", {"proc": proc, "id": "j"}) or
-                            {"job_id": "j", "id": "j", "pid": proc.pid, "stdout_file": ""}))
+                            {"job_id": "j", "id": "j", "pid": proc.pid, "stdout_file": "", "log_path": ""}))
     monkeypatch.setattr(plugin_api, "_await_new_run", lambda root_, before, timeout=25.0: None)
     monkeypatch.setattr(plugin_api.subprocess, "run", lambda argv, **kw: taskkilled.append(argv[-1]))
     plugin_api.ACTIVE_RUNS.clear()
@@ -2020,7 +2029,15 @@ def test_a_dispatch_without_a_run_id_is_refused(client, project, monkeypatch):
 
     response = client.post(f"{PREFIX}/workflows/bugfix/run", json={"cwd": str(project), "inputs": {"report": "x"}})
 
-    assert response.status_code == 504, response.text
+    # The /run endpoint now returns immediately with run_id=None.
+    # The background thread handles abandonment when no run is created.
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert data["run_id"] is None
+    assert data["job_id"] == "j"
+    # Wait a bit for the background thread to abandon
+    import time
+    time.sleep(0.5)
     assert plugin_api.ACTIVE_RUNS == {}, "the project must not stay occupied"
     assert proc.killed or "616" in taskkilled, "the dispatched process must not be left running"
     plugin_api.ACTIVE_RUNS.clear()
@@ -2047,7 +2064,7 @@ def test_an_error_while_awaiting_the_run_kills_the_dispatch(client, project, mon
 
     def job(args, cwd, timeout=None):
         plugin_api.JOBS["j2"] = {"proc": proc, "id": "j2"}
-        return {"job_id": "j2", "id": "j2", "pid": proc.pid, "stdout_file": ""}
+        return {"job_id": "j2", "id": "j2", "pid": proc.pid, "stdout_file": "", "log_path": ""}
 
     def boom(root_, before, timeout=25.0):
         raise RuntimeError("await failed")
@@ -2058,9 +2075,15 @@ def test_an_error_while_awaiting_the_run_kills_the_dispatch(client, project, mon
     plugin_api.ACTIVE_RUNS.clear()
     plugin_api.JOBS.clear()
 
-    with pytest.raises(RuntimeError):
-        client.post(f"{PREFIX}/workflows/bugfix/run", json={"cwd": str(project), "inputs": {"report": "x"}})
-
+    # The /run endpoint now returns immediately. The error is raised in the background thread.
+    response = client.post(f"{PREFIX}/workflows/bugfix/run", json={"cwd": str(project), "inputs": {"report": "x"}})
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert data["run_id"] is None
+    assert data["job_id"] == "j2"
+    # Wait for background thread to process the error
+    import time
+    time.sleep(0.5)
     assert plugin_api.ACTIVE_RUNS == {}, "the reservation survived a failed dispatch"
     assert proc.killed is True, "a dispatched process was orphaned"
     plugin_api.ACTIVE_RUNS.clear()
