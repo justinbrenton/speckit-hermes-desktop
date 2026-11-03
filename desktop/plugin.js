@@ -1491,31 +1491,35 @@ function SpecKitPane() {
         if (updated) setProcess(updated)
       }
       await rest(`/workflows/${encodeURIComponent(process.id)}/run`, {
-              method: 'POST',
-              body: { cwd: folder, inputs: values }
-            })
-            // Don't set status to 'running' yet — wait for /runs/latest to return a real run.
-            // Poll aggressively at first (500ms) to catch the run as soon as it appears.
-            let attempts = 0
-            const pollUntilRun = async () => {
-              if (attempts++ > 24) return // ~12 seconds max
-              try {
-                const latest = await rest(`/workflows/${encodeURIComponent(process.id)}/runs/latest?cwd=${encodeURIComponent(folder)}`)
-                if (latest && latest.run_id) {
-                  setRun(latest)
-                  return
-                }
-              } catch (err) {
-                // Ignore polling errors, keep trying
-              }
-              setTimeout(pollUntilRun, 500)
-            }
-            pollUntilRun()
-    } catch (err) {
-      setError(errorText(err))
-    } finally {
-      setBusy(false)
-    }
+                          method: 'POST',
+                          body: { cwd: folder, inputs: values }
+                        })
+                        // Wait for /runs/latest to return a real run_id before updating status.
+                        // Poll at 500ms intervals for up to ~12 seconds.
+                        let attempts = 0
+                        const pollUntilRun = async () => {
+                          if (attempts++ > 24) {
+                            // Polling timed out; re-enable the button so the user can retry.
+                            setBusy(false)
+                            return
+                          }
+                          try {
+                            const latest = await rest(`/workflows/${encodeURIComponent(process.id)}/runs/latest?cwd=${encodeURIComponent(folder)}`)
+                            if (latest && latest.run_id) {
+                              setRun(latest)
+                              setBusy(false)
+                              return
+                            }
+                          } catch (err) {
+                            // Swallow transient errors; keep polling.
+                          }
+                          setTimeout(pollUntilRun, 500)
+                        }
+                        pollUntilRun()
+          } catch (err) {
+            setError(errorText(err))
+            setBusy(false)
+          }
   }, [values, process, folder, mode, refreshRun])
 
   const decide = useCallback(async choice => {
