@@ -94,6 +94,20 @@ const SK_CSS = `
 .sk-pill-absent { color: var(--ui-text-tertiary, #6f767f); }
 .sk-click { cursor: pointer; }
 .sk-fade { opacity: .55; }
+.sk-md {}
+.sk-md-h1 { font-size: 16px; font-weight: 600; margin: 0; color: var(--ui-text-primary, #e7e9ec); }
+.sk-md-h2 { font-size: 14px; font-weight: 600; margin: 0; color: var(--ui-text-primary, #e7e9ec); }
+.sk-md-h3 { font-size: 13px; font-weight: 600; margin: 0; color: var(--ui-text-primary, #e7e9ec); }
+.sk-md-p { margin: 0; line-height: 1.5; }
+.sk-md-ul, .sk-md-ol { margin: 0; padding-left: 18px; }
+.sk-md-li { margin: 2px 0; }
+.sk-md-pre { background: var(--ui-bg-tertiary, #1a1e24); border: 1px solid var(--color-border, #343a41); border-radius: 6px; padding: 8px; overflow-x: auto; }
+.sk-md-code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; background: var(--ui-bg-tertiary, #1a1e24); padding: 1px 4px; border-radius: 4px; }
+.sk-md-pre .sk-md-code { background: transparent; padding: 0; }
+.sk-md-blockquote { border-left: 3px solid var(--ui-accent, #6ea8fe); padding-left: 8px; margin: 4px 0; color: var(--ui-text-secondary, #9aa2ae); }
+.sk-md-a { color: var(--ui-accent, #6ea8fe); }
+.sk-md-strong { font-weight: 600; }
+.sk-md-em { font-style: italic; }
 `
 
 function ensureStyles() {
@@ -137,7 +151,110 @@ function titleCase(id) {
   return __str(id).replace(/[-_]+/g, ' ').trim().replace(/^./, c => c.toUpperCase())
 }
 
-const GATE_LABELS = { 
+function escapeHtml(text) {
+  return String(text)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+}
+
+function renderInlineMd(text) {
+  const codeSegments = []
+  let processed = text.replace(/`(.+?)`/g, (match, code) => {
+    codeSegments.push(escapeHtml(code))
+    return `\x00CODE${codeSegments.length - 1}\x00`
+  })
+
+  processed = escapeHtml(processed)
+  processed = processed.replace(/\x00CODE(\d+)\x00/g, (match, idx) => `<code class="sk-md-code">${codeSegments[parseInt(idx)]}</code>`)
+  processed = processed.replace(/\*\*(.+?)\*\*/g, '<strong class="sk-md-strong">$1</strong>')
+  processed = processed.replace(/\*(.+?)\*/g, '<em class="sk-md-em">$1</em>')
+  processed = processed.replace(/\[(.+?)\]\((.+?)\)/g, '<a class="sk-md-a" href="$2">$1</a>')
+  return processed
+}
+
+function renderMarkdown(md) {
+  if (!md) return ''
+  const lines = String(md).split('\n')
+  const out = []
+  let i = 0
+  let inCode = false
+  const codeLines = []
+
+  while (i < lines.length) {
+    const line = lines[i]
+
+    if (line.startsWith('```')) {
+      if (!inCode) {
+        inCode = true
+        codeLines.length = 0
+        i++
+        continue
+      }
+      inCode = false
+      out.push(`<pre class="sk-md-pre"><code class="sk-md-code">${escapeHtml(codeLines.join('\n'))}</code></pre>`)
+      i++
+      continue
+    }
+
+    if (inCode) {
+      codeLines.push(line)
+      i++
+      continue
+    }
+
+    if (/^#{1,3} /.test(line)) {
+      const level = line.search(/[^#]/)
+      out.push(`<h${level + 1} class="sk-md-h${level + 1}">${renderInlineMd(line.slice(level + 1).trim())}</h${level + 1}>`)
+      i++
+      continue
+    }
+
+    if (/^> /.test(line)) {
+      out.push(`<blockquote class="sk-md-blockquote">${renderInlineMd(line.slice(2).trim())}</blockquote>`)
+      i++
+      continue
+    }
+
+    if (/^[-*] /.test(line)) {
+      const items = []
+      while (i < lines.length && /^[-*] /.test(lines[i])) {
+        items.push(`<li class="sk-md-li">${renderInlineMd(lines[i].slice(2).trim())}</li>`)
+        i++
+      }
+      out.push(`<ul class="sk-md-ul">${items.join('')}</ul>`)
+      continue
+    }
+
+    if (/^\d+\. /.test(line)) {
+      const items = []
+      while (i < lines.length && /^\d+\. /.test(lines[i])) {
+        items.push(`<li class="sk-md-li">${renderInlineMd(lines[i].replace(/^\d+\. /, '').trim())}</li>`)
+        i++
+      }
+      out.push(`<ol class="sk-md-ol">${items.join('')}</ol>`)
+      continue
+    }
+
+    if (line.trim() === '') {
+      i++
+      continue
+    }
+
+    const paraLines = []
+    while (i < lines.length && lines[i].trim() !== '' && !/^#{1,3} /.test(lines[i]) && !lines[i].startsWith('```') && !/^> /.test(lines[i]) && !/^[-*] /.test(lines[i]) && !/^\d+\. /.test(lines[i])) {
+      paraLines.push(lines[i])
+      i++
+    }
+    if (paraLines.length > 0) {
+      out.push(`<p class="sk-md-p">${renderInlineMd(paraLines.join(' '))}</p>`)
+    }
+  }
+
+  return out.join('\n')
+}
+
+const GATE_LABELS = {
   approve: 'Approve', 
   reject: 'Reject',
   go: 'Go',
@@ -367,22 +484,32 @@ function ConflictPanel({ conflict, busy, onReload, onKeep }) {
 
 function ArtifactEditor({ artifact, draft, onDraft, onSave, onClose, busy, dirty, error }) {
   if (!artifact) return null
+  const [view, setView] = useState('edit')
   return jsxs('div', { className: 'flex min-h-0 flex-1 flex-col gap-1 rounded border sk-border', children: [
     jsxs('div', { className: 'flex items-center justify-between gap-2 border-b sk-border px-2 py-1', children: [
       jsx('span', { className: 'sk-truncate sk-mono sk-tiny', children: artifact.path }),
       jsxs('div', { className: 'flex items-center gap-1', children: [
         dirty ? jsx(Badge, { variant: 'secondary', children: 'edited' }) : null,
-        jsx(Button, { size: 'xs', onClick: onSave, disabled: busy || !dirty, children: 'Save' }),
+        jsx(Button, { size: 'xs', variant: 'ghost', onClick: () => setView(v => v === 'edit' ? 'preview' : 'edit'), children: view === 'edit' ? 'Preview' : 'Edit' }),
+        view === 'edit'
+          ? jsx(Button, { size: 'xs', onClick: onSave, disabled: busy || !dirty, children: 'Save' })
+          : null,
         jsx(Button, { size: 'xs', variant: 'ghost', onClick: onClose, children: 'Close' })
       ] })
     ] }),
     error ? jsx('p', { className: 'px-2 sk-tiny sk-err', children: error }) : null,
-    jsx(Textarea, {
-      value: draft,
-      onChange: event => onDraft(event.target.value),
-      className: 'min-h-0 flex-1 resize-none sk-mono sk-tiny',
-      rows: 14
-    })
+    view === 'edit'
+      ? jsx(Textarea, {
+          value: draft,
+          onChange: event => onDraft(event.target.value),
+          className: 'min-h-0 flex-1 resize-none sk-mono sk-tiny',
+          rows: 14
+        })
+      : jsx('div', {
+          className: 'sk-md sk-small sk-dim min-h-0 flex-1 overflow-auto p-2',
+          // Local artifact content only; renderMarkdown escapes HTML before applying markdown syntax.
+          dangerouslySetInnerHTML: { __html: renderMarkdown(draft) }
+        })
   ] })
 }
 
@@ -805,10 +932,12 @@ function GateCard({ run, busy, onDecide, error, onLoadFull, folder, onAnswerQues
                 : null,
               jsx(Button, { size: 'xs', variant: 'ghost', onClick: () => setShowOutput(value => !value), children: showOutput ? 'Hide' : 'Show' })
             ] })
-        ] }), 
+        ] }),
         showOutput
-          ? jsx(ScrollArea, { className: 'max-h-48', children:
-              jsx('pre', { className: 'whitespace-pre-wrap p-2 sk-tiny leading-relaxed sk-dim', children: output })
+          ? jsx('div', {
+              className: 'sk-md sk-small sk-dim',
+              // Local artifacts only; renderMarkdown escapes HTML before applying markdown syntax.
+              dangerouslySetInnerHTML: { __html: renderMarkdown(output) }
             })
           : null
       ] })
