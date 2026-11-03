@@ -28,7 +28,7 @@ if (!PY) {
   const candidates = ['python', 'python3', 'py', 'python3.14', 'python3.13', 'python3.12']
   for (const name of candidates) {
     try {
-      const out = execFileSync(name, ['-c', 'import pytest; print(pytest.__file__)'], {
+      const out = execFileSync(name, ['-c', 'import pytest, fastapi, pydantic, yaml; print("ok")'], {
         cwd: ROOT,
         encoding: 'utf8',
         stdio: ['ignore', 'pipe', 'pipe']

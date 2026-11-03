@@ -2961,7 +2961,13 @@ def _run_view(process: str, run: dict[str, Any], root: Path) -> dict[str, Any]:
                             if not reviewed_artifact_path and gate_kind == "constitution":
                                 const_path = root / ".specify" / "memory" / "constitution.md"
                                 if const_path.is_file():
-                                    reviewed_artifact_path = ".specify/memory/constitution.md"
+                                    resolved = const_path.resolve()
+                                    allowed = [
+                                        (root / ".specify").resolve(),
+                                        (root / "specs").resolve(),
+                                    ]
+                                    if any(base == resolved or base in resolved.parents for base in allowed):
+                                        reviewed_artifact_path = ".specify/memory/constitution.md"
 
                             # Fallback: check common locations directly
                             if not reviewed_artifact_path:
@@ -2982,13 +2988,18 @@ def _run_view(process: str, run: dict[str, Any], root: Path) -> dict[str, Any]:
                     artifact_target = (root / reviewed_artifact_path).resolve()
                 else:
                     artifact_target = (root / ".specify" / reviewed_artifact_path).resolve()
-                if artifact_target.is_file():
-                    text = artifact_target.read_text(encoding="utf-8", errors="replace")
-                    markers = clarification_markers(text)
-                    questions = [
-                        {"index": index, "text": body.strip()}
-                        for index, (_, _, body) in enumerate(markers)
-                    ]
+                allowed = [
+                    (root / ".specify").resolve(),
+                    (root / "specs").resolve(),
+                ]
+                if any(base == artifact_target or base in artifact_target.parents for base in allowed):
+                    if artifact_target.is_file():
+                        text = artifact_target.read_text(encoding="utf-8", errors="replace")
+                        markers = clarification_markers(text)
+                        questions = [
+                            {"index": index, "text": body.strip()}
+                            for index, (_, _, body) in enumerate(markers)
+                        ]
             except Exception:
                 pass
 
