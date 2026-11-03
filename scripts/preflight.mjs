@@ -23,7 +23,24 @@ const CLAIMS_FILE = join(ROOT, '.claims.json')
 const DESIGN_HTML = join(ROOT, 'docs', 'design.html')
 
 // CI stages Hermes in a venv; point the python steps at it with PREFLIGHT_PYTHON.
-const PY = process.env.PREFLIGHT_PYTHON || 'python'
+let PY = process.env.PREFLIGHT_PYTHON
+if (!PY) {
+  const candidates = ['python', 'python3', 'py', 'python3.14', 'python3.13', 'python3.12']
+  for (const name of candidates) {
+    try {
+      const out = execFileSync(name, ['-c', 'import pytest, fastapi, pydantic, yaml; print("ok")'], {
+        cwd: ROOT,
+        encoding: 'utf8',
+        stdio: ['ignore', 'pipe', 'pipe']
+      })
+      PY = name
+      break
+    } catch {
+      // try next
+    }
+  }
+}
+if (!PY) PY = 'python'
 // Windows: npm is npm.cmd and node refuses to spawn a .cmd without a shell, so the
 // scripts are invoked through the running interpreter instead.
 

@@ -1782,6 +1782,16 @@ GATES = {
     "analyze": "Review the cross-artifact findings before implementing.",
 }
 
+#: Semantic verdict options for process-specific gates. Defaults to approve/reject.
+GATE_OPTIONS = {
+    "assess": {
+        "decide": ["go", "needs-clarification", "kill"],
+    },
+    "bugfix": {
+        "test": ["verified", "partial", "failed"],
+    },
+}
+
 #: Optional inputs carry a default: the integration drops ``-q`` when a step's
 #: args are empty, and ``hermes chat -Q -s <skill>`` with no query opens an
 #: interactive UI that fails in a background process. A skipped field must still
@@ -2058,11 +2068,12 @@ def _process_yaml(process_id: str) -> str:
             f'      args: "{args}"',
         ]
         if step_id in gates:
+            gate_options = GATE_OPTIONS.get(process_id, {}).get(step_id, ["approve", "reject"])
             lines += [
                 f"  - id: review-{step_id}",
                 "    type: gate",
                 f'    message: "{gates[step_id]}"',
-                "    options: [approve, reject]",
+                f"    options: {json.dumps(gate_options)}",
                 f"    verdict_input: gate_review_{step_id}",
                 "    on_reject: abort",
             ]
@@ -2946,6 +2957,18 @@ def _run_view(process: str, run: dict[str, Any], root: Path) -> dict[str, Any]:
                                         if (root / artifact_path).is_file():
                                             reviewed_artifact_path = artifact_path
                             
+                            # Constitution gate: check .specify/memory/constitution.md
+                            if not reviewed_artifact_path and gate_kind == "constitution":
+                                const_path = root / ".specify" / "memory" / "constitution.md"
+                                if const_path.is_file():
+                                    resolved = const_path.resolve()
+                                    allowed = [
+                                        (root / ".specify").resolve(),
+                                        (root / "specs").resolve(),
+                                    ]
+                                    if any(base == resolved or base in resolved.parents for base in allowed):
+                                        reviewed_artifact_path = ".specify/memory/constitution.md"
+
                             # Fallback: check common locations directly
                             if not reviewed_artifact_path:
                                 for rel in ("spec.md", "plan.md", "assessment.md", "problem.md", "decision.md", "test.md"):
@@ -2965,13 +2988,18 @@ def _run_view(process: str, run: dict[str, Any], root: Path) -> dict[str, Any]:
                     artifact_target = (root / reviewed_artifact_path).resolve()
                 else:
                     artifact_target = (root / ".specify" / reviewed_artifact_path).resolve()
-                if artifact_target.is_file():
-                    text = artifact_target.read_text(encoding="utf-8", errors="replace")
-                    markers = clarification_markers(text)
-                    questions = [
-                        {"index": index, "text": body.strip()}
-                        for index, (_, _, body) in enumerate(markers)
-                    ]
+                allowed = [
+                    (root / ".specify").resolve(),
+                    (root / "specs").resolve(),
+                ]
+                if any(base == artifact_target or base in artifact_target.parents for base in allowed):
+                    if artifact_target.is_file():
+                        text = artifact_target.read_text(encoding="utf-8", errors="replace")
+                        markers = clarification_markers(text)
+                        questions = [
+                            {"index": index, "text": body.strip()}
+                            for index, (_, _, body) in enumerate(markers)
+                        ]
             except Exception:
                 pass
 
