@@ -206,14 +206,15 @@ const SK_CSS = `
 /* Hover on generic rows (browser, artifacts) — explicit fallback, no var dependency */
 .sk-root .sk-hover:hover { background: var(--ui-row-hover-background, #2a2f36); }
 /* Choice list rows: fill + 2px accent edge, explicit colours so hover never disappears */
-.sk-root .sk-choice { cursor: pointer; border-left: 2px solid transparent; transition: background .12s ease, border-color .12s ease; }
-.sk-root .sk-choice:hover { background: var(--ui-row-hover-background, #2a2f36); border-left-color: var(--ui-accent, #6ea8fe); }
+.sk-root .sk-choice { cursor: pointer; border-left: 2px solid var(--ui-stroke-secondary, #343a41); transition: background .12s ease, border-color .12s ease; }
+.sk-root .sk-choice:hover { background: var(--ui-row-hover-background, #2a2f36); border-left-color: color-mix(in srgb, var(--ui-accent, #6ea8fe) 55%, var(--ui-stroke-secondary, #343a41)); }
 .sk-root .sk-choice:focus-visible { outline: 2px solid var(--ui-accent, #6ea8fe); outline-offset: -2px; }
 /* Non-runnable rows are plain divs, not buttons — no pointer/hover cue */
 .sk-root .sk-choice:not(button) { cursor: default; }
 .sk-root .sk-choice:not(button):hover { background: transparent; border-left-color: transparent; }
 .sk-root .sk-choice + .sk-choice { border-top: 1px solid var(--color-border, #343a41); }
-.sk-frame { border: 1px solid var(--color-border, #343a41); border-radius: 6px; overflow: hidden; }
+.sk-frame { border: 1px solid var(--ui-stroke-secondary, #343a41); border-radius: 6px; overflow: hidden; transition: border-color .12s ease; }
+.sk-frame:hover { border-color: color-mix(in srgb, var(--ui-accent, #6ea8fe) 55%, var(--ui-stroke-secondary, #343a41)); }
 /* Status is a dot and a word: legible at 10px and it cannot be mistaken for a button. */
 .sk-pill { display: inline-flex; align-items: center; gap: 5px; font-size: 10px; font-weight: 500; white-space: nowrap; color: var(--ui-text-secondary, #9aa2ae); }
 .sk-pill::before { content: ''; width: 5px; height: 5px; border-radius: 50%; background: currentColor; flex: none; }
@@ -234,7 +235,7 @@ const SK_CSS = `
 .sk-md .sk-md-pre { background: var(--ui-bg-tertiary, #1a1e24); border: 1px solid var(--color-border, #343a41); border-radius: 6px; padding: 8px; overflow-x: auto; }
 .sk-md .sk-md-code { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; font-size: 11px; background: var(--ui-bg-tertiary, #1a1e24); padding: 1px 4px; border-radius: 4px; }
 .sk-md .sk-md-pre .sk-md-code { background: transparent; padding: 0; }
-.sk-md .sk-md-blockquote { border-left: 3px solid var(--ui-accent, #6ea8fe); padding-left: 8px; margin: 4px 0; color: var(--ui-text-secondary, #9aa2ae); }
+.sk-md .sk-md-blockquote { border-left: 3px solid color-mix(in srgb, var(--ui-accent, #6ea8fe) 55%, var(--ui-stroke-secondary, #343a41)); padding-left: 8px; margin: 4px 0; color: var(--ui-text-secondary, #9aa2ae); }
 .sk-md .sk-md-a { color: var(--ui-accent, #6ea8fe); }
 .sk-md .sk-md-strong { font-weight: 600; }
 .sk-md .sk-md-em { font-style: italic; }
