@@ -101,7 +101,7 @@ def cli(monkeypatch):
         }
 
     monkeypatch.setattr(plugin_api, "_start_job", fake)
-    monkeypatch.setattr(plugin_api, "_await_new_run", lambda root, before, timeout=25.0: "run-abc")
+    monkeypatch.setattr(plugin_api, "_await_new_run", lambda root, before, proc=None, timeout=25.0: "run-abc")
     return calls, state
 
 
@@ -1556,7 +1556,7 @@ def test_the_legacy_spelling_cannot_start_a_second_run(client, project, monkeypa
         return {"job_id": "j", "id": "j", "pid": 0, "stdout_file": "", "log_path": ""}
 
     monkeypatch.setattr(plugin_api, "_start_job", fake_job)
-    monkeypatch.setattr(plugin_api, "_await_new_run", lambda root_, before, timeout=25.0: "run-x")
+    monkeypatch.setattr(plugin_api, "_await_new_run", lambda root_, before, proc=None, timeout=25.0: "run-x")
     plugin_api.ACTIVE_RUNS.clear()
     plugin_api.JOBS.clear()
 
@@ -1585,7 +1585,7 @@ def test_a_second_process_cannot_start_in_one_project(client, project, monkeypat
         return {"job_id": "j", "id": "j", "pid": 0, "stdout_file": "", "log_path": ""}
 
     monkeypatch.setattr(plugin_api, "_start_job", fake_job)
-    monkeypatch.setattr(plugin_api, "_await_new_run", lambda root_, before, timeout=25.0: "run-y")
+    monkeypatch.setattr(plugin_api, "_await_new_run", lambda root_, before, proc=None, timeout=25.0: "run-y")
     plugin_api.ACTIVE_RUNS.clear()
     plugin_api.JOBS.clear()
 
@@ -1616,7 +1616,7 @@ def test_two_simultaneous_starts_cannot_both_dispatch(client, project, monkeypat
         return {"job_id": "slow", "id": "slow", "pid": 0, "stdout_file": "", "log_path": ""}
 
     monkeypatch.setattr(plugin_api, "_start_job", slow_job)
-    monkeypatch.setattr(plugin_api, "_await_new_run", lambda root_, before, timeout=25.0: "run-z")
+    monkeypatch.setattr(plugin_api, "_await_new_run", lambda root_, before, proc=None, timeout=25.0: "run-z")
     plugin_api.ACTIVE_RUNS.clear()
     plugin_api.JOBS.clear()
 
@@ -1716,7 +1716,7 @@ def test_a_stopped_startup_does_not_overwrite_a_newer_claim(client, project, mon
         return {"job_id": "s", "id": "s", "pid": 0, "stdout_file": ""}
 
     monkeypatch.setattr(plugin_api, "_start_job", slow_job)
-    monkeypatch.setattr(plugin_api, "_await_new_run", lambda root_, before, timeout=25.0: "run-s")
+    monkeypatch.setattr(plugin_api, "_await_new_run", lambda root_, before, proc=None, timeout=25.0: "run-s")
     plugin_api.ACTIVE_RUNS.clear()
     plugin_api.JOBS.clear()
 
@@ -1846,7 +1846,7 @@ def test_a_new_run_can_be_stopped_during_startup(client, project, monkeypatch):
         dispatch_returned.set()
         return {"job_id": "s1", "id": "s1", "pid": 4242, "stdout_file": "", "log_path": ""}
 
-    def slow_await(root_, before, timeout=25.0):
+    def slow_await(root_, before, proc=None, timeout=25.0):
         # the run becomes visible while the dispatcher is still waiting for it
         run_dir = project / ".specify" / "workflows" / "runs" / "fresh"
         run_dir.mkdir(parents=True, exist_ok=True)
@@ -1972,7 +1972,7 @@ def test_stopping_an_old_run_does_not_cancel_a_startup(client, project, monkeypa
         plugin_api.JOBS["s2"] = {"proc": proc, "id": "s2", "cwd": str(cwd), "argv": args}
         return {"job_id": "s2", "id": "s2", "pid": 9090, "stdout_file": ""}
 
-    def blocked_await(root_, before, timeout=25.0):
+    def blocked_await(root_, before, proc=None, timeout=25.0):
         entered.set()
         assert release.wait(5), "the dispatcher never resumed"
         return None
@@ -2022,7 +2022,7 @@ def test_a_dispatch_without_a_run_id_is_refused(client, project, monkeypatch):
                         lambda args, cwd, timeout=None: (
                             plugin_api.JOBS.__setitem__("j", {"proc": proc, "id": "j"}) or
                             {"job_id": "j", "id": "j", "pid": proc.pid, "stdout_file": "", "log_path": ""}))
-    monkeypatch.setattr(plugin_api, "_await_new_run", lambda root_, before, timeout=25.0: None)
+    monkeypatch.setattr(plugin_api, "_await_new_run", lambda root_, before, proc=None, timeout=25.0: None)
     monkeypatch.setattr(plugin_api.subprocess, "run", lambda argv, **kw: taskkilled.append(argv[-1]))
     plugin_api.ACTIVE_RUNS.clear()
     plugin_api.JOBS.clear()
@@ -2066,7 +2066,7 @@ def test_an_error_while_awaiting_the_run_kills_the_dispatch(client, project, mon
         plugin_api.JOBS["j2"] = {"proc": proc, "id": "j2"}
         return {"job_id": "j2", "id": "j2", "pid": proc.pid, "stdout_file": "", "log_path": ""}
 
-    def boom(root_, before, timeout=25.0):
+    def boom(root_, before, proc=None, timeout=25.0):
         raise RuntimeError("await failed")
 
     monkeypatch.setattr(plugin_api, "_start_job", job)

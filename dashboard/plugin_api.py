@@ -1084,16 +1084,21 @@ def _run_ids(root: Path) -> set[str]:
     return {d.name for d in runs.iterdir() if d.is_dir()}
 
 
-def _await_new_run(root: Path, before: set[str], timeout: float = 60.0) -> Optional[str]:
+def _await_new_run(root: Path, before: set[str], proc: Any = None, timeout: float = 60.0) -> Optional[str]:
     """Return the run id spec-kit just created, or None if it did not start.
 
     ``specify workflow run`` picks its own run id; the pane needs that id to
     resume a gate, so the spawned job's id is not enough.
+
+    If ``proc`` is provided and the process dies, return None immediately.
     """
     import time as _time
 
     deadline = _time.monotonic() + timeout
     while _time.monotonic() < deadline:
+        if proc is not None and proc.poll() is not None:
+            # CLI process died; no run will be created.
+            return None
         fresh = _run_ids(root) - before
         if fresh:
             return sorted(fresh)[0] if len(fresh) == 1 else max(
@@ -1456,8 +1461,9 @@ def workflow_run(process: str, payload: WorkflowRunRequest) -> dict[str, Any]:
 
     # Background task: wait for run_id to appear, then claim or abandon the slot.
     def _wait_and_claim():
+        proc = job.get("proc") if job else None
         try:
-            run_id = _await_new_run(root, before, timeout=min(payload.timeout, 120.0))
+            run_id = _await_new_run(root, before, proc, timeout=min(payload.timeout, 120.0))
         except Exception:
             # _await_new_run raised (e.g. test simulates failure) - abandon the slot.
             _abandon_start(root, token, job)
@@ -1801,12 +1807,25 @@ GATES = {
 }
 
 #: Semantic verdict options for process-specific gates. Defaults to approve/reject.
+#: Each gate's options must include "abort" (or "reject") to satisfy spec-kit validation
+#: when on_reject: abort is used.
 GATE_OPTIONS = {
     "assess": {
-        "decide": ["go", "needs-clarification", "kill"],
+        "decide": ["go", "needs-clarification", "kill", "abort"],
     },
     "bugfix": {
-        "test": ["verified", "partial", "failed"],
+        "test": ["verified", "partial", "failed", "abort"],
+    },
+}
+
+#: The "reject" equivalent for each process's custom gate options.
+#: Used for on_reject in gate steps. Must be one of the options in GATE_OPTIONS.
+GATE_REJECT_MAP = {
+    "assess": {
+        "decide": "abort",
+    },
+    "bugfix": {
+        "test": "abort",
     },
 }
 
@@ -2087,13 +2106,14 @@ def _process_yaml(process_id: str) -> str:
         ]
         if step_id in gates:
             gate_options = GATE_OPTIONS.get(process_id, {}).get(step_id, ["approve", "reject"])
+            reject_choice = GATE_REJECT_MAP.get(process_id, {}).get(step_id, "abort")
             lines += [
                 f"  - id: review-{step_id}",
                 "    type: gate",
                 f'    message: "{gates[step_id]}"',
                 f"    options: {json.dumps(gate_options)}",
                 f"    verdict_input: gate_review_{step_id}",
-                "    on_reject: abort",
+                f"    on_reject: {reject_choice}",
             ]
     return "\n".join(lines) + "\n"
 

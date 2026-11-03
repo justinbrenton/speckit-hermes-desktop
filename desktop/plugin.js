@@ -1466,12 +1466,14 @@ function SpecKitPane() {
   }, [folder])
 
   const pickProcess = useCallback(async item => {
-    setProcess(item)
-    setPathChosen(item.id !== 'speckit')
-    setViewing(null)
-    setError('')
-    await refreshRun(folder, item.id)
-  }, [folder, refreshRun])
+      setProcess(item)
+      setPathChosen(item.id !== 'speckit')
+      setViewing(null)
+      setError('')
+      // Do not call refreshRun here: it sets run to {status: "none"} which causes
+      // the StartCard to show immediately. The start() poller will update run
+      // when the run actually appears.
+    }, [folder, refreshRun])
 
   const start = useCallback(async () => {
     const spec = __str(values.spec || values.report || values.idea)
@@ -1495,27 +1497,27 @@ function SpecKitPane() {
                           body: { cwd: folder, inputs: values }
                         })
                         // Wait for /runs/latest to return a real run_id before updating status.
-                        // Poll at 500ms intervals for up to ~12 seconds.
-                        let attempts = 0
-                        const pollUntilRun = async () => {
-                          if (attempts++ > 24) {
-                            // Polling timed out; re-enable the button so the user can retry.
-                            setBusy(false)
-                            return
-                          }
-                          try {
-                            const latest = await rest(`/workflows/${encodeURIComponent(process.id)}/runs/latest?cwd=${encodeURIComponent(folder)}`)
-                            if (latest && latest.run_id) {
-                              setRun(latest)
-                              setBusy(false)
-                              return
-                            }
-                          } catch (err) {
-                            // Swallow transient errors; keep polling.
-                          }
-                          setTimeout(pollUntilRun, 500)
-                        }
-                        pollUntilRun()
+                                                // Poll at 500ms intervals for up to ~60 seconds (matching backend timeout).
+                                                let attempts = 0
+                                                const pollUntilRun = async () => {
+                                                  if (attempts++ > 120) {
+                                                    // Polling timed out; re-enable the button so the user can retry.
+                                                    setBusy(false)
+                                                    return
+                                                  }
+                                                  try {
+                                                    const latest = await rest(`/workflows/${encodeURIComponent(process.id)}/runs/latest?cwd=${encodeURIComponent(folder)}`)
+                                                    if (latest && latest.run_id) {
+                                                      setRun(latest)
+                                                      setBusy(false)
+                                                      return
+                                                    }
+                                                  } catch (err) {
+                                                    // Swallow transient errors; keep polling.
+                                                  }
+                                                  setTimeout(pollUntilRun, 500)
+                                                }
+                                                pollUntilRun()
           } catch (err) {
             setError(errorText(err))
             setBusy(false)
