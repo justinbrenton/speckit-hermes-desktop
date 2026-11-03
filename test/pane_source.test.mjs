@@ -186,6 +186,7 @@ const APP_TOKENS = new Set([
   '--ui-green',
   '--ui-orange',
   '--ui-row-hover-background',
+  '--ui-stroke-secondary',
   '--color-border',
   '--color-destructive'
 ])
